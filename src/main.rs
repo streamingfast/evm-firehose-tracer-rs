@@ -41,7 +41,7 @@ fn main() {
                 node_exit_future,
             } = builder
                 .node(EthereumNode::default())
-                .install_exex("firehose_tracer", async move |ctx| {
+                .install_exex("firehose", async move |ctx| {
                     let tracer = firehose::Tracer::new(config);
                     Ok(exex::firehose_tracer(ctx, tracer))
                 })
