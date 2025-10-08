@@ -16,6 +16,14 @@ Build the project using Cargo:
 cargo build
 ```
 
+### Install
+
+For a global installation, you can do:
+
+```sh
+cargo install --path .
+```
+
 ## Run
 
 Start the local development node through the Firehose stack. This will run the compiled binary (`target/debug/reth`) as part of the Firehose Ethereum infrastructure:
@@ -23,6 +31,7 @@ Start the local development node through the Firehose stack. This will run the c
 ```sh
 fireeth start -c fireeth.config.yaml
 ```
+
 
 ### Test
 

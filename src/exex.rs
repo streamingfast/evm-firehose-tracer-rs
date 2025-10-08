@@ -1,5 +1,9 @@
 use crate::firehose;
 use crate::prelude::*;
+use reth::api::ConfigureEvm;
+use reth::providers::StateProviderFactory;
+use reth::revm::db::CacheDB;
+use reth::revm::db::EmptyDB;
 use reth_exex::{ExExContext, ExExEvent, ExExNotification};
 
 pub async fn firehose_tracer<Node: FullNodeComponents>(
@@ -17,6 +21,10 @@ pub async fn firehose_tracer<Node: FullNodeComponents>(
         match &notification {
             ExExNotification::ChainCommitted { new } => {
                 new.blocks().iter().for_each(|(_, block)| {
+                    if block.number() == 1 {
+                        tracer.on_genesis_block(ctx.config.chain.genesis());
+                    }
+
                     tracer.on_block_start(block);
                     tracer.on_block_end();
                 });
@@ -34,6 +42,23 @@ pub async fn firehose_tracer<Node: FullNodeComponents>(
                 .send(ExExEvent::FinishedHeight(committed_chain.tip().num_hash()))?;
         }
     }
+
+    Ok(())
+}
+
+// TODO: This function will be used to trace individual transactions within blocks
+#[allow(dead_code)]
+fn trace_block<Node: FullNodeComponents>(
+    block: &RecoveredBlock<Node>,
+    provider: Node::Provider,
+    evm_config: &Node::Evm,
+) -> eyre::Result<()> {
+    let _state_at = provider.state_by_block_hash(block.hash())?;
+    let _exec_ctx = evm_config.context_for_block(block);
+    let mut _db = CacheDB::new(EmptyDB::default());
+    // Use the evm_for_block method to construct the EVM instance
+    // let evm = evm_config.evm_for_block(&mut db, block.header());
+    // let mut executor = evm_config.create_executor(evm, exec_ctx);
 
     Ok(())
 }

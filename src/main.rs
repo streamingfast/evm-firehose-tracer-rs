@@ -6,7 +6,6 @@ use std::path::PathBuf;
 
 mod exex;
 mod firehose;
-#[allow(dead_code)]
 mod pb;
 mod prelude;
 

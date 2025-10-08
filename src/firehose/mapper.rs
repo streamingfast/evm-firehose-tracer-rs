@@ -3,7 +3,7 @@ use crate::pb::sf::ethereum::r#type::v2::block::DetailLevel;
 use crate::pb::sf::ethereum::r#type::v2::{BigInt, Block, BlockHeader};
 use crate::prelude::*;
 use alloy_consensus::BlockHeader as ConsensusBlockHeader;
-use alloy_primitives::Sealable;
+use alloy_primitives::{FixedBytes, Sealable};
 use alloy_rlp::Encodable;
 use prost_types::Timestamp;
 use reth::api::BlockBody;
@@ -14,14 +14,27 @@ pub(super) fn recovered_block_to_protobuf<Node: FullNodeComponents>(
 ) -> Block {
     let hash = recovered_block.hash();
     let header = recovered_block.header();
-    let pb_header = create_block_header_protobuf(header, hash.to_vec());
+    let size = recovered_block.sealed_block().length() as u64;
+    let uncles = map_uncles::<Node>(recovered_block);
+
+    block_header_to_protobuf(hash, header, size, uncles)
+}
+
+/// Maps a RecoveredBlock to a Protobuf Block following the Go implementation behavior
+pub(super) fn block_header_to_protobuf<H: ConsensusBlockHeader>(
+    hash: FixedBytes<32>,
+    block_header: &H,
+    size: u64,
+    uncles: Vec<BlockHeader>,
+) -> Block {
+    let pb_header = create_block_header_protobuf(hash.to_vec(), block_header);
 
     Block {
         hash: hash.to_vec(),
-        number: recovered_block.number(),
-        size: { recovered_block.sealed_block().length() as u64 },
+        number: block_header.number(),
+        size: size,
         header: Some(pb_header),
-        uncles: map_uncles::<Node>(recovered_block),
+        uncles: uncles,
         transaction_traces: Vec::new(),
         balance_changes: Vec::new(),
         code_changes: Vec::new(),
@@ -42,7 +55,7 @@ fn map_uncles<Node: FullNodeComponents>(
             .map(|ommer_header| {
                 // For ommer headers, we need to compute the hash using hash_slow()
                 // FIXME: Ask in Reth community if there is not a way to retrieve the hash without recomputing it
-                create_block_header_protobuf(ommer_header, ommer_header.hash_slow().to_vec())
+                create_block_header_protobuf(ommer_header.hash_slow().to_vec(), ommer_header)
             })
             .collect()
     } else {
@@ -52,7 +65,7 @@ fn map_uncles<Node: FullNodeComponents>(
 
 /// Creates a protobuf BlockHeader from any header implementing ConsensusBlockHeader trait
 /// This helper function eliminates duplication between main block header and uncle headers
-fn create_block_header_protobuf<H: ConsensusBlockHeader>(header: &H, hash: Vec<u8>) -> BlockHeader {
+fn create_block_header_protobuf<H: ConsensusBlockHeader>(hash: Vec<u8>, header: &H) -> BlockHeader {
     BlockHeader {
         hash,
         number: header.number(),
