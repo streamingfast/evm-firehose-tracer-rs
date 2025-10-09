@@ -23,5 +23,8 @@ start:
       --dev.block-time=1s
       --chain=./fireeth.genesis.json
 
-    substreams-tier1-grpc-listen-addr: ":10000*"
-    firehose-grpc-listen-addr: ":10001*"
+    # TODO: Removed TLS for dev
+    # substreams-tier1-grpc-listen-addr: ":10000*"
+    # firehose-grpc-listen-addr: ":10001*"
+    substreams-tier1-grpc-listen-addr: ":10000"
+    firehose-grpc-listen-addr: ":10001"
