@@ -36,6 +36,16 @@ impl<Node: FullNodeComponents> super::Tracer<Node> {
         }
     }
 
+    /// Ensure that we are currently in a transaction processing state
+    #[inline]
+    pub(super) fn ensure_in_transaction(&self) {
+        if self.current_transaction.is_none() {
+            self.panic_invalid_state(
+                "caller expected to be in transaction state but we were not, this is a bug",
+            );
+        }
+    }
+
     /// Panic with invalid state message, providing context similar to Go version
     pub(super) fn panic_invalid_state(&self, msg: &str) -> ! {
         let mut enhanced_msg = msg.to_string();

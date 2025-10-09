@@ -1,12 +1,13 @@
 use crate::firehose::BLOCK_VERSION;
 use crate::pb::sf::ethereum::r#type::v2::block::DetailLevel;
-use crate::pb::sf::ethereum::r#type::v2::{BigInt, Block, BlockHeader};
+use crate::pb::sf::ethereum::r#type::v2::{BigInt, Block, BlockHeader, TransactionReceipt, Log};
 use crate::prelude::*;
 use alloy_consensus::BlockHeader as ConsensusBlockHeader;
 use alloy_primitives::{FixedBytes, Sealable};
 use alloy_rlp::Encodable;
 use prost_types::Timestamp;
 use reth::api::BlockBody;
+use reth::core::primitives::Receipt;
 
 /// Maps a RecoveredBlock to a Protobuf Block following the Go implementation behavior
 pub(super) fn recovered_block_to_protobuf<Node: FullNodeComponents>(
@@ -113,5 +114,30 @@ fn create_block_header_protobuf<H: ConsensusBlockHeader>(hash: Vec<u8>, header: 
 
         // Not used anymore
         tx_dependency: None,
+    }
+}
+
+/// Maps a Reth Receipt to a Protobuf TransactionReceipt
+pub(super) fn receipt_to_protobuf<R>(receipt: &R) -> TransactionReceipt
+where
+    R: Receipt,
+{
+    TransactionReceipt {
+        state_root: Vec::new(),
+        cumulative_gas_used: receipt.cumulative_gas_used(),
+        logs_bloom: receipt.bloom().to_vec(),
+        logs: receipt.logs().iter().enumerate().map(|(index, log)| {
+            Log {
+                address: log.address.to_vec(),
+                topics: log.topics().iter().map(|topic| topic.to_vec()).collect(),
+                data: log.data.data.to_vec(),
+                index: index as u32,
+                // Block index will be set by the block processor
+                block_index: 0,
+                ordinal: 0,
+            }
+        }).collect(),
+        blob_gas_used: None,
+        blob_gas_price: None,
     }
 }

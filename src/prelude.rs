@@ -12,6 +12,10 @@ pub type RecoveredBlock<Node> = reth::primitives::RecoveredBlock<
 pub type ChainSpec<Node> =
     <<Node as reth::api::FullNodeTypes>::Types as reth::api::NodeTypes>::ChainSpec;
 
+/// Type alias for SignedTx from a Node primitives
+pub type SignedTx<Node> =
+    <<<Node as reth::api::FullNodeTypes>::Types as reth::api::NodeTypes>::Primitives as reth::api::NodePrimitives>::SignedTx;
+
 // Re-export commonly used items directly at module level for convenience
 pub use alloy_primitives::U256;
 pub use futures_util::TryStreamExt;

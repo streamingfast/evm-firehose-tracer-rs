@@ -1,13 +1,17 @@
-use alloy_consensus::{Transaction, TxType};
+use alloy_consensus::{Transaction, TxLegacy, TxType};
+use alloy_consensus::transaction::SignerRecoverable;
 use alloy_genesis::{Genesis, GenesisAccount};
 use alloy_primitives::{Address, B256, Signature, U256};
+use reth::primitives::transaction::SignedTransaction;
 use reth::primitives::TransactionSigned;
 
 use super::{Config, HexView, finality::FinalityStatus, mapper, ordinal::Ordinal, printer};
 use crate::firehose::PROTOCOL_VERSION;
 use crate::pb::sf::ethereum::r#type::v2::{Block, TransactionTrace, transaction_trace};
+use crate::prelude::SignedTx;
 use crate::{firehose_debug, firehose_info, prelude::*};
 use std::sync::Arc;
+use reth::core::primitives::Receipt;
 
 pub struct Tracer<Node: FullNodeComponents> {
     pub config: Config,
@@ -20,9 +24,10 @@ pub struct Tracer<Node: FullNodeComponents> {
     block_is_genesis: bool,
 
     // Transaction state
-    current_transaction: Option<TransactionTrace>,
+    pub(super) current_transaction: Option<TransactionTrace>,
     transaction_log_index: u32,
     in_system_call: bool,
+    previous_cumulative_gas_used: u64,
 
     _phantom: std::marker::PhantomData<Node>,
 }
@@ -39,6 +44,7 @@ impl<Node: FullNodeComponents> Tracer<Node> {
             current_transaction: None,
             transaction_log_index: 0,
             in_system_call: false,
+            previous_cumulative_gas_used: 0,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -82,16 +88,28 @@ impl<Node: FullNodeComponents> Tracer<Node> {
         let pb_block =
             mapper::block_header_to_protobuf(genesis_hash, chain_spec.genesis_header(), 0, vec![]);
         self.on_block_start_inner(pb_block);
-        self.on_tx_start_inner(
-            &TransactionSigned::new,
-            B256::ZERO,
-            Address::ZERO,
-            Address::ZERO,
+
+        // Create a dummy legacy transaction to wrap genesis state allocation
+        let genesis_tx = TransactionSigned::new_unhashed(
+            TxLegacy::default().into(),
+            Signature::test_signature(),
         );
+
+        self.on_tx_start_inner(&genesis_tx, B256::ZERO, Address::ZERO, Address::ZERO);
 
         for (address, account) in &genesis.alloc {
             self.on_genesis_account_allocation(address, account);
         }
+
+        // End the genesis transaction with a dummy receipt
+        // Genesis transactions don't have real receipts, so we create a successful one
+        let dummy_receipt = reth::primitives::Receipt {
+            tx_type: alloy_consensus::TxType::Legacy,
+            success: true,
+            cumulative_gas_used: 0,
+            logs: Vec::new(),
+        };
+        self.on_tx_end(&dummy_receipt);
 
         firehose_info!(
             "completed processing genesis allocation with {} accounts",
@@ -198,6 +216,7 @@ impl<Node: FullNodeComponents> Tracer<Node> {
         self.block_ordinal.reset();
         self.finality_status.reset();
         self.block_is_genesis = false;
+        self.previous_cumulative_gas_used = 0;
 
         // TODO: Add other block state resets when implemented:
         // - block_base_fee reset
@@ -224,11 +243,76 @@ impl<Node: FullNodeComponents> Tracer<Node> {
         // - deferred_call_state.reset()
     }
 
+    /// on_tx_end finalizes the current transaction and adds it to the block
+    pub fn on_tx_end<R>(&mut self, receipt: &R)
+    where
+        R: Receipt,
+    {
+        self.ensure_in_block();
+        self.ensure_in_transaction();
+
+        firehose_debug!("ending transaction");
+
+        if let Some(mut trx) = self.current_transaction.take() {
+            // Map receipt to protobuf
+            trx.receipt = Some(mapper::receipt_to_protobuf(receipt));
+
+            // Set transaction status 1: success, 0: failure
+            trx.status = if receipt.status() { 1 } else { 0 };
+
+            // Calculate gas used by transaction
+            let cumulative_gas_used = receipt.cumulative_gas_used();
+            trx.gas_used = cumulative_gas_used - self.previous_cumulative_gas_used;
+
+            // Update gas for next transaction
+            self.previous_cumulative_gas_used = cumulative_gas_used;
+
+            trx.end_ordinal = self.block_ordinal.next();
+
+            // Get the current block and add the transaction to it
+            if let Some(block) = &mut self.current_block {
+                // Set the transaction index based on current count
+                trx.index = block.transaction_traces.len() as u32;
+
+                firehose_debug!(
+                    "adding transaction to block (index={} hash={} status={} gas_used={})",
+                    trx.index,
+                    HexView(&trx.hash),
+                    trx.status,
+                    trx.gas_used
+                );
+
+                block.transaction_traces.push(trx);
+            }
+        }
+
+        // Reset transaction state for next transaction
+        self.reset_transaction();
+
+        firehose_debug!("transaction ended");
+    }
+
+    /// on_tx_start starts tracing a transaction from a signed transaction
+    ///
+    /// TODO Not sure what we should do here for other chains
+    pub fn on_tx_start(&mut self, tx: &SignedTx<Node>)
+    where
+        SignedTx<Node>: SignedTransaction + Transaction + SignerRecoverable,
+    {
+        let hash = *tx.tx_hash();
+        let from = tx.recover_signer().unwrap_or_default();
+        let to = tx.to().unwrap_or_default();
+
+        // We need to work with TransactionSigned for the inner implementation
+        let tx_ref = unsafe { &*(tx as *const SignedTx<Node> as *const TransactionSigned) };
+        self.on_tx_start_inner(tx_ref, hash, from, to);
+    }
+
     /// on_tx_start_inner is used internally in two places, in the normal "tracer" and in the "OnGenesisBlock",
     /// we manually pass some override to the `tx` because genesis block has a different way of creating
     /// the transaction that wraps the genesis block.
     /// Ported from Go onTxStart() method
-    pub fn on_tx_start_inner<T>(
+    pub fn on_tx_start_inner(
         &mut self,
         tx: &TransactionSigned,
         hash: B256,

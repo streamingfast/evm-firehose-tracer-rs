@@ -1,6 +1,6 @@
 use crate::firehose;
 use crate::prelude::*;
-use reth::api::ConfigureEvm;
+use reth::api::{BlockBody, ConfigureEvm};
 use reth::providers::StateProviderFactory;
 use reth::revm::db::CacheDB;
 use reth::revm::db::EmptyDB;
@@ -20,14 +20,25 @@ pub async fn firehose_tracer<Node: FullNodeComponents>(
     while let Some(notification) = ctx.notifications.try_next().await? {
         match &notification {
             ExExNotification::ChainCommitted { new } => {
-                new.blocks().iter().for_each(|(_, block)| {
+                // Iterate through blocks with their receipts
+                for (block, receipts) in new.blocks_and_receipts() {
                     if block.number() == 1 {
                         tracer.on_genesis_block(ctx.config.chain.genesis());
-                    }
+                    } else {
+                        tracer.on_block_start(block);
 
-                    tracer.on_block_start(block);
-                    tracer.on_block_end();
-                });
+                        // Process each transaction in the block with its receipt
+                        let transactions = block.body().transactions();
+                        for (tx, receipt) in transactions.iter().zip(receipts.iter()) {
+                            tracer.on_tx_start(tx);
+                            // TODO: Execute transaction and capture execution traces
+                            tracer.on_tx_end(receipt);
+                        }
+
+                        // Finalize and output the block
+                        tracer.on_block_end();
+                    }
+                }
             }
             ExExNotification::ChainReorged { old, new } => {
                 info!(from_chain = ?old.range(), to_chain = ?new.range(), "Received reorg");
