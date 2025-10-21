@@ -9,6 +9,8 @@ reth-exex = { path = "../reth/crates/exex/exex" }              # git = "https://
 reth-node-ethereum = { path = "../reth/crates/ethereum/node" } # git = "https://github.com/paradigmxyz/reth.git" }
 reth-tracing = { path = "../reth/crates/tracing" }             # git = "https://github.com/paradigmxyz/reth.git" }
 reth-cli-util = { path = "../reth/crates/cli/util" }           # git = "https://github.com/paradigmxyz/reth.git" }
+reth-revm = { path = "../reth/crates/revm" }                   # git = "https://github.com/paradigmxyz/reth.git" }
+reth-evm = { path = "../reth/crates/evm/evm" }                 # git = "https://github.com/paradigmxyz/reth.git" }
 
 alloy-genesis = "1"
 alloy-primitives = "1.3"

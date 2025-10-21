@@ -11,8 +11,8 @@ start:
     advertise-chain-name: "holesky"
     data-dir: ".firehose-data"
 
-    # For now we do not print genesis block, won't be long...
-    common-first-streamable-block: 1
+    # Start from block 0 to match what the tracer outputs
+    common-first-streamable-block: 2
 
     reader-node-path: "./target/debug/reth-firehose-tracer"
     reader-node-data-dir: "{data-dir}/reader-node"
@@ -22,9 +22,13 @@ start:
       --dev
       --dev.block-time=1s
       --chain=./fireeth.genesis.json
+      --http
+      --http.api=debug,eth,web3,net
+      --http.addr=0.0.0.0
+      --http.port=8545
 
     # TODO: Removed TLS for dev
-    # substreams-tier1-grpc-listen-addr: ":10000*"
-    # firehose-grpc-listen-addr: ":10001*"
-    substreams-tier1-grpc-listen-addr: ":10000"
-    firehose-grpc-listen-addr: ":10001"
+    substreams-tier1-grpc-listen-addr: ":10000*"
+    firehose-grpc-listen-addr: ":10001*"
+    # substreams-tier1-grpc-listen-addr: ":10000"
+    # firehose-grpc-listen-addr: ":10001"

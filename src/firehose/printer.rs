@@ -58,10 +58,13 @@ pub(super) fn firehose_block_to_stdout(block: Block, finality_status: FinalitySt
 
     // Encode the marshalled protobuf to base64 and print it
     let encoded = general_purpose::STANDARD.encode(&marshalled);
-    print!("{}", encoded);
+    print!("{}",encoded);
 
-    // Print final newline
+    // Print final newline and flush
     println!();
+
+    use std::io::{self, Write};
+    let _ = io::stdout().flush();
 }
 
 /// Prints init message in Firehose protocol format to stdout

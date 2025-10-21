@@ -1,9 +1,10 @@
 use crate::firehose;
 use crate::prelude::*;
-use reth::api::{BlockBody, ConfigureEvm};
-use reth::providers::StateProviderFactory;
-use reth::revm::db::CacheDB;
-use reth::revm::db::EmptyDB;
+use alloy_consensus::Transaction;
+use alloy_primitives::B256;
+use reth::api::ConfigureEvm;
+use reth::providers::{StateProviderFactory, StateProviderBox};
+use reth_evm::evm::Evm;
 use reth_exex::{ExExContext, ExExEvent, ExExNotification};
 
 pub async fn firehose_tracer<Node: FullNodeComponents>(
@@ -12,10 +13,11 @@ pub async fn firehose_tracer<Node: FullNodeComponents>(
 ) -> eyre::Result<()> {
     info!(target: "firehose:tracer", config = ?tracer.config, "Launching tracer");
 
-    // TODO: Should we load the tracer here instead? Unsure about the exec flow, maybe it's better
-    // to prepare it in advance like we have right now. But it poses questions with the flow as `on_init`
-    // needs to be called, which for now we do here.
+    // Initialize tracer with chain spec
     tracer.on_init(ctx.config.chain.clone());
+
+    // Get EVM config from components for transaction re-execution
+    let evm_config = ctx.components.evm_config().clone();
 
     while let Some(notification) = ctx.notifications.try_next().await? {
         match &notification {
@@ -27,11 +29,36 @@ pub async fn firehose_tracer<Node: FullNodeComponents>(
                     } else {
                         tracer.on_block_start(block);
 
-                        // Process each transaction in the block with its receipt
-                        let transactions = block.body().transactions();
-                        for (tx, receipt) in transactions.iter().zip(receipts.iter()) {
+                        // Get state provider for the parent block to re-execute transactions
+                        let parent_hash = block.parent_hash();
+                        let state_provider = match ctx.provider().state_by_block_hash(parent_hash) {
+                            Ok(provider) => provider,
+                            Err(e) => {
+                                info!(target: "firehose:tracer", "Failed to get state provider for block {}: {}", block.number(), e);
+                                continue;
+                            }
+                        };
+
+                        // Process each transaction in the block with re-execution
+                        // Collect recovered transactions with their indices
+                        let recovered_txs: Vec<_> = block.transactions_recovered().collect();
+
+                        for (tx_index, (recovered_tx, receipt)) in recovered_txs.iter().zip(receipts.iter()).enumerate() {
+                            // Recovered<&T> derefs to &T via the Deref trait
+                            let tx: &SignedTx<Node> = &**recovered_tx;
                             tracer.on_tx_start(tx);
-                            // TODO: Execute transaction and capture execution traces
+
+                            // Re-execute the transaction with FirehoseInspector to capture call traces
+                            if let Err(e) = execute_transaction_with_tracing(
+                                &mut tracer,
+                                block,
+                                tx_index,
+                                &state_provider,
+                                &evm_config,
+                            ) {
+                                info!(target: "firehose:tracer", "Failed to execute transaction: {}", e);
+                            }
+
                             tracer.on_tx_end(receipt);
                         }
 
@@ -57,19 +84,50 @@ pub async fn firehose_tracer<Node: FullNodeComponents>(
     Ok(())
 }
 
-// TODO: This function will be used to trace individual transactions within blocks
-#[allow(dead_code)]
-fn trace_block<Node: FullNodeComponents>(
+/// Execute a single transaction with the FirehoseInspector to capture call traces
+///
+/// This function replays all transactions in the block up to the target transaction,
+/// then executes the target transaction with the inspector to capture its execution trace.
+fn execute_transaction_with_tracing<Node: FullNodeComponents>(
+    tracer: &mut firehose::Tracer<Node>,
     block: &RecoveredBlock<Node>,
-    provider: Node::Provider,
+    target_tx_index: usize,
+    state_provider: &StateProviderBox,
     evm_config: &Node::Evm,
 ) -> eyre::Result<()> {
-    let _state_at = provider.state_by_block_hash(block.hash())?;
-    let _exec_ctx = evm_config.context_for_block(block);
-    let mut _db = CacheDB::new(EmptyDB::default());
-    // Use the evm_for_block method to construct the EVM instance
-    // let evm = evm_config.evm_for_block(&mut db, block.header());
-    // let mut executor = evm_config.create_executor(evm, exec_ctx);
+    use reth::revm::db::CacheDB;
+    use reth_revm::database::StateProviderDatabase;
+
+    // Create database from state provider
+    let mut db = CacheDB::new(StateProviderDatabase::new(state_provider));
+    let evm_env = evm_config.evm_env(block.header());
+
+    // First pass: replay all transactions BEFORE our target without inspector to build state
+    {
+        let mut evm = evm_config.evm_with_env(&mut db, evm_env.clone());
+
+        for (index, recovered_tx) in block.transactions_recovered().enumerate() {
+            if index == target_tx_index {
+                break;
+            }
+
+            // Execute and commit previous transactions to build correct state
+            let tx_env = evm_config.tx_env(recovered_tx);
+            evm.transact_commit(tx_env)?;
+        }
+    }
+
+    // Second pass: execute the target transaction with inspector
+    let mut inspector = firehose::FirehoseInspector::new(tracer);
+    let mut evm = evm_config.evm_with_env_and_inspector(&mut db, evm_env, &mut inspector);
+
+    for (index, recovered_tx) in block.transactions_recovered().enumerate() {
+        if index == target_tx_index {
+            let tx_env = evm_config.tx_env(recovered_tx);
+            let _result = evm.transact(tx_env)?;
+            break;
+        }
+    }
 
     Ok(())
 }

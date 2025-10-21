@@ -1,5 +1,6 @@
 mod config;
 mod finality;
+pub mod inspector;
 pub mod logging;
 mod mapper;
 mod ordinal;
@@ -10,6 +11,7 @@ mod version;
 
 // Re-export public items to maintain the same API
 pub use config::Config;
+pub use inspector::FirehoseInspector;
 pub use logging::HexView;
 pub use tracer::Tracer;
 pub use version::{BLOCK_VERSION, PROTOCOL_VERSION};
