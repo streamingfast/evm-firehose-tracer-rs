@@ -3,7 +3,7 @@ use crate::prelude::*;
 use alloy_consensus::Transaction;
 use alloy_primitives::B256;
 use reth::api::ConfigureEvm;
-use reth::providers::{StateProviderFactory, StateProviderBox};
+use reth::providers::{StateProviderBox, StateProviderFactory};
 use reth_evm::evm::Evm;
 use reth_exex::{ExExContext, ExExEvent, ExExNotification};
 
@@ -43,7 +43,9 @@ pub async fn firehose_tracer<Node: FullNodeComponents>(
                         // Collect recovered transactions with their indices
                         let recovered_txs: Vec<_> = block.transactions_recovered().collect();
 
-                        for (tx_index, (recovered_tx, receipt)) in recovered_txs.iter().zip(receipts.iter()).enumerate() {
+                        for (tx_index, (recovered_tx, receipt)) in
+                            recovered_txs.iter().zip(receipts.iter()).enumerate()
+                        {
                             // Recovered<&T> derefs to &T via the Deref trait
                             let tx: &SignedTx<Node> = &**recovered_tx;
                             tracer.on_tx_start(tx);

@@ -1,11 +1,11 @@
 use crate::firehose::Tracer;
 use crate::pb::sf::ethereum::r#type::v2::CallType;
 use crate::prelude::*;
-use alloy_primitives::{Address, U256, Log as AlloyLog, Bytes};
+use alloy_primitives::{Address, Bytes, Log as AlloyLog, U256};
 use reth::revm::revm::context_interface::{ContextTr, LocalContextTr};
 use reth::revm::revm::inspector::Inspector;
 use reth::revm::revm::interpreter::{
-    interpreter::EthInterpreter, CallInputs, CallOutcome, CreateInputs, CreateOutcome, Interpreter,
+    CallInputs, CallOutcome, CreateInputs, CreateOutcome, Interpreter, interpreter::EthInterpreter,
 };
 
 /// FirehoseInspector captures execution traces for the Firehose format
@@ -41,15 +41,26 @@ impl<'a, Node: FullNodeComponents, CTX> Inspector<CTX, EthInterpreter>
     for FirehoseInspector<'a, Node>
 where
     CTX: ContextTr,
+    CTX::Journal: reth::revm::revm::inspector::JournalExt,
 {
+    /// Called at each step of EVM execution (BEFORE opcode executes)
+    fn step(&mut self, interp: &mut Interpreter<EthInterpreter>, context: &mut CTX) {
+        self.tracer.on_step(interp, context);
+    }
+
+    /// Called after each step of EVM execution (AFTER opcode executes)
+    fn step_end(&mut self, interp: &mut Interpreter<EthInterpreter>, context: &mut CTX) {
+        self.tracer.on_step_end(interp, context);
+    }
+
     /// CALL, CALLCODE, DELEGATECALL, or STATICCALL is made
     fn call(&mut self, context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
         let call_type = Self::map_call_type(&inputs.scheme);
 
         // Extract the value from CallValue enum
         let value = match &inputs.value {
-            reth::revm::revm::interpreter::CallValue::Transfer(v) |
-            reth::revm::revm::interpreter::CallValue::Apparent(v) => *v,
+            reth::revm::revm::interpreter::CallValue::Transfer(v)
+            | reth::revm::revm::interpreter::CallValue::Apparent(v) => *v,
         };
 
         // Extract input bytes from CallInput enum
@@ -79,12 +90,7 @@ where
     }
 
     /// CALL* operation completes
-    fn call_end(
-        &mut self,
-        _context: &mut CTX,
-        _inputs: &CallInputs,
-        outcome: &mut CallOutcome,
-    ) {
+    fn call_end(&mut self, _context: &mut CTX, _inputs: &CallInputs, outcome: &mut CallOutcome) {
         let success = outcome.result.is_ok();
         self.tracer.on_call_exit(
             outcome.result.output.clone(),
@@ -129,7 +135,12 @@ where
     }
 
     /// LOG operation is executed
-    fn log(&mut self, _interp: &mut Interpreter<EthInterpreter>, _context: &mut CTX, log: AlloyLog) {
+    fn log(
+        &mut self,
+        _interp: &mut Interpreter<EthInterpreter>,
+        _context: &mut CTX,
+        log: AlloyLog,
+    ) {
         self.tracer.on_log(log);
     }
 

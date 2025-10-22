@@ -1,17 +1,19 @@
-use alloy_consensus::{Transaction, TxLegacy, TxType};
 use alloy_consensus::transaction::SignerRecoverable;
+use alloy_consensus::{Transaction, TxLegacy, TxType};
 use alloy_genesis::{Genesis, GenesisAccount};
-use alloy_primitives::{Address, B256, Signature, U256, Log as AlloyLog, Bytes};
-use reth::primitives::transaction::SignedTransaction;
+use alloy_primitives::{Address, B256, Bytes, Log as AlloyLog, Signature, U256};
 use reth::primitives::TransactionSigned;
+use reth::primitives::transaction::SignedTransaction;
+use reth::revm::revm::inspector::JournalExt;
+use reth::revm::revm::interpreter::interpreter_types::Jumps;
 
 use super::{Config, HexView, finality::FinalityStatus, mapper, ordinal::Ordinal, printer};
 use crate::firehose::PROTOCOL_VERSION;
-use crate::pb::sf::ethereum::r#type::v2::{Block, TransactionTrace, transaction_trace, Call};
+use crate::pb::sf::ethereum::r#type::v2::{Block, Call, TransactionTrace, transaction_trace};
 use crate::prelude::SignedTx;
 use crate::{firehose_debug, firehose_info, prelude::*};
-use std::sync::Arc;
 use reth::core::primitives::Receipt;
+use std::sync::Arc;
 
 pub struct Tracer<Node: FullNodeComponents> {
     pub config: Config,
@@ -32,6 +34,13 @@ pub struct Tracer<Node: FullNodeComponents> {
     // Call stack tracking
     call_stack: Vec<Call>,
 
+    // Journal tracking for state changes
+    last_journal_len: usize,
+
+    // Opcode tracking for gas changes
+    last_opcode: Option<u8>,
+    last_gas_before_opcode: Option<u64>,
+
     _phantom: std::marker::PhantomData<Node>,
 }
 
@@ -49,6 +58,9 @@ impl<Node: FullNodeComponents> Tracer<Node> {
             in_system_call: false,
             previous_cumulative_gas_used: 0,
             call_stack: Vec::new(),
+            last_journal_len: 0,
+            last_opcode: None,
+            last_gas_before_opcode: None,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -390,7 +402,12 @@ impl<Node: FullNodeComponents> Tracer<Node> {
 impl<Node: FullNodeComponents> Tracer<Node> {
     /// Recover public key from transaction signature (unused in Firehose 3.0)
     #[allow(dead_code)]
-    fn recover_public_key(&self, tx: &TransactionSigned, signature: &Signature, hash: B256) -> Vec<u8> {
+    fn recover_public_key(
+        &self,
+        tx: &TransactionSigned,
+        signature: &Signature,
+        hash: B256,
+    ) -> Vec<u8> {
         use alloy_consensus::transaction::SignableTransaction;
 
         // Get the signature hash for this transaction
@@ -403,7 +420,10 @@ impl<Node: FullNodeComponents> Tracer<Node> {
                 public_key.to_sec1_bytes()[1..].to_vec()
             }
             Err(_) => {
-                firehose_debug!("failed to recover public key for transaction {}", HexView(hash.as_slice()));
+                firehose_debug!(
+                    "failed to recover public key for transaction {}",
+                    HexView(hash.as_slice())
+                );
                 Vec::new()
             }
         }
@@ -519,6 +539,79 @@ impl<Node: FullNodeComponents> Tracer<Node> {
 
 // Inspector callback handlers
 impl<Node: FullNodeComponents> Tracer<Node> {
+    /// EVM step, called BEFORE each opcode execution
+    pub fn on_step<CTX>(
+        &mut self,
+        interp: &mut reth::revm::revm::interpreter::Interpreter<
+            reth::revm::revm::interpreter::interpreter::EthInterpreter,
+        >,
+        context: &mut CTX,
+    ) where
+        CTX: reth::revm::revm::context_interface::ContextTr,
+        CTX::Journal: reth::revm::revm::inspector::JournalExt,
+    {
+        // Track journal for future state changes
+        self.last_journal_len = context.journal_ref().journal().len();
+
+        // Save gas BEFORE opcode executes (for gas tracking)
+        if !self.call_stack.is_empty() {
+            let opcode = interp.bytecode.opcode();
+            use reth::revm::revm::bytecode::opcode;
+
+            // Track opcodes that cause gas changes we need to record
+            if opcode == opcode::CALLDATACOPY {
+                self.last_opcode = Some(opcode);
+                self.last_gas_before_opcode = Some(interp.gas.remaining());
+            }
+        }
+    }
+
+    /// EVM step end, called AFTER each opcode execution
+    pub fn on_step_end<CTX>(
+        &mut self,
+        interp: &mut reth::revm::revm::interpreter::Interpreter<
+            reth::revm::revm::interpreter::interpreter::EthInterpreter,
+        >,
+        _context: &mut CTX,
+    ) where
+        CTX: reth::revm::revm::context_interface::ContextTr,
+    {
+        // Record gas change if we tracked an opcode
+        if let (Some(last_opcode), Some(old_gas)) = (self.last_opcode, self.last_gas_before_opcode)
+        {
+            let new_gas = interp.gas.remaining();
+            let cost = old_gas.saturating_sub(new_gas);
+
+            if cost > 0 {
+                use crate::pb::sf::ethereum::r#type::v2::{GasChange, gas_change};
+                use reth::revm::revm::bytecode::opcode;
+
+                let reason = if last_opcode == opcode::CALLDATACOPY {
+                    gas_change::Reason::CallDataCopy
+                } else {
+                    // Clear and return
+                    self.last_opcode = None;
+                    self.last_gas_before_opcode = None;
+                    return;
+                };
+
+                // Add gas change to current call
+                if let Some(root_call) = self.call_stack.last_mut() {
+                    root_call.gas_changes.push(GasChange {
+                        old_value: old_gas,
+                        new_value: new_gas,
+                        ordinal: self.block_ordinal.next(),
+                        reason: reason as i32,
+                    });
+                }
+            }
+
+            // Clear tracking
+            self.last_opcode = None;
+            self.last_gas_before_opcode = None;
+        }
+    }
+
     /// CALL* operation starts
     pub fn on_call_enter(
         &mut self,
@@ -583,6 +676,17 @@ impl<Node: FullNodeComponents> Tracer<Node> {
         // Set begin_ordinal after state changes
         call.begin_ordinal = self.block_ordinal.next();
 
+        // Add CALL_INITIAL_BALANCE for root call
+        if is_root_call && gas_limit > 0 {
+            use crate::pb::sf::ethereum::r#type::v2::{GasChange, gas_change};
+            call.gas_changes.push(GasChange {
+                old_value: 0,
+                new_value: gas_limit,
+                ordinal: self.block_ordinal.next(),
+                reason: gas_change::Reason::CallInitialBalance as i32,
+            });
+        }
+
         self.call_stack.push(call);
 
         firehose_debug!(
@@ -594,13 +698,62 @@ impl<Node: FullNodeComponents> Tracer<Node> {
         );
     }
 
-    fn populate_root_call_state_changes(&mut self, call: &mut Call, from: Address, _to: Address, _value: U256) {
-        use crate::pb::sf::ethereum::r#type::v2::{BalanceChange, GasChange, NonceChange, balance_change, gas_change};
+    // temporary
+    fn calculate_intrinsic_gas(&self, input: &[u8]) -> u64 {
+        let mut gas = 21000u64;
+        for &byte in input {
+            gas += if byte == 0 { 4 } else { 16 };
+        }
+        gas
+    }
 
-        let trx = self.current_transaction.as_ref().expect("transaction must be active");
-        let gas_price = trx.gas_price.as_ref().and_then(|gp| {
-            if gp.bytes.is_empty() { None } else { Some(U256::try_from_be_slice(&gp.bytes).unwrap_or_default()) }
-        }).unwrap_or_default();
+        // temporary
+    fn calculate_tx_data_floor_gas(&self, input: &[u8]) -> Option<u64> {
+        const TX_GAS: u64 = 21_000;
+        const TOKENS_PER_NON_ZERO: u64 = 4;
+        const COST_FLOOR_PER_TOKEN: u64 = 10;
+
+        let zero_bytes = input.iter().filter(|&&b| b == 0).count() as u64;
+        let non_zero_bytes = (input.len() as u64).saturating_sub(zero_bytes);
+
+        let non_zero_tokens = non_zero_bytes.checked_mul(TOKENS_PER_NON_ZERO)?;
+        let tokens = non_zero_tokens.checked_add(zero_bytes)?;
+        let extra_cost = tokens.checked_mul(COST_FLOOR_PER_TOKEN)?;
+
+        TX_GAS.checked_add(extra_cost)
+    }
+
+    // temporary  
+    fn is_prague_active(&self) -> bool {
+        true
+    }
+
+    fn populate_root_call_state_changes(
+        &mut self,
+        call: &mut Call,
+        from: Address,
+        _to: Address,
+        _value: U256,
+    ) {
+        use crate::pb::sf::ethereum::r#type::v2::{
+            BalanceChange, GasChange, NonceChange, balance_change, gas_change,
+        };
+
+        let trx = self
+            .current_transaction
+            .as_ref()
+            .expect("transaction must be active");
+        let gas_price = trx
+            .gas_price
+            .as_ref()
+            .and_then(|gp| {
+                if gp.bytes.is_empty() {
+                    None
+                } else {
+                    Some(U256::try_from_be_slice(&gp.bytes).unwrap_or_default())
+                }
+            })
+            .unwrap_or_default();
         let gas_limit = trx.gas_limit;
 
         call.gas_changes.push(GasChange {
@@ -621,9 +774,10 @@ impl<Node: FullNodeComponents> Tracer<Node> {
             });
         }
 
+        let intrinsic_gas = self.calculate_intrinsic_gas(&call.input);
         call.gas_changes.push(GasChange {
             old_value: gas_limit,
-            new_value: gas_limit - 21000,
+            new_value: gas_limit - intrinsic_gas,
             ordinal: self.block_ordinal.next(),
             reason: gas_change::Reason::IntrinsicGas as i32,
         });
@@ -637,26 +791,27 @@ impl<Node: FullNodeComponents> Tracer<Node> {
     }
 
     fn add_post_execution_state_changes(&mut self, trx: &mut TransactionTrace) {
-        use crate::pb::sf::ethereum::r#type::v2::{BalanceChange, GasChange, balance_change, gas_change};
+        use crate::pb::sf::ethereum::r#type::v2::{
+            BalanceChange, GasChange, balance_change, gas_change,
+        };
 
         if let Some(root_call) = trx.calls.first_mut() {
             let from = Address::from_slice(&trx.from);
             let to = Address::from_slice(&root_call.address);
-            let gas_price = trx.gas_price.as_ref().and_then(|gp| {
-                if gp.bytes.is_empty() { None } else { Some(U256::try_from_be_slice(&gp.bytes).unwrap_or_default()) }
-            }).unwrap_or_default();
+            let gas_price = trx
+                .gas_price
+                .as_ref()
+                .and_then(|gp| {
+                    if gp.bytes.is_empty() {
+                        None
+                    } else {
+                        Some(U256::try_from_be_slice(&gp.bytes).unwrap_or_default())
+                    }
+                })
+                .unwrap_or_default();
 
             let gas_limit = root_call.gas_limit;
             let gas_used = root_call.gas_consumed;
-
-            if gas_limit > 0 && gas_limit > gas_used {
-                root_call.gas_changes.push(GasChange {
-                    old_value: 0,
-                    new_value: gas_limit,
-                    ordinal: self.block_ordinal.next(),
-                    reason: gas_change::Reason::CallInitialBalance as i32,
-                });
-            }
 
             if let Some(value_bigint) = &root_call.value {
                 if !value_bigint.bytes.is_empty() {
@@ -695,20 +850,50 @@ impl<Node: FullNodeComponents> Tracer<Node> {
                 });
             }
 
-            if gas_limit > 0 && gas_limit > gas_used {
+            // Gas returned from call
+            let call_gas_returned = if gas_limit > gas_used {
+                gas_limit - gas_used
+            } else {
+                0
+            };
+
+            if call_gas_returned > 0 {
                 root_call.gas_changes.push(GasChange {
-                    old_value: gas_limit - gas_used,
+                    old_value: call_gas_returned,
                     new_value: 0,
                     ordinal: self.block_ordinal.next(),
                     reason: gas_change::Reason::CallLeftOverReturned as i32,
                 });
             }
 
+            // Set endOrdinal after CALL_LEFT_OVER_RETURNED, before TX_DATA_FLOOR
             root_call.end_ordinal = self.block_ordinal.next();
 
-            let gas_refund = trx.gas_limit - trx.gas_used;
-            if gas_refund > 0 {
-                let refund_value = U256::from(gas_refund) * gas_price;
+            // EIP-7623: Data-heavy transactions pay the floor gas
+            let mut final_gas_refund = call_gas_returned;
+
+            if self.is_prague_active() {
+                if let Some(floor_data_gas) = self.calculate_tx_data_floor_gas(&trx.input) {
+                    if floor_data_gas <= trx.gas_limit {
+                        let gas_used_before_floor = trx.gas_limit.saturating_sub(call_gas_returned);
+                        if gas_used_before_floor < floor_data_gas {
+                            let new_gas_remaining = trx.gas_limit - floor_data_gas;
+                            if new_gas_remaining < final_gas_refund {
+                                root_call.gas_changes.push(GasChange {
+                                    old_value: final_gas_refund,
+                                    new_value: new_gas_remaining,
+                                    ordinal: self.block_ordinal.next(),
+                                    reason: gas_change::Reason::TxDataFloor as i32,
+                                });
+                                final_gas_refund = new_gas_remaining;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if final_gas_refund > 0 {
+                let refund_value = U256::from(final_gas_refund) * gas_price;
                 if refund_value > U256::ZERO {
                     root_call.balance_changes.push(BalanceChange {
                         address: from.to_vec(),
@@ -720,7 +905,7 @@ impl<Node: FullNodeComponents> Tracer<Node> {
                 }
 
                 root_call.gas_changes.push(GasChange {
-                    old_value: gas_refund,
+                    old_value: final_gas_refund,
                     new_value: 0,
                     ordinal: self.block_ordinal.next(),
                     reason: gas_change::Reason::TxLeftOverReturned as i32,
@@ -734,9 +919,17 @@ impl<Node: FullNodeComponents> Tracer<Node> {
 
         if let Some(root_call) = trx.calls.first_mut() {
             let trx_gas_used = trx.gas_used;
-            let gas_price = trx.gas_price.as_ref().and_then(|gp| {
-                if gp.bytes.is_empty() { None } else { Some(U256::try_from_be_slice(&gp.bytes).unwrap_or_default()) }
-            }).unwrap_or_default();
+            let gas_price = trx
+                .gas_price
+                .as_ref()
+                .and_then(|gp| {
+                    if gp.bytes.is_empty() {
+                        None
+                    } else {
+                        Some(U256::try_from_be_slice(&gp.bytes).unwrap_or_default())
+                    }
+                })
+                .unwrap_or_default();
 
             if let Some(block) = &self.current_block {
                 if let Some(header) = &block.header {

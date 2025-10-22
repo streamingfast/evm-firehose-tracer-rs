@@ -1,6 +1,6 @@
 use crate::firehose::BLOCK_VERSION;
 use crate::pb::sf::ethereum::r#type::v2::block::DetailLevel;
-use crate::pb::sf::ethereum::r#type::v2::{BigInt, Block, BlockHeader, TransactionReceipt, Log};
+use crate::pb::sf::ethereum::r#type::v2::{BigInt, Block, BlockHeader, Log, TransactionReceipt};
 use crate::prelude::*;
 use alloy_consensus::BlockHeader as ConsensusBlockHeader;
 use alloy_primitives::{FixedBytes, Sealable, U256};
@@ -109,7 +109,10 @@ fn create_block_header_protobuf<H: ConsensusBlockHeader>(hash: Vec<u8>, header: 
             .parent_beacon_block_root()
             .map(|root| root.to_vec())
             .unwrap_or_default(),
-        requests_hash: header.requests_hash().map(|h| h.to_vec()).unwrap_or_default(),
+        requests_hash: header
+            .requests_hash()
+            .map(|h| h.to_vec())
+            .unwrap_or_default(),
 
         #[allow(deprecated)]
         total_difficulty: Some(BigInt { bytes: Vec::new() }),
@@ -141,7 +144,9 @@ pub(super) fn big_int_from_u256(value: U256) -> BigInt {
 }
 
 pub fn u256_trimmed_be_bytes(v: U256) -> Vec<u8> {
-    if v.is_zero() { return Vec::new(); }
+    if v.is_zero() {
+        return Vec::new();
+    }
     let mut b = v.to_be_bytes_vec();
     // strip leading zeros
     let first_non_zero = b.iter().position(|&x| x != 0).unwrap_or(b.len());
