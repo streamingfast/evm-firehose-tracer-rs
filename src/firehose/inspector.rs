@@ -55,6 +55,14 @@ where
 
     /// CALL, CALLCODE, DELEGATECALL, or STATICCALL is made
     fn call(&mut self, context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
+        use reth_tracing::tracing::info;
+        info!(target: "firehose:inspector",
+            caller = ?inputs.caller,
+            target = ?inputs.target_address,
+            in_system_call = self.tracer.in_system_call,
+            "call() hook triggered"
+        );
+
         let call_type = Self::map_call_type(&inputs.scheme);
 
         // Extract the value from CallValue enum
@@ -91,11 +99,30 @@ where
 
     /// CALL* operation completes
     fn call_end(&mut self, _context: &mut CTX, _inputs: &CallInputs, outcome: &mut CallOutcome) {
+        use reth::revm::revm::interpreter::InstructionResult;
+
         let success = outcome.result.is_ok();
+        let (is_revert, failure_reason) = if success {
+            (false, String::new())
+        } else {
+            // Only REVERT instruction is considered a revert
+            let is_revert = matches!(outcome.result.result, InstructionResult::Revert);
+
+            // Format failure reason to match Geth's format
+            let reason = match outcome.result.result {
+                InstructionResult::Revert => "execution reverted".to_string(),
+                InstructionResult::InvalidFEOpcode => "invalid opcode: INVALID".to_string(),
+                other => format!("{:?}", other),
+            };
+            (is_revert, reason)
+        };
+
         self.tracer.on_call_exit(
             outcome.result.output.clone(),
             outcome.result.gas.spent(),
             success,
+            is_revert,
+            failure_reason,
         );
     }
 
@@ -123,25 +150,44 @@ where
         _inputs: &CreateInputs,
         outcome: &mut CreateOutcome,
     ) {
+        use reth::revm::revm::interpreter::InstructionResult;
+
         let created_address = outcome.address.unwrap_or_default();
         let success = outcome.result.is_ok();
+        let (is_revert, failure_reason) = if success {
+            (false, String::new())
+        } else {
+            // Only REVERT instruction is considered a revert
+            let is_revert = matches!(outcome.result.result, InstructionResult::Revert);
+
+            // Format failure reason to match Geth's format
+            let reason = match outcome.result.result {
+                InstructionResult::Revert => "execution reverted".to_string(),
+                InstructionResult::InvalidFEOpcode => "invalid opcode: INVALID".to_string(),
+                other => format!("{:?}", other),
+            };
+            (is_revert, reason)
+        };
 
         self.tracer.on_create_exit(
             outcome.result.output.clone(),
             outcome.result.gas.spent(),
             success,
             created_address,
+            is_revert,
+            failure_reason,
         );
     }
 
     /// LOG operation is executed
     fn log(
         &mut self,
-        _interp: &mut Interpreter<EthInterpreter>,
+        interp: &mut Interpreter<EthInterpreter>,
         _context: &mut CTX,
         log: AlloyLog,
     ) {
-        self.tracer.on_log(log);
+        let current_gas = interp.gas.remaining();
+        self.tracer.on_log(log, current_gas);
     }
 
     /// SELFDESTRUCT is executed

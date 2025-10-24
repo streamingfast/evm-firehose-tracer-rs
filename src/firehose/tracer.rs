@@ -5,7 +5,7 @@ use alloy_primitives::{Address, B256, Bytes, Log as AlloyLog, Signature, U256};
 use reth::primitives::TransactionSigned;
 use reth::primitives::transaction::SignedTransaction;
 use reth::revm::revm::inspector::JournalExt;
-use reth::revm::revm::interpreter::interpreter_types::Jumps;
+use reth::revm::revm::interpreter::interpreter_types::{Jumps, MemoryTr};
 
 use super::{Config, HexView, finality::FinalityStatus, mapper, ordinal::Ordinal, printer};
 use crate::firehose::PROTOCOL_VERSION;
@@ -28,11 +28,12 @@ pub struct Tracer<Node: FullNodeComponents> {
     // Transaction state
     pub(super) current_transaction: Option<TransactionTrace>,
     transaction_log_index: u32,
-    in_system_call: bool,
+    block_log_index: u32,
+    pub in_system_call: bool,
     previous_cumulative_gas_used: u64,
 
     // Call stack tracking
-    call_stack: Vec<Call>,
+    pub(crate) call_stack: Vec<Call>,
 
     // Journal tracking for state changes
     last_journal_len: usize,
@@ -40,6 +41,11 @@ pub struct Tracer<Node: FullNodeComponents> {
     // Opcode tracking for gas changes
     last_opcode: Option<u8>,
     last_gas_before_opcode: Option<u64>,
+    pending_log_gas_change: Option<(u64, u64)>,
+
+    // Keccak preimage tracking, stores potential preimages temporarily
+    // Map of hash -> preimage, only saved to call if hash appears in event topics
+    pending_keccak_preimages: std::collections::HashMap<String, Vec<u8>>,
 
     _phantom: std::marker::PhantomData<Node>,
 }
@@ -55,12 +61,15 @@ impl<Node: FullNodeComponents> Tracer<Node> {
             block_is_genesis: false,
             current_transaction: None,
             transaction_log_index: 0,
+            block_log_index: 0,
             in_system_call: false,
             previous_cumulative_gas_used: 0,
             call_stack: Vec::new(),
             last_journal_len: 0,
             last_opcode: None,
             last_gas_before_opcode: None,
+            pending_log_gas_change: None,
+            pending_keccak_preimages: std::collections::HashMap::new(),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -232,6 +241,7 @@ impl<Node: FullNodeComponents> Tracer<Node> {
         self.block_ordinal.reset();
         self.finality_status.reset();
         self.block_is_genesis = false;
+        self.block_log_index = 0;
         self.previous_cumulative_gas_used = 0;
 
         // TODO: Add other block state resets when implemented:
@@ -285,6 +295,62 @@ impl<Node: FullNodeComponents> Tracer<Node> {
 
             trx.calls = std::mem::take(&mut self.call_stack);
 
+            // Check if root call reverted or failed to set transaction status
+            let root_call_reverted = trx.calls.first()
+                .map(|call| call.status_reverted)
+                .unwrap_or(false);
+            let root_call_failed = trx.calls.first()
+                .map(|call| call.status_failed)
+                .unwrap_or(false);
+
+            // Set proper transaction status
+            use crate::pb::sf::ethereum::r#type::v2::TransactionTraceStatus;
+            if !receipt.status() {
+                trx.status = if root_call_reverted {
+                    TransactionTraceStatus::Reverted as i32
+                } else {
+                    TransactionTraceStatus::Failed as i32
+                };
+            } else {
+                trx.status = TransactionTraceStatus::Succeeded as i32;
+            }
+
+            // Collect all logs from calls and add to receipt
+            // According to Ethereum rules:
+            // If the transaction failed (receipt.status=false), NO logs are included
+            // If a sub-call reverted/failed, only that sub-call's logs (and descendants) are excluded
+            if let Some(receipt_obj) = &mut trx.receipt {
+                // If transaction failed, exclude ALL logs
+                if !receipt.status() {
+                    receipt_obj.logs = Vec::new();
+                } else {
+                    // Transaction succeeded - collect logs, excluding reverted/failed sub-calls
+                    fn collect_logs_recursive(call: &Call, calls: &[Call], logs: &mut Vec<crate::pb::sf::ethereum::r#type::v2::Log>) {
+                        // If this call reverted or failed, skip its logs and all child logs
+                        if call.status_reverted || call.status_failed {
+                            return;
+                        }
+
+                        // Add this call's logs
+                        logs.extend(call.logs.iter().cloned());
+
+                        // Recursively collect logs from child calls
+                        for child_call in calls {
+                            if child_call.parent_index == call.index {
+                                collect_logs_recursive(child_call, calls, logs);
+                            }
+                        }
+                    }
+
+                    // Start from root call
+                    if let Some(root_call) = trx.calls.first() {
+                        let mut all_logs = Vec::new();
+                        collect_logs_recursive(root_call, &trx.calls, &mut all_logs);
+                        receipt_obj.logs = all_logs;
+                    }
+                }
+            }
+
             self.add_post_execution_state_changes(&mut trx);
             self.add_miner_reward(&mut trx);
 
@@ -331,6 +397,123 @@ impl<Node: FullNodeComponents> Tracer<Node> {
         let tx_ref = unsafe { &*(tx as *const SignedTx<Node> as *const TransactionSigned) };
         self.on_tx_start_inner(tx_ref, hash, from, to);
     }
+
+    /// Starts capturing a system call
+    pub fn on_system_call_start(&mut self) {
+        firehose_debug!("starting system call");
+        self.in_system_call = true;
+        self.call_stack.clear();
+    }
+
+    /// Ends capturing a system call and adds it to the block's system_calls
+    pub fn on_system_call_end(&mut self) {
+        firehose_debug!("ending system call");
+
+        if let Some(block) = &mut self.current_block {
+            // Move calls from the call stack to the block's system_calls
+            let system_calls = std::mem::take(&mut self.call_stack);
+            firehose_debug!("adding {} system calls to block", system_calls.len());
+            block.system_calls.extend(system_calls);
+        }
+
+        self.in_system_call = false;
+        self.call_stack.clear();
+    }
+
+    /// Manually create a system call entry from execution result
+    /// This is needed because transact_system_call() doesn't trigger inspector hooks
+    pub fn on_system_call_enter<H>(
+        &mut self,
+        caller: Address,
+        address: Address,
+        input: &[u8],
+        result: &reth::revm::context::result::ResultAndState<H>,
+    ) {
+        use crate::pb::sf::ethereum::r#type::v2::{
+            CallType, BigInt, GasChange, StorageChange, gas_change,
+        };
+        use reth::revm::context::result::ExecutionResult;
+
+        // Extract gas + output + success from REVM result
+        let (gas_used, output, is_success) = match &result.result {
+            ExecutionResult::Success { gas_used, output, .. } => (*gas_used, output.data().to_vec(), true),
+            ExecutionResult::Revert  { gas_used, output }     => (*gas_used, output.to_vec(), false),
+            ExecutionResult::Halt    { gas_used, .. }         => (*gas_used, Vec::new(), false),
+        };
+
+        // We model system calls with a fixed 30M gas allowance
+        let gas_limit: u64 = 30_000_000;
+        let gas_left = gas_limit.saturating_sub(gas_used);
+
+        // Build the Call
+        let mut call = Call {
+            call_type: CallType::Call as i32,
+            caller: caller.to_vec(),
+            address: address.to_vec(),
+            input: input.to_vec(),
+            value: Some(BigInt { bytes: Vec::new() }),
+            gas_limit,
+            gas_consumed: gas_used,
+            return_data: output,
+            status_failed: !is_success,
+            status_reverted: matches!(result.result, ExecutionResult::Revert { .. }),
+            state_reverted: !is_success,
+            failure_reason: String::new(),
+            index: 0,
+            parent_index: 0,
+            depth: 0,
+            begin_ordinal: self.block_ordinal.next(),
+            end_ordinal: 0,
+            ..Default::default()
+        };
+
+        call.gas_changes.push(GasChange {
+            old_value: 0,
+            new_value: gas_limit,
+            ordinal: self.block_ordinal.next(),
+            reason: gas_change::Reason::CallInitialBalance as i32,
+        });
+
+        if gas_left > 0 {
+            call.gas_changes.push(GasChange {
+                old_value: gas_left,
+                new_value: 0,
+                ordinal: self.block_ordinal.next(),
+                reason: gas_change::Reason::CallLeftOverReturned as i32,
+            });
+        } else {
+            call.gas_changes.push(GasChange {
+                old_value: 0,
+                new_value: 0,
+                ordinal: self.block_ordinal.next(),
+                reason: gas_change::Reason::CallLeftOverReturned as i32,
+            });
+        }
+
+        // Extract real storage changes from result.state
+        // result.state is a HashMap<Address, Account>, where Account.storage is HashMap<U256, EvmStorageSlot>
+        if let Some(account) = result.state.get(&address) {
+            for (storage_key, storage_slot) in &account.storage {
+                // Only record changes where original_value != present_value
+                if storage_slot.is_changed() {
+                    call.storage_changes.push(StorageChange {
+                        address: address.to_vec(),
+                        key: storage_key.to_be_bytes::<32>().to_vec(),
+                        old_value: storage_slot.original_value.to_be_bytes::<32>().to_vec(),
+                        new_value: storage_slot.present_value.to_be_bytes::<32>().to_vec(),
+                        ordinal: self.block_ordinal.next(),
+                    });
+                }
+            }
+        }
+
+        // close the call
+        call.end_ordinal = self.block_ordinal.next();
+
+        // push to the temporary stack; on_system_call_end() will flush to block.system_calls
+        self.call_stack.push(call);
+    }
+
 
     /// on_tx_start_inner is used internally in two places, in the normal "tracer" and in the "OnGenesisBlock",
     /// we manually pass some override to the `tx` because genesis block has a different way of creating
@@ -559,9 +742,45 @@ impl<Node: FullNodeComponents> Tracer<Node> {
             use reth::revm::revm::bytecode::opcode;
 
             // Track opcodes that cause gas changes we need to record
-            if opcode == opcode::CALLDATACOPY {
+            if opcode == opcode::CALLDATACOPY
+                || opcode == opcode::CODECOPY
+                || opcode == opcode::EXTCODECOPY
+                || opcode == opcode::LOG0
+                || opcode == opcode::LOG1
+                || opcode == opcode::LOG2
+                || opcode == opcode::LOG3
+                || opcode == opcode::LOG4
+            {
                 self.last_opcode = Some(opcode);
                 self.last_gas_before_opcode = Some(interp.gas.remaining());
+            }
+
+            // Track KECCAK256 to capture preimages for event topics
+            if opcode == opcode::KECCAK256 {
+                // Get the memory offset and size from the stack
+                if let Ok(offset) = interp.stack.peek(0) {
+                    if let Ok(size) = interp.stack.peek(1) {
+                        let offset_usize = offset.saturating_to::<usize>();
+                        let size_usize = size.saturating_to::<usize>();
+
+                        // Read the data from memory that will be hashed
+                        // Store ALL keccak preimages temporarily we'll only save the ones
+                        // that appear in event topics when we process the LOG
+                        if size_usize > 0 && size_usize <= 1024 * 1024 {
+                            let memory = &interp.memory;
+                            if offset_usize + size_usize <= memory.len() {
+                                let data = memory.slice(offset_usize..offset_usize + size_usize);
+
+                                // Calculate hash and store preimage temporarily
+                                use alloy_primitives::keccak256;
+                                let hash = keccak256(&*data);
+                                let hash_hex = hex::encode(hash.as_slice());
+
+                                self.pending_keccak_preimages.insert(hash_hex, (*data).to_vec());
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -572,9 +791,10 @@ impl<Node: FullNodeComponents> Tracer<Node> {
         interp: &mut reth::revm::revm::interpreter::Interpreter<
             reth::revm::revm::interpreter::interpreter::EthInterpreter,
         >,
-        _context: &mut CTX,
+        context: &mut CTX,
     ) where
         CTX: reth::revm::revm::context_interface::ContextTr,
+        CTX::Journal: reth::revm::revm::inspector::JournalExt,
     {
         // Record gas change if we tracked an opcode
         if let (Some(last_opcode), Some(old_gas)) = (self.last_opcode, self.last_gas_before_opcode)
@@ -586,8 +806,24 @@ impl<Node: FullNodeComponents> Tracer<Node> {
                 use crate::pb::sf::ethereum::r#type::v2::{GasChange, gas_change};
                 use reth::revm::revm::bytecode::opcode;
 
+                let is_log_opcode = last_opcode == opcode::LOG0
+                    || last_opcode == opcode::LOG1
+                    || last_opcode == opcode::LOG2
+                    || last_opcode == opcode::LOG3
+                    || last_opcode == opcode::LOG4;
+
+                if is_log_opcode {
+                    // LOG opcodes are handled in on_log() where we have access to current gas
+                    // Just keep the saved gas for on_log() to use, don't process here
+                    return;
+                }
+
                 let reason = if last_opcode == opcode::CALLDATACOPY {
                     gas_change::Reason::CallDataCopy
+                } else if last_opcode == opcode::CODECOPY {
+                    gas_change::Reason::CodeCopy
+                } else if last_opcode == opcode::EXTCODECOPY {
+                    gas_change::Reason::ExtCodeCopy
                 } else {
                     // Clear and return
                     self.last_opcode = None;
@@ -595,7 +831,7 @@ impl<Node: FullNodeComponents> Tracer<Node> {
                     return;
                 };
 
-                // Add gas change to current call
+                // Add gas change to current call immediately for non-LOG opcodes
                 if let Some(root_call) = self.call_stack.last_mut() {
                     root_call.gas_changes.push(GasChange {
                         old_value: old_gas,
@@ -610,6 +846,9 @@ impl<Node: FullNodeComponents> Tracer<Node> {
             self.last_opcode = None;
             self.last_gas_before_opcode = None;
         }
+
+        // Extract state changes from journal entries added during this opcode
+        self.extract_journal_entries(context);
     }
 
     /// CALL* operation starts
@@ -623,13 +862,15 @@ impl<Node: FullNodeComponents> Tracer<Node> {
         call_type: i32,
     ) {
         let depth = self.call_stack.len() as u32;
+        // parent_index should be the INDEX of the parent call (not stack position)
+        // Root call has index=1, so first nested call has parent_index=1
         let parent_index = if depth > 0 {
-            self.call_stack.len() as u32 - 1
+            self.call_stack.last().map(|c| c.index).unwrap_or(0)
         } else {
             0
         };
 
-        // For root call (depth 0), we need to add transaction-level state changes
+        // For root call, we need to add transaction-level state changes
         let is_root_call = depth == 0;
 
         let mut call = Call {
@@ -676,8 +917,8 @@ impl<Node: FullNodeComponents> Tracer<Node> {
         // Set begin_ordinal after state changes
         call.begin_ordinal = self.block_ordinal.next();
 
-        // Add CALL_INITIAL_BALANCE for root call
-        if is_root_call && gas_limit > 0 {
+        // Add CALL_INITIAL_BALANCE for all calls (not just root)
+        if gas_limit > 0 {
             use crate::pb::sf::ethereum::r#type::v2::{GasChange, gas_change};
             call.gas_changes.push(GasChange {
                 old_value: 0,
@@ -813,6 +1054,9 @@ impl<Node: FullNodeComponents> Tracer<Node> {
             let gas_limit = root_call.gas_limit;
             let gas_used = root_call.gas_consumed;
 
+            // Check if transaction failed
+            let tx_failed = root_call.status_failed && !root_call.status_reverted;
+
             if let Some(value_bigint) = &root_call.value {
                 if !value_bigint.bytes.is_empty() {
                     let value = U256::try_from_be_slice(&value_bigint.bytes).unwrap_or_default();
@@ -844,72 +1088,78 @@ impl<Node: FullNodeComponents> Tracer<Node> {
             if is_precompiled && gas_used > 0 {
                 root_call.gas_changes.push(GasChange {
                     old_value: gas_limit,
-                    new_value: gas_limit - gas_used,
+                    new_value: gas_limit.saturating_sub(gas_used),
                     ordinal: self.block_ordinal.next(),
                     reason: gas_change::Reason::PrecompiledContract as i32,
                 });
             }
 
-            // Gas returned from call
-            let call_gas_returned = if gas_limit > gas_used {
-                gas_limit - gas_used
-            } else {
-                0
-            };
+            // Gas returned from call or failed execution
+            let call_gas_returned = gas_limit.saturating_sub(gas_used);
 
             if call_gas_returned > 0 {
+                // For failed transactions
+                let reason = if tx_failed {
+                    gas_change::Reason::FailedExecution
+                } else {
+                    gas_change::Reason::CallLeftOverReturned
+                };
+
                 root_call.gas_changes.push(GasChange {
                     old_value: call_gas_returned,
                     new_value: 0,
                     ordinal: self.block_ordinal.next(),
-                    reason: gas_change::Reason::CallLeftOverReturned as i32,
+                    reason: reason as i32,
                 });
             }
 
-            // Set endOrdinal after CALL_LEFT_OVER_RETURNED, before TX_DATA_FLOOR
+            // Set endOrdinal after gas changes
             root_call.end_ordinal = self.block_ordinal.next();
 
-            // EIP-7623: Data-heavy transactions pay the floor gas
-            let mut final_gas_refund = call_gas_returned;
+            // Only process gas refunds for successful transactions (failed transactions consume all gas)
+            if !tx_failed {
+                // EIP-7623: Data-heavy transactions pay the floor gas
+                let mut final_gas_refund = call_gas_returned;
 
-            if self.is_prague_active() {
-                if let Some(floor_data_gas) = self.calculate_tx_data_floor_gas(&trx.input) {
-                    if floor_data_gas <= trx.gas_limit {
-                        let gas_used_before_floor = trx.gas_limit.saturating_sub(call_gas_returned);
-                        if gas_used_before_floor < floor_data_gas {
-                            let new_gas_remaining = trx.gas_limit - floor_data_gas;
-                            if new_gas_remaining < final_gas_refund {
-                                root_call.gas_changes.push(GasChange {
-                                    old_value: final_gas_refund,
-                                    new_value: new_gas_remaining,
-                                    ordinal: self.block_ordinal.next(),
-                                    reason: gas_change::Reason::TxDataFloor as i32,
-                                });
-                                final_gas_refund = new_gas_remaining;
+                if self.is_prague_active() {
+                    if let Some(floor_data_gas) = self.calculate_tx_data_floor_gas(&trx.input) {
+                        if floor_data_gas <= trx.gas_limit {
+                            let gas_used_before_floor = trx.gas_limit.saturating_sub(call_gas_returned);
+                            if gas_used_before_floor < floor_data_gas {
+                                let new_gas_remaining = trx.gas_limit - floor_data_gas;
+                                if new_gas_remaining < final_gas_refund {
+                                    root_call.gas_changes.push(GasChange {
+                                        old_value: final_gas_refund,
+                                        new_value: new_gas_remaining,
+                                        ordinal: self.block_ordinal.next(),
+                                        reason: gas_change::Reason::TxDataFloor as i32,
+                                    });
+                                    final_gas_refund = new_gas_remaining;
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            if final_gas_refund > 0 {
-                let refund_value = U256::from(final_gas_refund) * gas_price;
-                if refund_value > U256::ZERO {
-                    root_call.balance_changes.push(BalanceChange {
-                        address: from.to_vec(),
-                        old_value: Some(mapper::big_int_from_u256(U256::ZERO)),
-                        new_value: Some(mapper::big_int_from_u256(refund_value)),
+                if final_gas_refund > 0 {
+                    let refund_value = U256::from(final_gas_refund) * gas_price;
+                    if refund_value > U256::ZERO {
+                        root_call.balance_changes.push(BalanceChange {
+                            address: from.to_vec(),
+                            old_value: Some(mapper::big_int_from_u256(U256::ZERO)),
+                            new_value: Some(mapper::big_int_from_u256(refund_value)),
+                            ordinal: self.block_ordinal.next(),
+                            reason: balance_change::Reason::GasRefund as i32,
+                        });
+                    }
+
+                    root_call.gas_changes.push(GasChange {
+                        old_value: final_gas_refund,
+                        new_value: 0,
                         ordinal: self.block_ordinal.next(),
-                        reason: balance_change::Reason::GasRefund as i32,
+                        reason: gas_change::Reason::TxLeftOverReturned as i32,
                     });
                 }
-
-                root_call.gas_changes.push(GasChange {
-                    old_value: final_gas_refund,
-                    new_value: 0,
-                    ordinal: self.block_ordinal.next(),
-                    reason: gas_change::Reason::TxLeftOverReturned as i32,
-                });
             }
         }
     }
@@ -951,21 +1201,59 @@ impl<Node: FullNodeComponents> Tracer<Node> {
     }
 
     /// CALL* operation completes
-    pub fn on_call_exit(&mut self, output: Bytes, gas_used: u64, success: bool) {
+    pub fn on_call_exit(&mut self, output: Bytes, gas_used: u64, success: bool, is_revert: bool, failure_reason: String) {
         if let Some(mut call) = self.call_stack.pop() {
             call.return_data = output.to_vec();
             call.gas_consumed = gas_used;
             call.status_failed = !success;
+            call.status_reverted = is_revert;
+            // state_reverted: true when state was rolled back
+            // This happens for ANY failure
+            call.state_reverted = !success;
 
+            firehose_debug!(
+                "on_call_exit: success={} is_revert={} state_reverted={} status_reverted={}",
+                success, is_revert, call.state_reverted, call.status_reverted
+            );
+
+            // Parse failure reason to human-readable format
+            if !success {
+                call.failure_reason = if is_revert {
+                    // For reverts, try to decode the error message from return data
+                    if output.len() >= 4 {
+                        // Standard Solidity revert: Error(string)
+                        "execution reverted".to_string()
+                    } else {
+                        "execution reverted".to_string()
+                    }
+                } else {
+                    // Other failures
+                    failure_reason
+                };
+            }
+
+            // Add CALL_LEFT_OVER_RETURNED for nested calls
             if call.depth > 0 {
+                let gas_left = call.gas_limit.saturating_sub(gas_used);
+                if gas_left > 0 {
+                    use crate::pb::sf::ethereum::r#type::v2::{GasChange, gas_change};
+                    call.gas_changes.push(GasChange {
+                        old_value: gas_left,
+                        new_value: 0,
+                        ordinal: self.block_ordinal.next(),
+                        reason: gas_change::Reason::CallLeftOverReturned as i32,
+                    });
+                }
+
                 call.end_ordinal = self.block_ordinal.next();
             }
 
             firehose_debug!(
-                "call_exit: index={} gas_used={} success={}",
+                "call_exit: index={} gas_used={} success={} reverted={}",
                 call.index,
                 gas_used,
-                success
+                success,
+                is_revert
             );
 
             self.call_stack.push(call);
@@ -982,14 +1270,16 @@ impl<Node: FullNodeComponents> Tracer<Node> {
         call_type: i32,
     ) {
         let depth = self.call_stack.len() as u32;
+        // index of the parent call
         let parent_index = if depth > 0 {
-            self.call_stack.len() as u32 - 1
+            self.call_stack.last().map(|c| c.index).unwrap_or(0)
         } else {
             0
         };
 
         let call = Call {
-            index: self.call_stack.len() as u32 + 1, // Index starts from 1
+             // Index starts at 1
+            index: self.call_stack.len() as u32 + 1,
             parent_index,
             depth,
             call_type,
@@ -1037,23 +1327,37 @@ impl<Node: FullNodeComponents> Tracer<Node> {
         gas_used: u64,
         success: bool,
         created_address: Address,
+        is_revert: bool,
+        failure_reason: String,
     ) {
         if let Some(mut call) = self.call_stack.pop() {
             call.address = created_address.to_vec();
             call.return_data = output.to_vec();
             call.gas_consumed = gas_used;
             call.status_failed = !success;
+            call.status_reverted = is_revert;
+            // state_reverted: true when state was rolled back (any failure)
+            call.state_reverted = !success;
+
+            if !success {
+                call.failure_reason = if is_revert {
+                    "execution reverted".to_string()
+                } else {
+                    failure_reason
+                };
+            }
 
             if call.depth > 0 {
                 call.end_ordinal = self.block_ordinal.next();
             }
 
             firehose_debug!(
-                "create_exit: index={} created={} gas_used={} success={}",
+                "create_exit: index={} created={} gas_used={} success={} reverted={}",
                 call.index,
                 HexView(created_address.as_slice()),
                 gas_used,
-                success
+                success,
+                is_revert
             );
 
             self.call_stack.push(call);
@@ -1061,19 +1365,61 @@ impl<Node: FullNodeComponents> Tracer<Node> {
     }
 
     /// LOG operation is executed
-    pub fn on_log(&mut self, log: AlloyLog) {
+    pub fn on_log(&mut self, log: AlloyLog, current_gas: u64) {
         if let Some(call) = self.call_stack.last_mut() {
+            // Record EVENT_LOG gas change BEFORE the log itself
+            // Use the gas saved in on_step and current gas
+            if let Some(old_gas) = self.last_gas_before_opcode {
+                use crate::pb::sf::ethereum::r#type::v2::{GasChange, gas_change};
+
+                let cost = old_gas.saturating_sub(current_gas);
+
+                firehose_debug!(
+                    "on_log: gas change old={} new={} cost={}",
+                    old_gas,
+                    current_gas,
+                    cost
+                );
+
+                if cost > 0 {
+                    call.gas_changes.push(GasChange {
+                        old_value: old_gas,
+                        new_value: current_gas,
+                        ordinal: self.block_ordinal.next(),
+                        reason: gas_change::Reason::EventLog as i32,
+                    });
+                }
+
+                // Clear the saved gas
+                self.last_gas_before_opcode = None;
+                self.last_opcode = None;
+            } else {
+                firehose_debug!("on_log: NO saved gas before opcode!");
+            }
+
+            // save preimages to the call's keccak_preimages
+            for topic in log.topics() {
+                let topic_hex = hex::encode(topic.as_slice());
+                if let Some(preimage) = self.pending_keccak_preimages.get(&topic_hex) {
+                    call.keccak_preimages.insert(
+                        topic_hex.clone(),
+                        hex::encode(preimage),
+                    );
+                }
+            }
+
             let pb_log = crate::pb::sf::ethereum::r#type::v2::Log {
                 address: log.address.to_vec(),
                 topics: log.topics().iter().map(|t| t.to_vec()).collect(),
                 data: log.data.data.to_vec(),
                 index: self.transaction_log_index,
-                block_index: 0, // Will be set at block level
+                block_index: self.block_log_index,
                 ordinal: self.block_ordinal.next(),
             };
 
             call.logs.push(pb_log);
             self.transaction_log_index += 1;
+            self.block_log_index += 1;
 
             firehose_debug!(
                 "log: call_index={} log_index={} topics={}",
@@ -1097,4 +1443,123 @@ impl<Node: FullNodeComponents> Tracer<Node> {
             );
         }
     }
+
+    /// Extract state changes from journal entries
+    fn extract_journal_entries<CTX>(&mut self, context: &mut CTX)
+    where
+        CTX: reth::revm::revm::context_interface::ContextTr,
+        CTX::Journal: reth::revm::revm::inspector::JournalExt,
+    {
+        use crate::pb::sf::ethereum::r#type::v2::{BalanceChange, StorageChange, NonceChange, balance_change};
+        use reth::revm::revm::context_interface::ContextTr as _;
+        use reth::revm::revm::context_interface::JournalTr as _;
+
+        // Collect journal entries to process
+        let entries_to_process: Vec<_> = {
+            let journal = context.journal_ref().journal();
+            let current_len = journal.len();
+
+            if current_len > self.last_journal_len {
+                journal[self.last_journal_len..current_len].to_vec()
+            } else {
+                Vec::new()
+            }
+        };
+
+        // Update journal length tracker
+        let current_len = context.journal_ref().journal().len();
+        self.last_journal_len = current_len;
+
+        // Process collected entries
+        if !entries_to_process.is_empty() {
+            if let Some(call) = self.call_stack.last_mut() {
+                for entry in entries_to_process {
+                    match entry {
+                        reth::revm::JournalEntry::BalanceChange { address, old_balance } => {
+                            // Query current balance from state
+                            let new_balance = context.balance(address)
+                                .map(|load| load.data)
+                                .unwrap_or(U256::ZERO);
+
+                            call.balance_changes.push(BalanceChange {
+                                address: address.to_vec(),
+                                old_value: Some(mapper::big_int_from_u256(old_balance)),
+                                new_value: Some(mapper::big_int_from_u256(new_balance)),
+                                ordinal: self.block_ordinal.next(),
+                                reason: balance_change::Reason::Transfer as i32,
+                            });
+                        }
+
+                        reth::revm::JournalEntry::BalanceTransfer { balance, from, to } => {
+                            // Query actual account balances
+                            let from_balance = context.balance(from)
+                                .map(|load| load.data)
+                                .unwrap_or(U256::ZERO);
+                            let to_balance = context.balance(to)
+                                .map(|load| load.data)
+                                .unwrap_or(U256::ZERO);
+
+                            call.balance_changes.push(BalanceChange {
+                                address: from.to_vec(),
+                                old_value: Some(mapper::big_int_from_u256(from_balance + balance)),
+                                new_value: Some(mapper::big_int_from_u256(from_balance)),
+                                ordinal: self.block_ordinal.next(),
+                                reason: balance_change::Reason::Transfer as i32,
+                            });
+
+                            call.balance_changes.push(BalanceChange {
+                                address: to.to_vec(),
+                                old_value: Some(mapper::big_int_from_u256(to_balance - balance)),
+                                new_value: Some(mapper::big_int_from_u256(to_balance)),
+                                ordinal: self.block_ordinal.next(),
+                                reason: balance_change::Reason::Transfer as i32,
+                            });
+                        }
+
+                        reth::revm::JournalEntry::StorageChanged { address, key, had_value } => {
+                            // key and had_value are U256 (StorageKey and StorageValue are type aliases)
+                            // Get current value from state
+                            let current_value = context.sload(address, key)
+                                .map(|load| load.data)
+                                .unwrap_or(had_value);
+
+                            call.storage_changes.push(StorageChange {
+                                address: address.to_vec(),
+                                key: key.to_be_bytes::<32>().to_vec(),
+                                old_value: had_value.to_be_bytes::<32>().to_vec(),
+                                new_value: current_value.to_be_bytes::<32>().to_vec(),
+                                ordinal: self.block_ordinal.next(),
+                            });
+                        }
+
+                        reth::revm::JournalEntry::NonceChange { address } => {
+                            // Nonce was incremented by 1, load account to get current nonce
+                            let new_nonce = context.journal_mut()
+                                .load_account(address)
+                                .map(|load| load.data.info.nonce)
+                                .unwrap_or(0);
+                            let old_nonce = new_nonce.saturating_sub(1);
+
+                            call.nonce_changes.push(NonceChange {
+                                address: address.to_vec(),
+                                old_value: old_nonce,
+                                new_value: new_nonce,
+                                ordinal: self.block_ordinal.next(),
+                            });
+                        }
+
+                        _ => {
+                            // Other journal entries we may want to track later:
+                            // - AccountCreated
+                            // - AccountDestroyed
+                            // - AccountWarmed (for gas tracking)
+                            // - StorageWarmed (for gas tracking)
+                            // whatever
+                        }
+                    }
+                }
+            }
+        }
+    }
+
 }
