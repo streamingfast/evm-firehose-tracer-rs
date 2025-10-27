@@ -1,5 +1,5 @@
-use crate::firehose;
 use crate::prelude::*;
+use firehose;
 use alloy_consensus::Transaction;
 use alloy_primitives::B256;
 use std::sync::Arc;

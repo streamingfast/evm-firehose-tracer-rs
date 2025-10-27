@@ -1,7 +1,9 @@
-use crate::firehose::BLOCK_VERSION;
-use crate::pb::sf::ethereum::r#type::v2::block::DetailLevel;
-use crate::pb::sf::ethereum::r#type::v2::{BigInt, Block, BlockHeader, Log, TransactionReceipt};
-use crate::prelude::*;
+use crate::{BLOCK_VERSION, RecoveredBlock, ChainSpec};
+use pb::sf::ethereum::r#type::v2::block::DetailLevel;
+use pb::sf::ethereum::r#type::v2::{BigInt, Block, BlockHeader, Log, TransactionReceipt};
+use reth::api::FullNodeComponents;
+use reth::chainspec::EthChainSpec;
+use reth::core::primitives::AlloyBlockHeader;
 use alloy_consensus::BlockHeader as ConsensusBlockHeader;
 use alloy_primitives::{FixedBytes, Sealable, U256};
 use alloy_rlp::Encodable;

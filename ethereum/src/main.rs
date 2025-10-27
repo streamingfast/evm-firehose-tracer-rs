@@ -5,9 +5,9 @@ use reth_tracing::tracing::info;
 use std::path::PathBuf;
 
 mod exex;
-mod firehose;
-mod pb;
 mod prelude;
+
+use firehose;
 
 #[global_allocator]
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();

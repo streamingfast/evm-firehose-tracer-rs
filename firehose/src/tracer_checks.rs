@@ -1,5 +1,5 @@
 use super::HexView;
-use crate::prelude::*;
+use reth::api::FullNodeComponents;
 
 /// Tracer state checking functionality
 impl<Node: FullNodeComponents> super::Tracer<Node> {

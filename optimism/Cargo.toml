@@ -1,0 +1,20 @@
+[package]
+name = "optimism"
+version.workspace = true
+edition.workspace = true
+
+# This crate is a placeholder for OP-Reth + Flashblocks integration
+# Will be implemented next
+
+[[bin]]
+name = "op-reth-firehose-tracer"
+path = "src/main.rs"
+
+[dependencies]
+firehose.workspace = true
+pb.workspace = true
+
+# TODO: Add OP-Reth dependencies when implementing
+# reth-optimism-node = { path = "../../reth/crates/optimism/node" }
+# reth-optimism-cli = { path = "../../reth/crates/optimism/cli" }
+# etc.

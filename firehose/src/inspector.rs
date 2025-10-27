@@ -1,7 +1,7 @@
-use crate::firehose::Tracer;
-use crate::pb::sf::ethereum::r#type::v2::CallType;
-use crate::prelude::*;
+use crate::Tracer;
+use pb::sf::ethereum::r#type::v2::CallType;
 use alloy_primitives::{Address, Bytes, Log as AlloyLog, U256};
+use reth::api::FullNodeComponents;
 use reth::revm::revm::context_interface::{ContextTr, LocalContextTr};
 use reth::revm::revm::inspector::Inspector;
 use reth::revm::revm::interpreter::{

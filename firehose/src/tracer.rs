@@ -8,10 +8,12 @@ use reth::revm::revm::inspector::JournalExt;
 use reth::revm::revm::interpreter::interpreter_types::{Jumps, MemoryTr};
 
 use super::{Config, HexView, finality::FinalityStatus, mapper, ordinal::Ordinal, printer};
-use crate::firehose::PROTOCOL_VERSION;
-use crate::pb::sf::ethereum::r#type::v2::{Block, Call, TransactionTrace, transaction_trace};
-use crate::prelude::SignedTx;
-use crate::{firehose_debug, firehose_info, prelude::*};
+use crate::{PROTOCOL_VERSION, SignedTx, ChainSpec, RecoveredBlock};
+use pb::sf::ethereum::r#type::v2::{Block, Call, TransactionTrace, transaction_trace};
+use crate::{firehose_debug, firehose_info};
+use reth::api::FullNodeComponents;
+use reth::chainspec::EthChainSpec;
+use reth_tracing::tracing::{debug, info};
 use reth::core::primitives::Receipt;
 use std::sync::Arc;
 
@@ -33,7 +35,7 @@ pub struct Tracer<Node: FullNodeComponents> {
     previous_cumulative_gas_used: u64,
 
     // Call stack tracking
-    pub(crate) call_stack: Vec<Call>,
+    pub call_stack: Vec<Call>,
 
     // Journal tracking for state changes
     last_journal_len: usize,
