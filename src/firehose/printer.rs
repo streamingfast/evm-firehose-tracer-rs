@@ -49,21 +49,17 @@ pub(super) fn firehose_block_to_stdout(block: Block, finality_status: FinalitySt
     // Marshal the protobuf block to bytes
     let marshalled = block.encode_to_vec();
 
-    // Print in Firehose format: FIRE BLOCK <blockNumber> <blockHash> <previousBlockNumber> <previousBlockHash> <libNum> <timestamp>
-    // **Important* The final space in the print template is mandatory!
-    print!(
-        "FIRE BLOCK {} {} {} {} {} {} ",
-        block_number, block_hash, previous_block_number, previous_block_hash, lib_num, timestamp_ns
+    // Encode the marshalled protobuf to base64
+    let encoded = general_purpose::STANDARD.encode(&marshalled);
+
+    let line = format!(
+        "FIRE BLOCK {} {} {} {} {} {} {}\n",
+        block_number, block_hash, previous_block_number, previous_block_hash, lib_num, timestamp_ns, encoded
     );
 
-    // Encode the marshalled protobuf to base64 and print it
-    let encoded = general_purpose::STANDARD.encode(&marshalled);
-    print!("{}", encoded);
-
-    // Print final newline and flush
-    println!();
-
+    // Print the complete line and flush immediately
     use std::io::{self, Write};
+    print!("{}", line);
     let _ = io::stdout().flush();
 }
 
