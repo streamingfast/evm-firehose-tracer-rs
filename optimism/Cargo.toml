@@ -3,18 +3,45 @@ name = "optimism"
 version.workspace = true
 edition.workspace = true
 
-# This crate is a placeholder for OP-Reth + Flashblocks integration
-# Will be implemented next
-
 [[bin]]
 name = "op-reth-firehose-tracer"
 path = "src/main.rs"
 
+# [[bin]]
+# name = "test-flashblocks"
+# path = "src/bin/test_flashblocks.rs"
+
+# [[bin]]
+# name = "debug-flashblocks"
+# path = "src/bin/debug_flashblocks.rs"
+
 [dependencies]
+# Internal workspace crates
 firehose.workspace = true
 pb.workspace = true
+shared.workspace = true
 
-# TODO: Add OP-Reth dependencies when implementing
-# reth-optimism-node = { path = "../../reth/crates/optimism/node" }
-# reth-optimism-cli = { path = "../../reth/crates/optimism/cli" }
-# etc.
+# OP-Reth-specific dependencies
+reth-optimism-cli.workspace = true
+reth-optimism-node.workspace = true
+reth-optimism-chainspec.workspace = true
+reth-optimism-flashblocks.workspace = true
+reth-optimism-primitives.workspace = true
+
+# Core Reth dependencies
+reth.workspace = true
+reth-cli-util.workspace = true
+
+# CLI dependencies
+clap.workspace = true
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+futures-util.workspace = true
+url = "2"
+eyre.workspace = true
+
+# WebSocket and compression for flashblocks debugging
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+serde_json.workspace = true
+brotli = "7"

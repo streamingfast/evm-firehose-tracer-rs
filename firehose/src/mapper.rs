@@ -44,7 +44,6 @@ pub(super) fn block_header_to_protobuf<H: ConsensusBlockHeader>(
         system_calls: Vec::new(),
         ver: BLOCK_VERSION,
         detail_level: DetailLevel::DetaillevelExtended as i32,
-        ..Default::default()
     }
 }
 
@@ -83,7 +82,7 @@ fn create_block_header_protobuf<H: ConsensusBlockHeader>(hash: Vec<u8>, header: 
             bytes: if header.difficulty().is_zero() {
                 vec![0x0]
             } else {
-                header.difficulty().to_be_bytes_vec()
+                u256_trimmed_be_bytes(header.difficulty())
             },
         }),
         gas_limit: header.gas_limit(),
@@ -149,8 +148,15 @@ pub fn u256_trimmed_be_bytes(v: U256) -> Vec<u8> {
     if v.is_zero() {
         return Vec::new();
     }
-    let mut b = v.to_be_bytes_vec();
-    // strip leading zeros
-    let first_non_zero = b.iter().position(|&x| x != 0).unwrap_or(b.len());
-    b.split_off(first_non_zero)
+
+    // Use to_be_bytes_vec which is simpler and avoids any slicing issues
+    let bytes_vec = v.to_be_bytes_vec();
+
+    // Find first non-zero byte and return trimmed vec
+    if let Some(first_non_zero) = bytes_vec.iter().position(|&b| b != 0) {
+        bytes_vec[first_non_zero..].to_vec()
+    } else {
+        // All zeros - shouldn't happen since we check is_zero above, but return empty as safety
+        Vec::new()
+    }
 }

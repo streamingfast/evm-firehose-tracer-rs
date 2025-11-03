@@ -18,14 +18,23 @@ start:
     reader-node-data-dir: "{data-dir}/reader-node"
     reader-node-bootstrap-data-url: "bash:///./fireeth.bootstrap.sh"
     reader-node-arguments: node
-      --datadir={node-data-dir}
-      --dev
-      --dev.block-time=1s
-      --chain=./fireeth.genesis.json
-      --http
-      --http.api=debug,eth,web3,net
-      --http.addr=0.0.0.0
-      --http.port=8546
+        --datadir={node-data-dir}
+        --flashblocks-ws-url=ws://127.0.0.1:1111
+        --chain=$HOME/.playground/devnet/l2-genesis.json
+        --http
+        --http.api=debug,eth,web3,net
+        --http.addr=0.0.0.0
+        --http.port=8546
+        --authrpc.port=9552
+    # reader-node-arguments: node
+    #   --datadir={node-data-dir}
+    #   --dev
+    #   --dev.block-time=1s
+    #   --chain=./fireeth.optimism.genesis.json
+    #   --http
+    #   --http.api=debug,eth,web3,net
+    #   --http.addr=0.0.0.0
+    #   --http.port=8546
 
     # TODO: Removed TLS for dev
     # Different ports to avoid conflicts if running both chains

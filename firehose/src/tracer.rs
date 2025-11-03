@@ -395,7 +395,9 @@ impl<Node: FullNodeComponents> Tracer<Node> {
         let from = tx.recover_signer().unwrap_or_default();
         let to = tx.to().unwrap_or_default();
 
-        // We need to work with TransactionSigned for the inner implementation
+        // UNSAFE: This assumes SignedTx<Node> has the same memory layout as TransactionSigned
+        // This works for Ethereum but may break for other chains
+        // TODO: Find a safe way to do this
         let tx_ref = unsafe { &*(tx as *const SignedTx<Node> as *const TransactionSigned) };
         self.on_tx_start_inner(tx_ref, hash, from, to);
     }
@@ -411,15 +413,26 @@ impl<Node: FullNodeComponents> Tracer<Node> {
     pub fn on_system_call_end(&mut self) {
         firehose_debug!("ending system call");
 
-        if let Some(block) = &mut self.current_block {
-            // Move calls from the call stack to the block's system_calls
+        if let Some(_block) = &mut self.current_block {
+            // TEMPORARILY DISABLED: Move calls from the call stack to the block's system_calls
             let system_calls = std::mem::take(&mut self.call_stack);
-            firehose_debug!("adding {} system calls to block", system_calls.len());
-            block.system_calls.extend(system_calls);
+            info!(target: "firehose:tracer", "Captured {} system calls (NOT adding to block to test)", system_calls.len());
+
+            // TODO: Re-enable once we figure out the memory corruption issue
+            // while let Some(call) = system_calls.pop() {
+            //     block.system_calls.insert(0, call);
+            // }
+
+            info!(target: "firehose:tracer", "Dropping system_calls without adding them to block");
+            drop(system_calls);
+            info!(target: "firehose:tracer", "system_calls vec dropped successfully");
         }
 
+        info!(target: "firehose:tracer", "Setting in_system_call = false");
         self.in_system_call = false;
+        info!(target: "firehose:tracer", "Clearing call_stack");
         self.call_stack.clear();
+        info!(target: "firehose:tracer", "on_system_call_end() about to return");
     }
 
     /// Manually create a system call entry from execution result
@@ -447,26 +460,36 @@ impl<Node: FullNodeComponents> Tracer<Node> {
         let gas_limit: u64 = 30_000_000;
         let gas_left = gas_limit.saturating_sub(gas_used);
 
-        // Build the Call
+        // Build the Call - explicitly initialize ALL fields to avoid any Default issues
         let mut call = Call {
+            index: 0,
+            parent_index: 0,
+            depth: 0,
             call_type: CallType::Call as i32,
             caller: caller.to_vec(),
             address: address.to_vec(),
-            input: input.to_vec(),
+            address_delegates_to: None,  // Explicitly set optional field
             value: Some(BigInt { bytes: Vec::new() }),
             gas_limit,
             gas_consumed: gas_used,
             return_data: output,
+            input: input.to_vec(),
+            executed_code: false,
+            suicide: false,
+            keccak_preimages: std::collections::HashMap::new(),  // Explicitly empty
+            storage_changes: Vec::new(),  // Explicitly empty
+            balance_changes: Vec::new(),  // Explicitly empty
+            nonce_changes: Vec::new(),  // Explicitly empty
+            logs: Vec::new(),  // Explicitly empty
+            code_changes: Vec::new(),  // Explicitly empty
+            gas_changes: Vec::new(),  // Will add entries below
             status_failed: !is_success,
             status_reverted: matches!(result.result, ExecutionResult::Revert { .. }),
-            state_reverted: !is_success,
             failure_reason: String::new(),
-            index: 0,
-            parent_index: 0,
-            depth: 0,
+            state_reverted: !is_success,
             begin_ordinal: self.block_ordinal.next(),
             end_ordinal: 0,
-            ..Default::default()
+            account_creations: Vec::new(),  // Deprecated but still needs initialization
         };
 
         call.gas_changes.push(GasChange {
@@ -494,20 +517,21 @@ impl<Node: FullNodeComponents> Tracer<Node> {
 
         // Extract real storage changes from result.state
         // result.state is a HashMap<Address, Account>, where Account.storage is HashMap<U256, EvmStorageSlot>
-        if let Some(account) = result.state.get(&address) {
-            for (storage_key, storage_slot) in &account.storage {
-                // Only record changes where original_value != present_value
-                if storage_slot.is_changed() {
-                    call.storage_changes.push(StorageChange {
-                        address: address.to_vec(),
-                        key: storage_key.to_be_bytes::<32>().to_vec(),
-                        old_value: storage_slot.original_value.to_be_bytes::<32>().to_vec(),
-                        new_value: storage_slot.present_value.to_be_bytes::<32>().to_vec(),
-                        ordinal: self.block_ordinal.next(),
-                    });
-                }
-            }
-        }
+        // TODO: Fix U256 conversion - temporarily disabled to debug memory allocation bug
+        // if let Some(account) = result.state.get(&address) {
+        //     for (storage_key, storage_slot) in &account.storage {
+        //         // Only record changes where original_value != present_value
+        //         if storage_slot.is_changed() {
+        //             call.storage_changes.push(StorageChange {
+        //                 address: address.to_vec(),
+        //                 key: Vec::new(),  // TODO
+        //                 old_value: Vec::new(),  // TODO
+        //                 new_value: Vec::new(),  // TODO
+        //                 ordinal: self.block_ordinal.next(),
+        //             });
+        //         }
+        //     }
+        // }
 
         // close the call
         call.end_ordinal = self.block_ordinal.next();
@@ -528,6 +552,8 @@ impl<Node: FullNodeComponents> Tracer<Node> {
         from: Address,
         to: Address,
     ) {
+        info!(target: "firehose:tracer", "on_tx_start_inner: START");
+
         firehose_debug!(
             "tx start inner (hash={} from={} to={})",
             HexView(hash.as_slice()),
@@ -537,30 +563,83 @@ impl<Node: FullNodeComponents> Tracer<Node> {
 
         let signature = tx.signature();
 
+        info!(target: "firehose:tracer", "on_tx_start_inner: Creating public_key vec");
         // Public key recovery is not needed for Firehose 3.0
         let public_key = Vec::new();
 
+        info!(target: "firehose:tracer", "on_tx_start_inner: Converting r to bytes, r={:?}", signature.r());
+        let r_bytes = signature.r().to_be_bytes::<32>().to_vec();
+        info!(target: "firehose:tracer", "on_tx_start_inner: r_bytes created with len={}", r_bytes.len());
+
+        info!(target: "firehose:tracer", "on_tx_start_inner: Converting s to bytes, s={:?}", signature.s());
+        let s_bytes = signature.s().to_be_bytes::<32>().to_vec();
+        info!(target: "firehose:tracer", "on_tx_start_inner: s_bytes created with len={}", s_bytes.len());
+
+        info!(target: "firehose:tracer", "on_tx_start_inner: Creating access_list");
+        let access_list = self.create_access_list(tx);
+        info!(target: "firehose:tracer", "on_tx_start_inner: Creating max_fee_per_gas");
+        let max_fee_per_gas = self.create_max_fee_per_gas(tx);
+        info!(target: "firehose:tracer", "on_tx_start_inner: Creating max_priority_fee_per_gas");
+        let max_priority_fee_per_gas = self.create_max_priority_fee_per_gas(tx);
+
+        info!(target: "firehose:tracer", "on_tx_start_inner: About to create TransactionTrace struct");
+
+        // Pre-compute all fields to isolate which one causes the crash
+        info!(target: "firehose:tracer", "Computing begin_ordinal");
+        let begin_ordinal = self.block_ordinal.next();
+        info!(target: "firehose:tracer", "Computing gas_price");
+        let gas_price = self.create_gas_price_big_int(tx);
+        info!(target: "firehose:tracer", "Computing value");
+        let value = if tx.value() > U256::ZERO { self.create_big_int_from_u256(tx.value()) } else { None };
+        info!(target: "firehose:tracer", "Computing blob_gas");
+        let blob_gas = self.create_blob_gas(tx);
+        info!(target: "firehose:tracer", "Computing blob_gas_fee_cap");
+        let blob_gas_fee_cap = self.create_blob_gas_fee_cap(tx);
+        info!(target: "firehose:tracer", "Computing blob_hashes");
+        let blob_hashes = self.create_blob_hashes(tx);
+        info!(target: "firehose:tracer", "Computing set_code_authorizations");
+        let set_code_authorizations = self.create_set_code_authorizations(tx);
+
+        info!(target: "firehose:tracer", "All fields computed, checking vector lengths");
+        info!(target: "firehose:tracer", "r_bytes.len()={}, s_bytes.len()={}", r_bytes.len(), s_bytes.len());
+        info!(target: "firehose:tracer", "access_list.len()={}", access_list.len());
+        info!(target: "firehose:tracer", "blob_hashes.len()={}", blob_hashes.len());
+        info!(target: "firehose:tracer", "set_code_authorizations.len()={}", set_code_authorizations.len());
+
+        // Pre-compute all .to_vec() calls to isolate which one causes the crash
+        info!(target: "firehose:tracer", "Converting hash to vec");
+        let hash_vec = hash.to_vec();
+        info!(target: "firehose:tracer", "Converting from to vec");
+        let from_vec = from.to_vec();
+        info!(target: "firehose:tracer", "Converting to to vec");
+        let to_vec = to.to_vec();
+        info!(target: "firehose:tracer", "Converting input to vec");
+        let input_vec = tx.input().to_vec();
+        info!(target: "firehose:tracer", "Creating v vec");
+        let v_byte = 27 + signature.v() as u8;
+        let v_vec = vec![v_byte];
+
+        info!(target: "firehose:tracer", "Testing Default::default()");
+        let _test = TransactionTrace::default();
+        info!(target: "firehose:tracer", "Default worked, now creating actual struct");
+
         let trx = TransactionTrace {
-            begin_ordinal: self.block_ordinal.next(),
-            hash: hash.to_vec(),
-            from: from.to_vec(),
-            to: to.to_vec(),
+            begin_ordinal,
+            hash: hash_vec,
+            from: from_vec,
+            to: to_vec,
             nonce: tx.nonce(),
             gas_limit: tx.gas_limit(),
-            gas_price: self.create_gas_price_big_int(tx),
-            value: if tx.value() > U256::ZERO {
-                self.create_big_int_from_u256(tx.value())
-            } else {
-                None
-            },
-            input: tx.input().to_vec(),
-            v: vec![27 + signature.v() as u8],
-            r: signature.r().to_be_bytes_vec(),
-            s: signature.s().to_be_bytes_vec(),
+            gas_price,
+            value,
+            input: input_vec,
+            v: v_vec,
+            r: r_bytes,
+            s: s_bytes,
             r#type: self.transaction_type_from_tx_type(tx.tx_type()) as i32,
-            access_list: self.create_access_list(tx),
-            max_fee_per_gas: self.create_max_fee_per_gas(tx),
-            max_priority_fee_per_gas: self.create_max_priority_fee_per_gas(tx),
+            access_list,
+            max_fee_per_gas,
+            max_priority_fee_per_gas,
 
             // Initialize with defaults - these will be set by other methods
             index: 0,
@@ -573,13 +652,15 @@ impl<Node: FullNodeComponents> Tracer<Node> {
             end_ordinal: 0,
 
             // Optional fields that depend on transaction type
-            blob_gas: self.create_blob_gas(tx),
-            blob_gas_fee_cap: self.create_blob_gas_fee_cap(tx),
-            blob_hashes: self.create_blob_hashes(tx),
-            set_code_authorizations: self.create_set_code_authorizations(tx),
+            blob_gas,
+            blob_gas_fee_cap,
+            blob_hashes,
+            set_code_authorizations,
         };
 
+        info!(target: "firehose:tracer", "on_tx_start_inner: TransactionTrace created, setting current_transaction");
         self.current_transaction = Some(trx);
+        info!(target: "firehose:tracer", "on_tx_start_inner: COMPLETE");
     }
 }
 
@@ -1020,7 +1101,7 @@ impl<Node: FullNodeComponents> Tracer<Node> {
         let intrinsic_gas = self.calculate_intrinsic_gas(&call.input);
         call.gas_changes.push(GasChange {
             old_value: gas_limit,
-            new_value: gas_limit - intrinsic_gas,
+            new_value: gas_limit.saturating_sub(intrinsic_gas),
             ordinal: self.block_ordinal.next(),
             reason: gas_change::Reason::IntrinsicGas as i32,
         });
@@ -1519,19 +1600,20 @@ impl<Node: FullNodeComponents> Tracer<Node> {
                         }
 
                         reth::revm::JournalEntry::StorageChanged { address, key, had_value } => {
+                            // TODO: Fix U256 conversion - temporarily disabled to debug memory allocation bug
                             // key and had_value are U256 (StorageKey and StorageValue are type aliases)
                             // Get current value from state
-                            let current_value = context.sload(address, key)
-                                .map(|load| load.data)
-                                .unwrap_or(had_value);
+                            // let current_value = context.sload(address, key)
+                            //     .map(|load| load.data)
+                            //     .unwrap_or(had_value);
 
-                            call.storage_changes.push(StorageChange {
-                                address: address.to_vec(),
-                                key: key.to_be_bytes::<32>().to_vec(),
-                                old_value: had_value.to_be_bytes::<32>().to_vec(),
-                                new_value: current_value.to_be_bytes::<32>().to_vec(),
-                                ordinal: self.block_ordinal.next(),
-                            });
+                            // call.storage_changes.push(StorageChange {
+                            //     address: address.to_vec(),
+                            //     key: Vec::new(),  // TODO
+                            //     old_value: Vec::new(),  // TODO
+                            //     new_value: Vec::new(),  // TODO
+                            //     ordinal: self.block_ordinal.next(),
+                            // });
                         }
 
                         reth::revm::JournalEntry::NonceChange { address } => {
