@@ -101,7 +101,7 @@ pub fn is_firehose_trace_full_enabled() -> bool {
 #[macro_export]
 macro_rules! firehose_info {
     ($($arg:tt)*) => {
-        if $crate::firehose::logging::is_firehose_info_enabled() {
+        if $crate::logging::is_firehose_info_enabled() {
             eprintln!("[Firehose] {}", format!($($arg)*));
         }
     };
@@ -112,7 +112,7 @@ macro_rules! firehose_info {
 #[macro_export]
 macro_rules! firehose_debug {
     ($($arg:tt)*) => {
-        if $crate::firehose::logging::is_firehose_debug_enabled() {
+        if $crate::logging::is_firehose_debug_enabled() {
             eprintln!("[Firehose] {}", format!($($arg)*));
         }
     };
@@ -123,7 +123,7 @@ macro_rules! firehose_debug {
 #[macro_export]
 macro_rules! firehose_trace {
     ($($arg:tt)*) => {
-        if $crate::firehose::logging::is_firehose_trace_enabled() {
+        if $crate::logging::is_firehose_trace_enabled() {
             eprintln!("[Firehose] {}", format!($($arg)*));
         }
     };
@@ -134,7 +134,7 @@ macro_rules! firehose_trace {
 #[macro_export]
 macro_rules! firehose_trace_full {
     ($($arg:tt)*) => {
-        if $crate::firehose::logging::is_firehose_trace_full_enabled() {
+        if $crate::logging::is_firehose_trace_full_enabled() {
             eprintln!("[Firehose] {}", format!($($arg)*));
         }
     };

@@ -1,5 +1,5 @@
 use super::sf::ethereum::r#type::v2::BigInt;
-use crate::prelude::*;
+use alloy_primitives::U256;
 
 impl BigInt {
     /// Creates an Option<BigInt> from a U256 value, following Go's nil semantics
@@ -171,3 +171,4 @@ mod tests {
         assert_eq!(large.bytes, vec![0x12, 0x34]);
     }
 }
+

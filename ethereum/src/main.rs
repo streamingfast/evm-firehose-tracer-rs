@@ -1,12 +1,10 @@
-use clap::Parser;
-use reth::{builder::NodeHandle, chainspec::EthereumChainSpecParser, cli::Cli};
+use shared::*;
+use reth::{chainspec::EthereumChainSpecParser, cli::Cli};
 use reth_node_ethereum::EthereumNode;
-use reth_tracing::tracing::info;
-use std::path::PathBuf;
+use firehose;
+use clap::Parser;
 
 mod exex;
-mod firehose;
-mod pb;
 mod prelude;
 
 #[global_allocator]

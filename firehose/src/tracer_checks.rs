@@ -1,5 +1,5 @@
 use super::HexView;
-use crate::prelude::*;
+use reth::api::FullNodeComponents;
 
 /// Tracer state checking functionality
 impl<Node: FullNodeComponents> super::Tracer<Node> {
@@ -32,6 +32,16 @@ impl<Node: FullNodeComponents> super::Tracer<Node> {
         if self.current_block.is_some() {
             self.panic_invalid_state(
                 "caller expected to not be in block state but we were, this is a bug",
+            );
+        }
+    }
+
+    /// Ensure that we are currently in a transaction processing state
+    #[inline]
+    pub(super) fn ensure_in_transaction(&self) {
+        if self.current_transaction.is_none() {
+            self.panic_invalid_state(
+                "caller expected to be in transaction state but we were not, this is a bug",
             );
         }
     }

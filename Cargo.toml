@@ -1,19 +1,52 @@
-[package]
-name = "reth-firehose-tracer"
+[workspace]
+members = [
+    "pb",
+    "firehose",
+    "shared",
+    "ethereum",
+    "optimism",
+]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
-reth = { path = "../reth/bin/reth" }                           # git = "https://github.com/paradigmxyz/reth.git" }
-reth-exex = { path = "../reth/crates/exex/exex" }              # git = "https://github.com/paradigmxyz/reth.git" }
-reth-node-ethereum = { path = "../reth/crates/ethereum/node" } # git = "https://github.com/paradigmxyz/reth.git" }
-reth-tracing = { path = "../reth/crates/tracing" }             # git = "https://github.com/paradigmxyz/reth.git" }
-reth-cli-util = { path = "../reth/crates/cli/util" }           # git = "https://github.com/paradigmxyz/reth.git" }
+[workspace.dependencies]
+# Internal workspace crates
+pb = { version = "0.1.0", path = "pb" }
+firehose = { version = "0.1.0", path = "firehose" }
+shared = { version = "0.1.0", path = "shared" }
 
+# Reth eth dependencies
+reth = { path = "../reth/bin/reth" }
+reth-exex = { path = "../reth/crates/exex/exex" }
+reth-node-ethereum = { path = "../reth/crates/ethereum/node" }
+reth-tracing = { path = "../reth/crates/tracing" }
+reth-cli-util = { path = "../reth/crates/cli/util" }
+reth-revm = { path = "../reth/crates/revm" }
+reth-evm = { path = "../reth/crates/evm/evm" }
+
+# Reth OP dependencies
+reth-optimism-cli = { path = "../reth/crates/optimism/cli" }
+reth-optimism-node = { path = "../reth/crates/optimism/node" }
+reth-optimism-chainspec = { path = "../reth/crates/optimism/chainspec" }
+reth-optimism-flashblocks = { path = "../reth/crates/optimism/flashblocks" }
+reth-optimism-primitives = { path = "../reth/crates/optimism/primitives" }
+
+# Reth shared dependencies
+reth-node-api = { path = "../reth/crates/node/api" }
+reth-node-builder = { path = "../reth/crates/node/builder" }
+reth-provider = { path = "../reth/crates/storage/provider" }
+
+# Alloy dependencies
 alloy-genesis = "1"
 alloy-primitives = "1.3"
 alloy-consensus = "1"
 alloy-rlp = "0.3"
+alloy-eips = "1"
+
+# Other dependencies
 base64 = "0.22"
 clap = "4"
 eyre = "0.6"
@@ -23,6 +56,3 @@ prost = "0.14"
 prost-types = "0.14"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-# reth-exex = { path = "../reth/crates/exex/exex" }
-# reth-node-ethereum = { path = "../reth/crates/ethereum/node" }
-# reth-tracing = { path = "../reth/crates/tracing" }
