@@ -1,3 +1,5 @@
 /.claude
 /.firehose-data
+/.firehose-data-optimism
 /target
+/op-data

@@ -1,6 +1,6 @@
 /// Helper structure for tracking finality status
 #[derive(Debug, Clone, Copy, Default)]
-pub(super) struct FinalityStatus {
+pub struct FinalityStatus {
     last_irreversible_block_number: u64,
 }
 

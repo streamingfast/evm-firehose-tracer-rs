@@ -1,12 +1,15 @@
-use crate::firehose::BLOCK_VERSION;
-use crate::pb::sf::ethereum::r#type::v2::block::DetailLevel;
-use crate::pb::sf::ethereum::r#type::v2::{BigInt, Block, BlockHeader};
-use crate::prelude::*;
+use crate::{BLOCK_VERSION, RecoveredBlock, ChainSpec};
+use pb::sf::ethereum::r#type::v2::block::DetailLevel;
+use pb::sf::ethereum::r#type::v2::{BigInt, Block, BlockHeader, Log, TransactionReceipt};
+use reth::api::FullNodeComponents;
+use reth::chainspec::EthChainSpec;
+use reth::core::primitives::AlloyBlockHeader;
 use alloy_consensus::BlockHeader as ConsensusBlockHeader;
-use alloy_primitives::{FixedBytes, Sealable};
+use alloy_primitives::{FixedBytes, Sealable, U256};
 use alloy_rlp::Encodable;
 use prost_types::Timestamp;
 use reth::api::BlockBody;
+use reth::core::primitives::Receipt;
 
 /// Maps a RecoveredBlock to a Protobuf Block following the Go implementation behavior
 pub(super) fn recovered_block_to_protobuf<Node: FullNodeComponents>(
@@ -41,7 +44,6 @@ pub(super) fn block_header_to_protobuf<H: ConsensusBlockHeader>(
         system_calls: Vec::new(),
         ver: BLOCK_VERSION,
         detail_level: DetailLevel::DetaillevelExtended as i32,
-        ..Default::default()
     }
 }
 
@@ -76,7 +78,13 @@ fn create_block_header_protobuf<H: ConsensusBlockHeader>(hash: Vec<u8>, header: 
         transactions_root: header.transactions_root().to_vec(),
         receipt_root: header.receipts_root().to_vec(),
         logs_bloom: header.logs_bloom().to_vec(),
-        difficulty: BigInt::from_optional_u256(header.difficulty()),
+        difficulty: Some(BigInt {
+            bytes: if header.difficulty().is_zero() {
+                vec![0x0]
+            } else {
+                u256_trimmed_be_bytes(header.difficulty())
+            },
+        }),
         gas_limit: header.gas_limit(),
         gas_used: header.gas_used(),
         timestamp: Some(Timestamp {
@@ -104,14 +112,51 @@ fn create_block_header_protobuf<H: ConsensusBlockHeader>(hash: Vec<u8>, header: 
             .unwrap_or_default(),
         requests_hash: header
             .requests_hash()
-            .map(|hash| hash.to_vec())
+            .map(|h| h.to_vec())
             .unwrap_or_default(),
 
-        // Deprecated across the ecosystem, setting to None
         #[allow(deprecated)]
-        total_difficulty: None,
+        total_difficulty: Some(BigInt { bytes: Vec::new() }),
 
-        // Not used anymore
         tx_dependency: None,
+    }
+}
+
+/// Maps a Reth Receipt to a Protobuf TransactionReceipt
+pub(super) fn receipt_to_protobuf<R>(receipt: &R) -> TransactionReceipt
+where
+    R: Receipt,
+{
+    TransactionReceipt {
+        state_root: Vec::new(),
+        cumulative_gas_used: receipt.cumulative_gas_used(),
+        logs_bloom: receipt.bloom().to_vec(),
+        logs: Vec::new(),
+        blob_gas_used: None,
+        blob_gas_price: None,
+    }
+}
+
+/// Converts a U256 to a protobuf BigInt
+pub(super) fn big_int_from_u256(value: U256) -> BigInt {
+    BigInt {
+        bytes: u256_trimmed_be_bytes(value),
+    }
+}
+
+pub fn u256_trimmed_be_bytes(v: U256) -> Vec<u8> {
+    if v.is_zero() {
+        return Vec::new();
+    }
+
+    // Use to_be_bytes_vec which is simpler and avoids any slicing issues
+    let bytes_vec = v.to_be_bytes_vec();
+
+    // Find first non-zero byte and return trimmed vec
+    if let Some(first_non_zero) = bytes_vec.iter().position(|&b| b != 0) {
+        bytes_vec[first_non_zero..].to_vec()
+    } else {
+        // All zeros - shouldn't happen since we check is_zero above, but return empty as safety
+        Vec::new()
     }
 }

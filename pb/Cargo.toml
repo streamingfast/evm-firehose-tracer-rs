@@ -1,0 +1,9 @@
+[package]
+name = "pb"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+prost.workspace = true
+prost-types.workspace = true
+alloy-primitives.workspace = true

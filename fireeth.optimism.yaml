@@ -1,0 +1,42 @@
+start:
+  args:
+    - reader-node
+    - merger
+    - relayer
+    - firehose
+    - substreams-tier1
+    - substreams-tier2
+  flags:
+    # OP Stack chain configuration
+    advertise-chain-name: "base"
+    data-dir: ".firehose-data-optimism"
+
+    # Start from block 0 to match what the tracer outputs
+    common-first-streamable-block: 2
+
+    reader-node-path: "./target/debug/op-reth-firehose-tracer"
+    reader-node-data-dir: "{data-dir}/reader-node"
+    reader-node-bootstrap-data-url: "bash:///./fireeth.bootstrap.sh"
+    reader-node-arguments: node
+        --datadir={node-data-dir}
+        --flashblocks-ws-url=ws://127.0.0.1:1111
+        --chain=$HOME/.playground/devnet/l2-genesis.json
+        --http
+        --http.api=debug,eth,web3,net
+        --http.addr=0.0.0.0
+        --http.port=8546
+        --authrpc.port=9552
+    # reader-node-arguments: node
+    #   --datadir={node-data-dir}
+    #   --dev
+    #   --dev.block-time=1s
+    #   --chain=./fireeth.optimism.genesis.json
+    #   --http
+    #   --http.api=debug,eth,web3,net
+    #   --http.addr=0.0.0.0
+    #   --http.port=8546
+
+    # TODO: Removed TLS for dev
+    # Different ports to avoid conflicts if running both chains
+    substreams-tier1-grpc-listen-addr: ":10002*"
+    firehose-grpc-listen-addr: ":10003*"

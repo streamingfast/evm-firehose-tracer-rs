@@ -1,0 +1,27 @@
+[package]
+name = "shared"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+firehose.workspace = true
+pb.workspace = true
+
+# Reth core dependencies
+reth.workspace = true
+reth-node-api.workspace = true
+reth-provider.workspace = true
+reth-evm.workspace = true
+reth-exex.workspace = true
+reth-tracing.workspace = true
+reth-revm.workspace = true
+reth-cli-util.workspace = true
+
+# Alloy dependencies
+alloy-primitives.workspace = true
+alloy-consensus.workspace = true
+alloy-eips.workspace = true
+
+# Other dependencies
+eyre.workspace = true
+futures-util.workspace = true
