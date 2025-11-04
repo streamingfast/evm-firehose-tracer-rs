@@ -9,6 +9,9 @@ use alloy_rpc_types_engine::PayloadId;
 use alloy_eips::eip4895::Withdrawal;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use reth_optimism_primitives::OpTransactionSigned;
+use alloy_consensus::Transaction as _;
+use alloy_consensus::transaction::SignerRecoverable;
 
 /// Custom FlashBlock struct that handles receipt deserialization flexibly
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -138,15 +141,30 @@ where
                     // Deserialize JSON to FlashBlock
                     match serde_json::from_slice::<FlashBlock>(&decompressed) {
                         Ok(flashblock) => {
+                            let block_num = flashblock.metadata.block_number;
+
                             info!(target: "firehose:tracer",
                                 flashblock_index = flashblock.index,
-                                block_number = flashblock.metadata.block_number,
+                                block_number = block_num,
                                 tx_count = flashblock.diff.transactions.len(),
                                 gas_used = flashblock.diff.gas_used,
-                                "Processing flashblock (compressed)"
+                                "Received flashblock (compressed)"
                             );
 
-                            // TODO: Convert flashblock to traced block and output FIRE BLOCK format
+                            // If this is index 0 or a new block number, output previous block and start new one
+                            if flashblock.index == 0 || current_block_num != Some(block_num) {
+                                // Output the previous accumulated block if any
+                                if !current_flashblocks.is_empty() {
+                                    output_flashblock_as_fire_block(&mut tracer, &current_flashblocks);
+                                }
+
+                                // Start accumulating new block
+                                current_flashblocks.clear();
+                                current_block_num = Some(block_num);
+                            }
+
+                            // Add this flashblock to accumulation
+                            current_flashblocks.push(flashblock);
                         }
                         Err(e) => {
                             info!(target: "firehose:tracer", error = ?e, "Failed to deserialize flashblock");
@@ -252,6 +270,15 @@ fn u256_to_bytes(v: U256) -> Vec<u8> {
     bytes
 }
 
+/// Decode transaction bytes to extract transaction fields
+fn decode_transaction(tx_bytes: &[u8]) -> eyre::Result<OpTransactionSigned> {
+    use alloy_rlp::Decodable;
+
+    // Try to decode as OpTransactionSigned
+    let mut buf = tx_bytes;
+    OpTransactionSigned::decode(&mut buf).map_err(|e| eyre::eyre!("Failed to decode transaction: {}", e))
+}
+
 /// Convert accumulated flashblocks into a FIRE BLOCK output
 fn output_flashblock_as_fire_block<Node: FullNodeComponents>(
     tracer: &mut firehose::Tracer<Node>,
@@ -259,7 +286,11 @@ fn output_flashblock_as_fire_block<Node: FullNodeComponents>(
 ) where
     ChainSpec<Node>: EthereumHardforks + EthChainSpec,
 {
-    use pb::sf::ethereum::r#type::v2::{Block, BlockHeader, BigInt, block::DetailLevel};
+    use pb::sf::ethereum::r#type::v2::{
+        Block, BlockHeader, BigInt, block::DetailLevel,
+        TransactionTrace, transaction_trace::Type as TxType,
+        BalanceChange, balance_change::Reason as BalanceReason,
+    };
     use alloy_primitives::FixedBytes;
     use prost_types::Timestamp;
 
@@ -285,7 +316,174 @@ fn output_flashblock_as_fire_block<Node: FullNodeComponents>(
     info!(target: "firehose:tracer",
         block_number = base.block_number,
         flashblock_count = flashblocks.len(),
+        tx_count = diff.transactions.len(),
         "Outputting complete block from flashblocks"
+    );
+
+    // Process transactions from all flashblocks
+    let mut transaction_traces = Vec::new();
+    let mut tx_index = 0u64;
+
+    for flashblock in flashblocks {
+        for tx_bytes in &flashblock.diff.transactions {
+            // Try to decode the transaction to extract proper fields
+            let tx_trace = match decode_transaction(tx_bytes) {
+                Ok(decoded_tx) => {
+                    // Extract transaction hash
+                    let tx_hash = decoded_tx.hash();
+
+                    // Get sender address (recover from signature)
+                    let from = decoded_tx.recover_signer()
+                        .unwrap_or_else(|_| Address::ZERO);
+
+                    // Get recipient address
+                    let to = decoded_tx.to().map(|addr| addr.to_vec()).unwrap_or_default();
+
+                    // Determine transaction type, OpTransactionSigned returns OpTxType
+                    use reth_optimism_primitives::OpTxType;
+                    let tx_type = match decoded_tx.tx_type() {
+                        OpTxType::Legacy => TxType::TrxTypeLegacy,
+                        OpTxType::Eip2930 => TxType::TrxTypeAccessList,
+                        OpTxType::Eip1559 => TxType::TrxTypeDynamicFee,
+                         // Map EIP-7702 to DynamicFee for now
+                        OpTxType::Eip7702 => TxType::TrxTypeDynamicFee,
+                        OpTxType::Deposit => TxType::TrxTypeOptimismDeposit,
+                    } as i32;
+
+                    // Get signature components, OpTxEnvelope is an enum so we need to match
+                    use op_alloy_consensus::{OpTxEnvelope, TxDeposit};
+                    let (v_bytes, r_bytes, s_bytes) = match &decoded_tx {
+                        OpTxEnvelope::Legacy(signed) => {
+                            let sig = signed.signature();
+                            // v() returns bool (y_parity), convert to bytes
+                            let v = if sig.v() { 1u8 } else { 0u8 };
+                            (vec![v], sig.r().to_be_bytes_vec(), sig.s().to_be_bytes_vec())
+                        }
+                        OpTxEnvelope::Eip2930(signed) => {
+                            let sig = signed.signature();
+                            let v = if sig.v() { 1u8 } else { 0u8 };
+                            (vec![v], sig.r().to_be_bytes_vec(), sig.s().to_be_bytes_vec())
+                        }
+                        OpTxEnvelope::Eip1559(signed) => {
+                            let sig = signed.signature();
+                            let v = if sig.v() { 1u8 } else { 0u8 };
+                            (vec![v], sig.r().to_be_bytes_vec(), sig.s().to_be_bytes_vec())
+                        }
+                        OpTxEnvelope::Eip7702(signed) => {
+                            let sig = signed.signature();
+                            let v = if sig.v() { 1u8 } else { 0u8 };
+                            (vec![v], sig.r().to_be_bytes_vec(), sig.s().to_be_bytes_vec())
+                        }
+                        OpTxEnvelope::Deposit(_) => {
+                            // Deposit transactions dont have signatures
+                            let sig = TxDeposit::signature();
+                            let v = if sig.v() { 1u8 } else { 0u8 };
+                            (vec![v], sig.r().to_be_bytes_vec(), sig.s().to_be_bytes_vec())
+                        }
+                    };
+
+                    TransactionTrace {
+                        to,
+                        nonce: decoded_tx.nonce(),
+                        gas_price: Some(BigInt {
+                            bytes: u256_to_bytes(U256::from(decoded_tx.max_fee_per_gas())),
+                        }),
+                        gas_limit: decoded_tx.gas_limit(),
+                        // We dont have execution data
+                        gas_used: 0,
+                        value: Some(BigInt {
+                            bytes: u256_to_bytes(decoded_tx.value()),
+                        }),
+                        input: decoded_tx.input().to_vec(),
+                        v: v_bytes,
+                        r: r_bytes,
+                        s: s_bytes,
+                        hash: tx_hash.to_vec(),
+                        from: from.to_vec(),
+                        status: pb::sf::ethereum::r#type::v2::TransactionTraceStatus::Succeeded as i32,
+                        return_data: Vec::new(),
+                        public_key: Vec::new(),
+                        begin_ordinal: tx_index,
+                        end_ordinal: tx_index + 1,
+                        r#type: tx_type,
+                        // TODO: Extract access list if present
+                        access_list: Vec::new(),
+                        max_fee_per_gas: Some(BigInt {
+                            bytes: u256_to_bytes(U256::from(decoded_tx.max_fee_per_gas())),
+                        }),
+                        max_priority_fee_per_gas: decoded_tx.max_priority_fee_per_gas().map(|v| BigInt {
+                            bytes: u256_to_bytes(U256::from(v)),
+                        }),
+                        index: tx_index as u32,
+                        receipt: None,
+                        calls: Vec::new(),
+                        blob_gas: None,
+                        blob_gas_fee_cap: None,
+                        blob_hashes: Vec::new(),
+                        set_code_authorizations: Vec::new(),
+                    }
+                }
+                Err(e) => {
+                    // If decoding fails fall back to raw bytes only
+                    info!(target: "firehose:tracer", error = ?e, "Failed to decode transaction, using raw bytes");
+                    TransactionTrace {
+                        to: Vec::new(),
+                        nonce: 0,
+                        gas_price: None,
+                        gas_limit: 0,
+                        gas_used: 0,
+                        value: None,
+                        input: tx_bytes.to_vec(),
+                        v: Vec::new(),
+                        r: Vec::new(),
+                        s: Vec::new(),
+                        hash: Vec::new(),
+                        from: Vec::new(),
+                        status: pb::sf::ethereum::r#type::v2::TransactionTraceStatus::Succeeded as i32,
+                        return_data: Vec::new(),
+                        public_key: Vec::new(),
+                        begin_ordinal: tx_index,
+                        end_ordinal: tx_index + 1,
+                        r#type: TxType::TrxTypeOptimismDeposit as i32,
+                        access_list: Vec::new(),
+                        max_fee_per_gas: None,
+                        max_priority_fee_per_gas: None,
+                        index: tx_index as u32,
+                        receipt: None,
+                        calls: Vec::new(),
+                        blob_gas: None,
+                        blob_gas_fee_cap: None,
+                        blob_hashes: Vec::new(),
+                        set_code_authorizations: Vec::new(),
+                    }
+                }
+            };
+
+            transaction_traces.push(tx_trace);
+            tx_index += 1;
+        }
+    }
+
+    // Extract balance changes from the last flashblock's metadata
+    let mut balance_changes = Vec::new();
+    for (address, new_balance) in &last_fb.metadata.new_account_balances {
+        let balance_change = BalanceChange {
+            address: address.to_vec(),
+            old_value: None,
+            new_value: Some(BigInt {
+                bytes: u256_to_bytes(*new_balance),
+            }),
+            reason: BalanceReason::Unknown as i32,
+            ordinal: 0,
+        };
+        balance_changes.push(balance_change);
+    }
+
+    info!(target: "firehose:tracer",
+        block_number = base.block_number,
+        tx_traces = transaction_traces.len(),
+        balance_changes = balance_changes.len(),
+        "Extracted data from flashblocks"
     );
 
     // Build Block protobuf from flashblock data
@@ -336,9 +534,8 @@ fn output_flashblock_as_fire_block<Node: FullNodeComponents>(
         header: Some(pb_header),
          // OP Stack has no uncles
         uncles: Vec::new(),
-         // TODO: Process transactions if needed
-        transaction_traces: Vec::new(),
-        balance_changes: Vec::new(),
+        transaction_traces,
+        balance_changes,
         code_changes: Vec::new(),
         system_calls: Vec::new(),
         ver: firehose::BLOCK_VERSION,

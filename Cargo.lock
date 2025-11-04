@@ -5342,8 +5342,10 @@ dependencies = [
 name = "optimism"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
  "alloy-eips",
  "alloy-primitives",
+ "alloy-rlp",
  "alloy-rpc-types-engine",
  "alloy-serde",
  "brotli 7.0.0",
@@ -5351,6 +5353,7 @@ dependencies = [
  "eyre",
  "firehose",
  "futures-util",
+ "op-alloy-consensus",
  "pb",
  "prost-types",
  "reth",
