@@ -4,7 +4,7 @@ use base64::{Engine as _, engine::general_purpose};
 use prost::Message;
 
 /// Prints block in Firehose protocol format to stdout
-pub(super) fn firehose_block_to_stdout(block: Block, finality_status: FinalityStatus) {
+pub fn firehose_block_to_stdout(block: Block, finality_status: FinalityStatus) {
     let block_number = block.number;
     let block_hash = hex::encode(&block.hash);
 

@@ -5342,12 +5342,17 @@ dependencies = [
 name = "optimism"
 version = "0.1.0"
 dependencies = [
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rpc-types-engine",
+ "alloy-serde",
  "brotli 7.0.0",
  "clap",
  "eyre",
  "firehose",
  "futures-util",
  "pb",
+ "prost-types",
  "reth",
  "reth-cli-util",
  "reth-optimism-chainspec",
@@ -5355,6 +5360,7 @@ dependencies = [
  "reth-optimism-flashblocks",
  "reth-optimism-node",
  "reth-optimism-primitives",
+ "serde",
  "serde_json",
  "shared",
  "tokio",

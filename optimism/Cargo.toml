@@ -45,3 +45,11 @@ eyre.workspace = true
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 serde_json.workspace = true
 brotli = "7"
+
+# Alloy types for FlashBlock deserialization
+alloy-primitives.workspace = true
+alloy-rpc-types-engine = "1"
+alloy-eips.workspace = true
+alloy-serde = "1"
+serde.workspace = true
+prost-types.workspace = true

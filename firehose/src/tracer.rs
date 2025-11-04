@@ -460,7 +460,7 @@ impl<Node: FullNodeComponents> Tracer<Node> {
         let gas_limit: u64 = 30_000_000;
         let gas_left = gas_limit.saturating_sub(gas_used);
 
-        // Build the Call - explicitly initialize ALL fields to avoid any Default issues
+        // Build the Call, explicitly initialize ALL fields to avoid any Default issues (might change)
         let mut call = Call {
             index: 0,
             parent_index: 0,
@@ -468,7 +468,8 @@ impl<Node: FullNodeComponents> Tracer<Node> {
             call_type: CallType::Call as i32,
             caller: caller.to_vec(),
             address: address.to_vec(),
-            address_delegates_to: None,  // Explicitly set optional field
+            // Explicit
+            address_delegates_to: None,
             value: Some(BigInt { bytes: Vec::new() }),
             gas_limit,
             gas_consumed: gas_used,
@@ -476,20 +477,28 @@ impl<Node: FullNodeComponents> Tracer<Node> {
             input: input.to_vec(),
             executed_code: false,
             suicide: false,
-            keccak_preimages: std::collections::HashMap::new(),  // Explicitly empty
-            storage_changes: Vec::new(),  // Explicitly empty
-            balance_changes: Vec::new(),  // Explicitly empty
-            nonce_changes: Vec::new(),  // Explicitly empty
-            logs: Vec::new(),  // Explicitly empty
-            code_changes: Vec::new(),  // Explicitly empty
-            gas_changes: Vec::new(),  // Will add entries below
+            // Explicitl
+            keccak_preimages: std::collections::HashMap::new(),
+            // Explicit
+            storage_changes: Vec::new(),
+            // Explicitl
+            balance_changes: Vec::new(),
+            // Explicit
+            nonce_changes: Vec::new(),
+            // Explicit
+            logs: Vec::new(),
+            // Explicit
+            code_changes: Vec::new(),
+            // Explicit
+            gas_changes: Vec::new(),
             status_failed: !is_success,
             status_reverted: matches!(result.result, ExecutionResult::Revert { .. }),
             failure_reason: String::new(),
             state_reverted: !is_success,
             begin_ordinal: self.block_ordinal.next(),
             end_ordinal: 0,
-            account_creations: Vec::new(),  // Deprecated but still needs initialization
+            // Explicit
+            account_creations: Vec::new(),
         };
 
         call.gas_changes.push(GasChange {

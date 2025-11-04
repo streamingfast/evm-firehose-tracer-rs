@@ -1,10 +1,10 @@
 mod config;
-mod finality;
+pub mod finality;
 pub mod inspector;
 pub mod logging;
-mod mapper;
+pub mod mapper;
 mod ordinal;
-mod printer;
+pub mod printer;
 mod tracer;
 mod tracer_checks;
 mod version;
