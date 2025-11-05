@@ -4,7 +4,7 @@ use reth::chainspec::{EthChainSpec, EthereumHardforks};
 use futures_util::StreamExt;
 use url::Url;
 use tokio_tungstenite::connect_async;
-use alloy_primitives::{Address, Bloom, Bytes, B256, U256};
+use alloy_primitives::{Address, Bloom, Bytes, B256, U256, hex};
 use alloy_rpc_types_engine::PayloadId;
 use alloy_eips::eip4895::Withdrawal;
 use serde::{Deserialize, Serialize};
@@ -27,9 +27,61 @@ struct FlashBlock {
 struct Metadata {
     pub block_number: u64,
     pub new_account_balances: BTreeMap<Address, U256>,
-    /// Use flexible JSON Value for receipts to avoid deserialization issues
+    /// Receipts for all transactions in this flashblock
     #[serde(default)]
-    pub receipts: serde_json::Value,
+    pub receipts: BTreeMap<String, FlashblockReceipt>,
+}
+
+/// Receipt data from flashblocks metadata
+/// Many fields are optional as they may not be present in all flashblocks
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FlashblockReceipt {
+    #[serde(default, with = "alloy_serde::quantity::opt")]
+    pub transaction_index: Option<u64>,
+    #[serde(default)]
+    pub transaction_hash: Option<B256>,
+    #[serde(default)]
+    pub block_hash: Option<B256>,
+    #[serde(default, with = "alloy_serde::quantity::opt")]
+    pub block_number: Option<u64>,
+    #[serde(default)]
+    pub from: Option<Address>,
+    #[serde(default)]
+    pub to: Option<Address>,
+    #[serde(default, with = "alloy_serde::quantity::opt")]
+    pub cumulative_gas_used: Option<u64>,
+    #[serde(default, with = "alloy_serde::quantity::opt")]
+    pub gas_used: Option<u64>,
+    #[serde(default)]
+    pub contract_address: Option<Address>,
+    #[serde(default)]
+    pub logs: Vec<FlashblockLog>,
+    #[serde(default)]
+    pub logs_bloom: Option<Bloom>,
+    #[serde(default, with = "alloy_serde::quantity::opt")]
+    pub r#type: Option<u8>,
+    #[serde(default)]
+    pub status: Option<u64>,
+}
+
+/// Log data from flashblocks receipt
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FlashblockLog {
+    pub address: Address,
+    pub topics: Vec<B256>,
+    pub data: Bytes,
+    #[serde(with = "alloy_serde::quantity")]
+    pub block_number: u64,
+    pub transaction_hash: B256,
+    #[serde(with = "alloy_serde::quantity")]
+    pub transaction_index: u64,
+    pub block_hash: B256,
+    #[serde(with = "alloy_serde::quantity")]
+    pub log_index: u64,
+    #[serde(default)]
+    pub removed: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -102,7 +154,7 @@ where
                         Ok(flashblock) => {
                             let block_num = flashblock.metadata.block_number;
 
-                            info!(target: "firehose:tracer",
+                            debug!(target: "firehose:tracer",
                                 flashblock_index = flashblock.index,
                                 block_number = block_num,
                                 tx_count = flashblock.diff.transactions.len(),
@@ -126,7 +178,7 @@ where
                             current_flashblocks.push(flashblock);
                         }
                         Err(e) => {
-                            info!(target: "firehose:tracer", error = ?e, "Failed to deserialize flashblock");
+                            debug!(target: "firehose:tracer", error = ?e, "Failed to deserialize flashblock");
                         }
                     }
                 }
@@ -134,7 +186,7 @@ where
                     // Decompress brotli-encoded flashblock
                     let mut decompressed = Vec::new();
                     if let Err(e) = brotli::BrotliDecompress(&mut &bytes[..], &mut decompressed) {
-                        info!(target: "firehose:tracer", error = ?e, "Failed to decompress flashblock");
+                        debug!(target: "firehose:tracer", error = ?e, "Failed to decompress flashblock");
                         continue;
                     }
 
@@ -143,7 +195,7 @@ where
                         Ok(flashblock) => {
                             let block_num = flashblock.metadata.block_number;
 
-                            info!(target: "firehose:tracer",
+                            debug!(target: "firehose:tracer",
                                 flashblock_index = flashblock.index,
                                 block_number = block_num,
                                 tx_count = flashblock.diff.transactions.len(),
@@ -167,15 +219,15 @@ where
                             current_flashblocks.push(flashblock);
                         }
                         Err(e) => {
-                            info!(target: "firehose:tracer", error = ?e, "Failed to deserialize flashblock");
+                            debug!(target: "firehose:tracer", error = ?e, "Failed to deserialize flashblock");
                         }
                     }
                 }
                 Ok(msg) => {
-                    info!(target: "firehose:tracer", "Unexpected websocket message type: {:?}", msg);
+                    debug!(target: "firehose:tracer", "Unexpected websocket message type: {:?}", msg);
                 }
                 Err(e) => {
-                    info!(target: "firehose:tracer", error = ?e, "Flashblock stream error");
+                    debug!(target: "firehose:tracer", error = ?e, "Flashblock stream error");
                     break;
                 }
             }
@@ -279,6 +331,34 @@ fn decode_transaction(tx_bytes: &[u8]) -> eyre::Result<OpTransactionSigned> {
     OpTransactionSigned::decode(&mut buf).map_err(|e| eyre::eyre!("Failed to decode transaction: {}", e))
 }
 
+/// Extract access list from transaction and convert to protobuf format
+fn extract_access_list(decoded_tx: &OpTransactionSigned) -> Vec<pb::sf::ethereum::r#type::v2::AccessTuple> {
+    use op_alloy_consensus::OpTxEnvelope;
+    use pb::sf::ethereum::r#type::v2::AccessTuple;
+
+    match decoded_tx {
+        OpTxEnvelope::Eip2930(tx) => {
+            tx.tx().access_list.0.iter().map(|item| AccessTuple {
+                address: item.address.to_vec(),
+                storage_keys: item.storage_keys.iter().map(|k| k.to_vec()).collect(),
+            }).collect()
+        }
+        OpTxEnvelope::Eip1559(tx) => {
+            tx.tx().access_list.0.iter().map(|item| AccessTuple {
+                address: item.address.to_vec(),
+                storage_keys: item.storage_keys.iter().map(|k| k.to_vec()).collect(),
+            }).collect()
+        }
+        OpTxEnvelope::Eip7702(tx) => {
+            tx.tx().access_list.0.iter().map(|item| AccessTuple {
+                address: item.address.to_vec(),
+                storage_keys: item.storage_keys.iter().map(|k| k.to_vec()).collect(),
+            }).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// Convert accumulated flashblocks into a FIRE BLOCK output
 fn output_flashblock_as_fire_block<Node: FullNodeComponents>(
     tracer: &mut firehose::Tracer<Node>,
@@ -305,7 +385,7 @@ fn output_flashblock_as_fire_block<Node: FullNodeComponents>(
     let base_opt = flashblocks.iter().find_map(|fb| fb.base.as_ref());
 
     if base_opt.is_none() {
-        info!(target: "firehose:tracer", block_number = last_fb.metadata.block_number, "Skipping block without base payload");
+        debug!(target: "firehose:tracer", block_number = last_fb.metadata.block_number, "Skipping block without base payload");
         return;
     }
 
@@ -313,12 +393,24 @@ fn output_flashblock_as_fire_block<Node: FullNodeComponents>(
      // Use last flashblock for final state
     let diff = &last_fb.diff;
 
+    // Collect all receipts from all flashblocks into a map by transaction hash
+    // The key in the BTreeMap is already the transaction hash in hex format
+    use std::collections::HashMap;
+    let mut receipts_by_hash_hex: HashMap<String, FlashblockReceipt> = HashMap::new();
+    for flashblock in flashblocks {
+        for (tx_hash_hex, receipt) in &flashblock.metadata.receipts {
+            // Use the key directly as it's already the transaction hash in hex
+            receipts_by_hash_hex.insert(tx_hash_hex.clone(), receipt.clone());
+        }
+    }
+
     info!(target: "firehose:tracer",
         block_number = base.block_number,
-        flashblock_count = flashblocks.len(),
         tx_count = diff.transactions.len(),
-        "Outputting complete block from flashblocks"
+        receipts = receipts_by_hash_hex.len(),
+        "Tracing block"
     );
+
 
     // Process transactions from all flashblocks
     let mut transaction_traces = Vec::new();
@@ -382,6 +474,48 @@ fn output_flashblock_as_fire_block<Node: FullNodeComponents>(
                         }
                     };
 
+                    // Look up receipt for this transaction by hash
+                    let tx_hash_hex = format!("0x{}", hex::encode(tx_hash.as_slice()));
+                    let receipt_opt = receipts_by_hash_hex.get(&tx_hash_hex);
+
+                    // Extract gas_used and status from receipt
+                    let gas_used = receipt_opt.and_then(|r| r.gas_used).unwrap_or(0);
+                    let status = receipt_opt
+                        .and_then(|r| r.status)
+                        .map(|s| if s == 1 {
+                            pb::sf::ethereum::r#type::v2::TransactionTraceStatus::Succeeded
+                        } else {
+                            pb::sf::ethereum::r#type::v2::TransactionTraceStatus::Failed
+                        })
+                        .unwrap_or(pb::sf::ethereum::r#type::v2::TransactionTraceStatus::Succeeded) as i32;
+
+                    // Convert receipt to protobuf if available
+                    let pb_receipt = receipt_opt.map(|receipt| {
+                        use pb::sf::ethereum::r#type::v2::{TransactionReceipt, Log as PbLog};
+
+                        let logs: Vec<PbLog> = receipt.logs.iter().map(|log| {
+                            PbLog {
+                                address: log.address.to_vec(),
+                                topics: log.topics.iter().map(|t| t.to_vec()).collect(),
+                                data: log.data.to_vec(),
+                                index: log.log_index as u32,
+                                block_index: log.log_index as u32,
+                                //TODO: Will be set properly when we have full tracing
+                                ordinal: 0,
+                            }
+                        }).collect();
+
+                        TransactionReceipt {
+                            // Not available in flashblocks
+                            state_root: Vec::new(),
+                            cumulative_gas_used: receipt.cumulative_gas_used.unwrap_or(0),
+                            logs_bloom: receipt.logs_bloom.as_ref().map(|b| b.as_slice().to_vec()).unwrap_or_default(),
+                            logs,
+                            blob_gas_used: None,
+                            blob_gas_price: None,
+                        }
+                    });
+
                     TransactionTrace {
                         to,
                         nonce: decoded_tx.nonce(),
@@ -389,8 +523,7 @@ fn output_flashblock_as_fire_block<Node: FullNodeComponents>(
                             bytes: u256_to_bytes(U256::from(decoded_tx.max_fee_per_gas())),
                         }),
                         gas_limit: decoded_tx.gas_limit(),
-                        // We dont have execution data
-                        gas_used: 0,
+                        gas_used,
                         value: Some(BigInt {
                             bytes: u256_to_bytes(decoded_tx.value()),
                         }),
@@ -400,14 +533,13 @@ fn output_flashblock_as_fire_block<Node: FullNodeComponents>(
                         s: s_bytes,
                         hash: tx_hash.to_vec(),
                         from: from.to_vec(),
-                        status: pb::sf::ethereum::r#type::v2::TransactionTraceStatus::Succeeded as i32,
+                        status,
                         return_data: Vec::new(),
                         public_key: Vec::new(),
                         begin_ordinal: tx_index,
                         end_ordinal: tx_index + 1,
                         r#type: tx_type,
-                        // TODO: Extract access list if present
-                        access_list: Vec::new(),
+                        access_list: extract_access_list(&decoded_tx),
                         max_fee_per_gas: Some(BigInt {
                             bytes: u256_to_bytes(U256::from(decoded_tx.max_fee_per_gas())),
                         }),
@@ -415,7 +547,7 @@ fn output_flashblock_as_fire_block<Node: FullNodeComponents>(
                             bytes: u256_to_bytes(U256::from(v)),
                         }),
                         index: tx_index as u32,
-                        receipt: None,
+                        receipt: pb_receipt,
                         calls: Vec::new(),
                         blob_gas: None,
                         blob_gas_fee_cap: None,
@@ -425,7 +557,7 @@ fn output_flashblock_as_fire_block<Node: FullNodeComponents>(
                 }
                 Err(e) => {
                     // If decoding fails fall back to raw bytes only
-                    info!(target: "firehose:tracer", error = ?e, "Failed to decode transaction, using raw bytes");
+                    debug!(target: "firehose:tracer", error = ?e, "Failed to decode transaction, using raw bytes");
                     TransactionTrace {
                         to: Vec::new(),
                         nonce: 0,
@@ -479,12 +611,14 @@ fn output_flashblock_as_fire_block<Node: FullNodeComponents>(
         balance_changes.push(balance_change);
     }
 
-    info!(target: "firehose:tracer",
-        block_number = base.block_number,
-        tx_traces = transaction_traces.len(),
-        balance_changes = balance_changes.len(),
-        "Extracted data from flashblocks"
-    );
+
+    // Calculate stats before moving values
+    let tx_count = transaction_traces.len();
+    let log_count: usize = transaction_traces.iter()
+        .filter_map(|t| t.receipt.as_ref())
+        .map(|r| r.logs.len())
+        .sum();
+    let balance_change_count = balance_changes.len();
 
     // Build Block protobuf from flashblock data
     let pb_header = BlockHeader {
@@ -551,5 +685,11 @@ fn output_flashblock_as_fire_block<Node: FullNodeComponents>(
 
     printer::firehose_block_to_stdout(pb_block, FinalityStatus::default());
 
-    info!(target: "firehose:tracer", block_number = base.block_number, "FIRE BLOCK output complete");
+    info!(target: "firehose:tracer",
+        block_number = base.block_number,
+        tx_traces = tx_count,
+        logs = log_count,
+        balance_changes = balance_change_count,
+        "Block traced"
+    );
 }
