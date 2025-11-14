@@ -1,0 +1,13 @@
+[package]
+name = "monad-plugin"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+eyre = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tracing = { workspace = true }
+hex = { workspace = true }
+monad-exec-events = { workspace = true }
+monad-event-ring  = { workspace = true }
