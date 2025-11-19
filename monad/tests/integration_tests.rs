@@ -4,8 +4,12 @@
 //! to Firehose protobuf blocks.
 
 use eyre::Result;
+use monad_tracer as tracer;
+use monad_plugin as plugin;
 use pb::{Block, BlockHeader};
-use plugin::{initialize_plugin, PluginConfig, ProcessedEvent};
+use plugin::ProcessedEvent;
+#[cfg(target_os = "linux")]
+use plugin::{initialize_plugin, PluginConfig};
 use tracer::{EventMapper, FirehoseTracer, TracerConfig};
 
 #[tokio::test]
@@ -142,6 +146,7 @@ async fn test_tracer_configuration() -> Result<()> {
 }
 
 #[tokio::test]
+#[cfg(target_os = "linux")]
 async fn test_plugin_initialization() -> Result<()> {
     let config = PluginConfig {
         event_ring_path: "/tmp/test_monad_events".to_string(),
@@ -149,7 +154,7 @@ async fn test_plugin_initialization() -> Result<()> {
         timeout_ms: 500,
     };
 
-    let consumer = initialize_plugin(config).await?;
+    let _consumer = initialize_plugin(config).await?;
     // Just verify we can create the consumer without errors
     // In a real test, we would verify it can consume events
 

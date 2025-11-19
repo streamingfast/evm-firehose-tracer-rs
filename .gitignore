@@ -3,3 +3,4 @@
 /.firehose-data-optimism
 /target
 /op-data
+/.cargo
