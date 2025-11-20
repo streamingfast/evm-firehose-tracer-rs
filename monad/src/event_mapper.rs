@@ -2,7 +2,7 @@
 //!
 //! Maps processed Monad events to Firehose protobuf blocks.
 
-use crate::{Block, BlockHeader, Ordinal, ProcessedEvent, TransactionTrace};
+use crate::{Block, BlockHeader, ProcessedEvent, TransactionTrace};
 use pb::sf::ethereum::r#type::v2::{block, BigInt};
 use alloy_primitives::{Bloom, BloomInput};
 use eyre::Result;
@@ -76,7 +76,6 @@ fn calculate_logs_bloom(logs: &[pb::sf::ethereum::r#type::v2::Log]) -> Vec<u8> {
 /// Maps processed events to Firehose blocks
 pub struct EventMapper {
     current_block: Option<BlockBuilder>,
-    ordinal: Ordinal,
 }
 
 impl EventMapper {
@@ -84,7 +83,6 @@ impl EventMapper {
     pub fn new() -> Self {
         Self {
             current_block: None,
-            ordinal: Ordinal::new(),
         }
     }
 
@@ -111,7 +109,7 @@ impl EventMapper {
 
             // Add the event to the new block
             if let Some(ref mut builder) = self.current_block {
-                builder.add_event(event, &mut self.ordinal).await?;
+                builder.add_event(event).await?;
             }
 
             return Ok(completed_block);
@@ -119,7 +117,7 @@ impl EventMapper {
 
         // Add the event to the current block
         if let Some(ref mut builder) = self.current_block {
-            builder.add_event(event.clone(), &mut self.ordinal).await?;
+            builder.add_event(event.clone()).await?;
 
             // Check if this is a BLOCK_END event - if so, finalize the block
             if event.event_type == "BLOCK_END" {
@@ -200,13 +198,13 @@ impl BlockBuilder {
     }
 
     /// Add an event to the block
-    async fn add_event(&mut self, event: ProcessedEvent, ordinal: &mut Ordinal) -> Result<()> {
+    async fn add_event(&mut self, event: ProcessedEvent) -> Result<()> {
         match event.event_type.as_str() {
-            "BLOCK_START" => self.handle_block_start(event, ordinal).await?,
-            "BLOCK_END" => self.handle_block_end(event, ordinal).await?,
-            "TX_HEADER" => self.handle_transaction_header(event, ordinal).await?,
-            "TX_RECEIPT" => self.handle_transaction_receipt(event, ordinal).await?,
-            "TX_LOG" => self.handle_transaction_log(event, ordinal).await?,
+            "BLOCK_START" => self.handle_block_start(event).await?,
+            "BLOCK_END" => self.handle_block_end(event).await?,
+            "TX_HEADER" => self.handle_transaction_header(event).await?,
+            "TX_RECEIPT" => self.handle_transaction_receipt(event).await?,
+            "TX_LOG" => self.handle_transaction_log(event).await?,
             _ => {
                 debug!("Unknown event type: {}", event.event_type);
             }
@@ -216,11 +214,7 @@ impl BlockBuilder {
     }
 
     /// Handle block start events
-    async fn handle_block_start(
-        &mut self,
-        event: ProcessedEvent,
-        _ordinal: &mut Ordinal,
-    ) -> Result<()> {
+    async fn handle_block_start(&mut self, event: ProcessedEvent) -> Result<()> {
         debug!("Handling block start for block {}", event.block_number);
 
         let block_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
@@ -269,11 +263,7 @@ impl BlockBuilder {
         Ok(())
     }
 
-    async fn handle_block_end(
-        &mut self,
-        event: ProcessedEvent,
-        _ordinal: &mut Ordinal,
-    ) -> Result<()> {
+    async fn handle_block_end(&mut self, event: ProcessedEvent) -> Result<()> {
         debug!("Handling block end for block {}", event.block_number);
 
         let block_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
@@ -300,11 +290,7 @@ impl BlockBuilder {
     }
 
     /// Handle transaction header events
-    async fn handle_transaction_header(
-        &mut self,
-        event: ProcessedEvent,
-        _ordinal: &mut Ordinal,
-    ) -> Result<()> {
+    async fn handle_transaction_header(&mut self, event: ProcessedEvent) -> Result<()> {
         debug!("Handling transaction header");
 
         let tx_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
@@ -388,11 +374,7 @@ impl BlockBuilder {
         Ok(())
     }
 
-    async fn handle_transaction_receipt(
-        &mut self,
-        event: ProcessedEvent,
-        _ordinal: &mut Ordinal,
-    ) -> Result<()> {
+    async fn handle_transaction_receipt(&mut self, event: ProcessedEvent) -> Result<()> {
         debug!("Handling transaction receipt");
 
         let receipt_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
@@ -421,11 +403,7 @@ impl BlockBuilder {
         Ok(())
     }
 
-    async fn handle_transaction_log(
-        &mut self,
-        event: ProcessedEvent,
-        _ordinal: &mut Ordinal,
-    ) -> Result<()> {
+    async fn handle_transaction_log(&mut self, event: ProcessedEvent) -> Result<()> {
         debug!("Handling transaction log");
 
         let log_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
