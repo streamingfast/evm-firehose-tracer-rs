@@ -1,0 +1,24 @@
+start:
+  args:
+    - reader-node
+    - merger
+    - relayer
+    - firehose
+  flags:
+    # Monad chain configuration
+    advertise-chain-name: "monad"
+    data-dir: ".firehose-data"
+
+    common-first-streamable-block: 31
+
+    reader-node-path: "/data/evm-firehose-tracer/target/release/monad-firehose-tracer"
+    reader-node-data-dir: "{data-dir}/reader-node"
+    reader-node-bootstrap-data-url: "bash:///./fireeth.monad.bootstrap.sh"
+    reader-node-arguments:
+      --chain-id=20143
+      --network-name=devnet
+      --monad-event-ring-path=/dev/hugepages/event-rings/monad-devnet-events
+      --buffer-size=1024
+      --timeout-ms=1000
+
+    firehose-grpc-listen-addr: ":10001"
