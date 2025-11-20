@@ -1,17 +1,81 @@
 //! Event Mapper
 //!
-//! This module handles mapping processed Monad events to Firehose protobuf blocks.
+//! Maps processed Monad events to Firehose protobuf blocks.
 
 use crate::{Block, BlockHeader, Ordinal, ProcessedEvent, TransactionTrace};
-use pb::sf::ethereum::r#type::v2::{balance_change, block, BalanceChange, BigInt, Call, CallType, CodeChange};
+use pb::sf::ethereum::r#type::v2::{block, BigInt};
+use alloy_primitives::{Bloom, BloomInput};
 use eyre::Result;
+use serde_json;
 use tracing::{debug, info};
+
+/// Convert U256 limbs (4x u64 in little-endian) to big-endian bytes with leading zero compaction
+fn u256_limbs_to_bytes(limbs: &[u64]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(32);
+    // U256 is stored as 4 limbs in little-endian order
+    // We need to convert to big-endian for protobuf
+    for i in (0..4).rev() {
+        let limb = limbs.get(i).copied().unwrap_or(0);
+        bytes.extend_from_slice(&limb.to_be_bytes());
+    }
+
+    // Strip leading zeros for Ethereum hex compaction
+    compact_bytes(bytes)
+}
+
+/// Strip leading zeros from byte array (Ethereum hex compaction)
+fn compact_bytes(bytes: Vec<u8>) -> Vec<u8> {
+    // Find first non-zero byte
+    let first_non_zero = bytes.iter().position(|&b| b != 0);
+
+    match first_non_zero {
+        Some(pos) => bytes[pos..].to_vec(),
+        None => vec![0], // All zeros -> single zero byte
+    }
+}
+
+/// Ensure address bytes are 20 bytes (zero-pad if empty)
+fn ensure_address_bytes(bytes: Vec<u8>) -> Vec<u8> {
+    if bytes.is_empty() {
+        vec![0u8; 20]
+    } else {
+        bytes
+    }
+}
+
+/// Ensure hash bytes are 32 bytes (zero-pad if empty)
+fn ensure_hash_bytes(bytes: Vec<u8>) -> Vec<u8> {
+    if bytes.is_empty() {
+        vec![0u8; 32]
+    } else {
+        bytes
+    }
+}
+
+/// Calculate logs bloom filter from logs
+fn calculate_logs_bloom(logs: &[pb::sf::ethereum::r#type::v2::Log]) -> Vec<u8> {
+    let mut bloom = Bloom::default();
+
+    for log in logs {
+        // Add log address to bloom
+        if log.address.len() == 20 {
+            bloom.accrue(BloomInput::Raw(&log.address));
+        }
+
+        // Add each topic to bloom
+        for topic in &log.topics {
+            if topic.len() == 32 {
+                bloom.accrue(BloomInput::Raw(topic));
+            }
+        }
+    }
+
+    bloom.as_slice().to_vec()
+}
 
 /// Maps processed events to Firehose blocks
 pub struct EventMapper {
-    /// Current block being built
     current_block: Option<BlockBuilder>,
-    /// Ordinal counter for execution ordering
     ordinal: Ordinal,
 }
 
@@ -50,7 +114,6 @@ impl EventMapper {
                 builder.add_event(event, &mut self.ordinal).await?;
             }
 
-            // Return the completed block if we had one
             return Ok(completed_block);
         }
 
@@ -84,36 +147,55 @@ impl Default for EventMapper {
     }
 }
 
-/// Builder for constructing Firehose blocks from events
 struct BlockBuilder {
     block_number: u64,
     block_hash: Vec<u8>,
     parent_hash: Vec<u8>,
+    uncle_hash: Vec<u8>,
+    state_root: Vec<u8>,
+    transactions_root: Vec<u8>,
+    receipts_root: Vec<u8>,
+    logs_bloom: Vec<u8>,
+    coinbase: Vec<u8>,
+    difficulty: u64,
     timestamp: u64,
-    transactions: Vec<TransactionTrace>,
-    balance_changes: Vec<BalanceChange>,
-    code_changes: Vec<CodeChange>,
-    system_calls: Vec<Call>,
+    extra_data: Vec<u8>,
+    mix_hash: Vec<u8>,
+    nonce: u64,
+    base_fee_per_gas: Vec<u64>,
+    withdrawals_root: Vec<u8>,
     size: u64,
     gas_used: u64,
     gas_limit: u64,
+    transactions_map: std::collections::HashMap<usize, TransactionTrace>,
+    cumulative_gas_used: u64,
 }
 
+/// Builder for constructing Firehose blocks from events
 impl BlockBuilder {
-    /// Create a new block builder
     fn new(block_number: u64) -> Self {
         Self {
             block_number,
-            block_hash: vec![0u8; 32],  // TODO: Get actual hash from events
-            parent_hash: vec![0u8; 32], // TODO: Get actual parent hash
+            block_hash: vec![0u8; 32],
+            parent_hash: vec![0u8; 32],
+            uncle_hash: vec![0u8; 32],
+            state_root: vec![0u8; 32],
+            transactions_root: vec![0u8; 32],
+            receipts_root: vec![0u8; 32],
+            logs_bloom: vec![0u8; 256],
+            coinbase: vec![0u8; 20],
+            difficulty: 0,
             timestamp: chrono::Utc::now().timestamp() as u64,
-            transactions: Vec::new(),
-            balance_changes: Vec::new(),
-            code_changes: Vec::new(),
-            system_calls: Vec::new(),
-            size: 0,
+            extra_data: Vec::new(),
+            mix_hash: vec![0u8; 32],
+            nonce: 0,
+              base_fee_per_gas: vec![0u64; 4],
+              withdrawals_root: vec![0u8; 32],
+              size: 0,
             gas_used: 0,
-            gas_limit: 30_000_000, // Default gas limit
+            gas_limit: 30_000_000,
+            transactions_map: std::collections::HashMap::new(),
+            cumulative_gas_used: 0,
         }
     }
 
@@ -122,11 +204,9 @@ impl BlockBuilder {
         match event.event_type.as_str() {
             "BLOCK_START" => self.handle_block_start(event, ordinal).await?,
             "BLOCK_END" => self.handle_block_end(event, ordinal).await?,
-            "TX_START" => self.handle_transaction_start(event, ordinal).await?,
-            "TX_END" => self.handle_transaction_end(event, ordinal).await?,
-            "BALANCE_CHANGE" => self.handle_balance_change(event, ordinal).await?,
-            "CODE_CHANGE" => self.handle_code_change(event, ordinal).await?,
-            "CALL_START" | "CALL_END" => self.handle_call(event, ordinal).await?,
+            "TX_HEADER" => self.handle_transaction_header(event, ordinal).await?,
+            "TX_RECEIPT" => self.handle_transaction_receipt(event, ordinal).await?,
+            "TX_LOG" => self.handle_transaction_log(event, ordinal).await?,
             _ => {
                 debug!("Unknown event type: {}", event.event_type);
             }
@@ -143,36 +223,52 @@ impl BlockBuilder {
     ) -> Result<()> {
         debug!("Handling block start for block {}", event.block_number);
 
-        // Parse block data from event.firehose_data
-        // Format: "BLOCK_START:{block_num}:{parent_hash_hex}:{timestamp}:{gas_limit}"
-        let data_str = String::from_utf8(event.firehose_data.clone())?;
-        let parts: Vec<&str> = data_str.split(':').collect();
+        let block_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
 
-        if parts.len() >= 3 && parts[0] == "BLOCK_START" {
-            // Parse parent hash from hex
-            if let Ok(parent_hash_bytes) = hex::decode(parts[2]) {
-                self.parent_hash = parent_hash_bytes;
-            }
-
-            // Parse timestamp
-            if parts.len() >= 4 {
-                if let Ok(ts) = parts[3].parse::<u64>() {
-                    self.timestamp = ts;
-                }
-            }
-
-            // Parse gas limit
-            if parts.len() >= 5 {
-                if let Ok(gas_limit) = parts[4].parse::<u64>() {
-                    self.gas_limit = gas_limit;
-                }
-            }
+        // Extract all header fields
+        if let Some(parent_hash) = block_data["parent_hash"].as_str() {
+            self.parent_hash = ensure_hash_bytes(hex::decode(parent_hash).unwrap_or_default());
+        }
+        if let Some(uncle_hash) = block_data["uncle_hash"].as_str() {
+            self.uncle_hash = ensure_hash_bytes(hex::decode(uncle_hash).unwrap_or_default());
+        }
+        if let Some(coinbase) = block_data["coinbase"].as_str() {
+            self.coinbase = ensure_address_bytes(hex::decode(coinbase).unwrap_or_default());
+        }
+        if let Some(transactions_root) = block_data["transactions_root"].as_str() {
+            self.transactions_root = ensure_hash_bytes(hex::decode(transactions_root).unwrap_or_default());
+        }
+        if let Some(difficulty) = block_data["difficulty"].as_u64() {
+            self.difficulty = difficulty;
+        }
+        if let Some(gas_limit) = block_data["gas_limit"].as_u64() {
+            self.gas_limit = gas_limit;
+        }
+        if let Some(timestamp) = block_data["timestamp"].as_u64() {
+            self.timestamp = timestamp;
+        }
+        if let Some(extra_data) = block_data["extra_data"].as_str() {
+            self.extra_data = hex::decode(extra_data).unwrap_or_default();
+        }
+        if let Some(mix_hash) = block_data["mix_hash"].as_str() {
+            self.mix_hash = ensure_hash_bytes(hex::decode(mix_hash).unwrap_or_default());
+        }
+        if let Some(nonce) = block_data["nonce"].as_u64() {
+            self.nonce = nonce;
+        }
+        if let Some(base_fee_limbs) = block_data["base_fee_per_gas"]["limbs"].as_array() {
+            self.base_fee_per_gas = base_fee_limbs
+                .iter()
+                .map(|v| v.as_u64().unwrap_or(0))
+                .collect();
+        }
+        if let Some(withdrawals_root) = block_data["withdrawals_root"].as_str() {
+            self.withdrawals_root = ensure_hash_bytes(hex::decode(withdrawals_root).unwrap_or_default());
         }
 
         Ok(())
     }
 
-    /// Handle block end events
     async fn handle_block_end(
         &mut self,
         event: ProcessedEvent,
@@ -180,23 +276,22 @@ impl BlockBuilder {
     ) -> Result<()> {
         debug!("Handling block end for block {}", event.block_number);
 
-        // Parse block data from event.firehose_data
-        // Format: "BLOCK_END:{block_num}:{block_hash_hex}:{state_root_hex}:{gas_used}"
-        let data_str = String::from_utf8(event.firehose_data.clone())?;
-        let parts: Vec<&str> = data_str.split(':').collect();
+        let block_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
 
-        if parts.len() >= 3 && parts[0] == "BLOCK_END" {
-            // Parse block hash from hex
-            if let Ok(block_hash_bytes) = hex::decode(parts[2]) {
-                self.block_hash = block_hash_bytes;
-            }
-
-            // Parse gas used
-            if parts.len() >= 5 {
-                if let Ok(gas_used) = parts[4].parse::<u64>() {
-                    self.gas_used = gas_used;
-                }
-            }
+        if let Some(hash) = block_data["hash"].as_str() {
+            self.block_hash = ensure_hash_bytes(hex::decode(hash).unwrap_or_default());
+        }
+        if let Some(state_root) = block_data["state_root"].as_str() {
+            self.state_root = ensure_hash_bytes(hex::decode(state_root).unwrap_or_default());
+        }
+        if let Some(receipts_root) = block_data["receipts_root"].as_str() {
+            self.receipts_root = ensure_hash_bytes(hex::decode(receipts_root).unwrap_or_default());
+        }
+        if let Some(logs_bloom) = block_data["logs_bloom"].as_str() {
+            self.logs_bloom = hex::decode(logs_bloom).unwrap_or_else(|_| vec![0u8; 256]);
+        }
+        if let Some(gas_used) = block_data["gas_used"].as_u64() {
+            self.gas_used = gas_used;
         }
 
         self.size = event.firehose_data.len() as u64;
@@ -204,123 +299,210 @@ impl BlockBuilder {
         Ok(())
     }
 
-    /// Handle transaction start events
-    async fn handle_transaction_start(
+    /// Handle transaction header events
+    async fn handle_transaction_header(
         &mut self,
         event: ProcessedEvent,
-        ordinal: &mut Ordinal,
+        _ordinal: &mut Ordinal,
     ) -> Result<()> {
-        debug!("Handling transaction start");
+        debug!("Handling transaction header");
 
-        // TODO: Parse transaction data from event.firehose_data
+        let tx_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
+
+        let txn_index = tx_data["txn_index"].as_u64().unwrap_or(0) as usize;
+        let hash = ensure_hash_bytes(hex::decode(tx_data["hash"].as_str().unwrap_or("")).unwrap_or_default());
+        let from = ensure_address_bytes(hex::decode(tx_data["from"].as_str().unwrap_or("")).unwrap_or_default());
+        let to = ensure_address_bytes(hex::decode(tx_data["to"].as_str().unwrap_or("")).unwrap_or_default());
+        let nonce = tx_data["nonce"].as_u64().unwrap_or(0);
+        let gas_limit = tx_data["gas_limit"].as_u64().unwrap_or(0);
+        let input = hex::decode(tx_data["input"].as_str().unwrap_or("")).unwrap_or_default();
+        let txn_type = tx_data["txn_type"].as_u64().unwrap_or(2) as u32;
+
+        // Parse U256 values from limbs
+        let value_limbs = tx_data["value"]["limbs"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .map(|v| v.as_u64().unwrap_or(0))
+                    .collect::<Vec<u64>>()
+            })
+            .unwrap_or_else(|| vec![0u64; 4]);
+        let value = u256_limbs_to_bytes(&value_limbs);
+
+        let max_fee_limbs = tx_data["max_fee_per_gas"]["limbs"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .map(|v| v.as_u64().unwrap_or(0))
+                    .collect::<Vec<u64>>()
+            })
+            .unwrap_or_else(|| vec![0u64; 4]);
+        let gas_price = u256_limbs_to_bytes(&max_fee_limbs);
+
+        // Parse signature
+        let r_limbs = tx_data["r"]["limbs"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .map(|v| v.as_u64().unwrap_or(0))
+                    .collect::<Vec<u64>>()
+            })
+            .unwrap_or_else(|| vec![0u64; 4]);
+        let r = u256_limbs_to_bytes(&r_limbs);
+
+        let s_limbs = tx_data["s"]["limbs"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .map(|v| v.as_u64().unwrap_or(0))
+                    .collect::<Vec<u64>>()
+            })
+            .unwrap_or_else(|| vec![0u64; 4]);
+        let s = u256_limbs_to_bytes(&s_limbs);
+
+        let y_parity = tx_data["y_parity"].as_bool().unwrap_or(false);
+        let v = if y_parity { vec![1u8] } else { vec![0u8] };
+
         let tx_trace = TransactionTrace {
-            index: self.transactions.len() as u32,
-            hash: event.firehose_data.clone(),
-            begin_ordinal: ordinal.next(),
-            end_ordinal: 0, // Will be set on transaction end
+            index: txn_index as u32,
+            hash,
+            from,
+            to,
+            nonce,
+            gas_limit,
+            value: Some(BigInt { bytes: value }),
+            gas_price: Some(BigInt { bytes: gas_price }),
+            input,
+            v,
+            r,
+            s,
+            r#type: txn_type as i32,
+            // Deterministic ordinals based on transaction index for BASE blocks
+            begin_ordinal: (txn_index * 2) as u64,
+            end_ordinal: (txn_index * 2 + 1) as u64,
             ..Default::default()
         };
 
-        self.transactions.push(tx_trace);
+        self.transactions_map.insert(txn_index, tx_trace);
 
         Ok(())
     }
 
-    /// Handle transaction end events
-    async fn handle_transaction_end(
+    async fn handle_transaction_receipt(
         &mut self,
-        _event: ProcessedEvent,
-        ordinal: &mut Ordinal,
+        event: ProcessedEvent,
+        _ordinal: &mut Ordinal,
     ) -> Result<()> {
-        debug!("Handling transaction end");
+        debug!("Handling transaction receipt");
 
-        // Update the last transaction's end ordinal
-        if let Some(last_tx) = self.transactions.last_mut() {
-            last_tx.end_ordinal = ordinal.next();
+        let receipt_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
+
+        let txn_index = receipt_data["txn_index"].as_u64().unwrap_or(0) as usize;
+        let status = receipt_data["status"].as_bool().unwrap_or(false);
+        let gas_used = receipt_data["gas_used"].as_u64().unwrap_or(0);
+
+        self.cumulative_gas_used += gas_used;
+
+        if let Some(tx) = self.transactions_map.get_mut(&txn_index) {
+            tx.gas_used = gas_used;
+            // Monad only provides boolean status. Map false to REVERTED since most
+            // unsuccessful transactions are reverts, not catastrophic failures.
+            tx.status = if status { 1 } else { 3 };
+
+            // Create receipt with empty bloom - will be calculated in finalize() after logs are added
+            tx.receipt = Some(pb::sf::ethereum::r#type::v2::TransactionReceipt {
+                cumulative_gas_used: self.cumulative_gas_used,
+                logs_bloom: vec![0u8; 256],
+                logs: Vec::new(),
+                ..Default::default()
+            });
         }
 
         Ok(())
     }
 
-    /// Handle balance change events
-    async fn handle_balance_change(
+    async fn handle_transaction_log(
         &mut self,
         event: ProcessedEvent,
-        ordinal: &mut Ordinal,
+        _ordinal: &mut Ordinal,
     ) -> Result<()> {
-        debug!("Handling balance change");
+        debug!("Handling transaction log");
 
-        // TODO: Parse balance change data from event.firehose_data
-        let balance_change = BalanceChange {
-            address: vec![0u8; 20], // TODO: Parse from event data
-            old_value: Some(BigInt { bytes: vec![0] }),
-            new_value: Some(BigInt {
-                bytes: event.firehose_data,
-            }),
-            reason: balance_change::Reason::Transfer as i32,
-            ordinal: ordinal.next(),
-        };
+        let log_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
 
-        self.balance_changes.push(balance_change);
+        let txn_index = log_data["txn_index"].as_u64().unwrap_or(0) as usize;
+        let address = ensure_address_bytes(hex::decode(log_data["address"].as_str().unwrap_or("")).unwrap_or_default());
+        let topics = log_data["topics"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| hex::decode(v.as_str().unwrap_or("")).ok().map(ensure_hash_bytes))
+                    .collect::<Vec<Vec<u8>>>()
+            })
+            .unwrap_or_default();
+        let data = hex::decode(log_data["data"].as_str().unwrap_or("")).unwrap_or_default();
 
-        Ok(())
-    }
-
-    /// Handle code change events
-    async fn handle_code_change(
-        &mut self,
-        event: ProcessedEvent,
-        ordinal: &mut Ordinal,
-    ) -> Result<()> {
-        debug!("Handling code change");
-
-        // TODO: Parse code change data from event.firehose_data
-        let code_change = CodeChange {
-            address: vec![0u8; 20], // TODO: Parse from event data
-            old_hash: vec![0u8; 32],
-            old_code: Vec::new(),
-            new_hash: vec![1u8; 32],
-            new_code: event.firehose_data,
-            ordinal: ordinal.next(),
-        };
-
-        self.code_changes.push(code_change);
-
-        Ok(())
-    }
-
-    /// Handle call events
-    async fn handle_call(&mut self, event: ProcessedEvent, ordinal: &mut Ordinal) -> Result<()> {
-        debug!("Handling call event: {}", event.event_type);
-
-        // TODO: Parse call data from event.firehose_data
-        let call = Call {
-            index: self.system_calls.len() as u32,
-            call_type: CallType::Call as i32,
-            begin_ordinal: ordinal.next(),
-            end_ordinal: ordinal.next(),
+        let log = pb::sf::ethereum::r#type::v2::Log {
+            address,
+            topics,
+            data,
             ..Default::default()
         };
 
-        self.system_calls.push(call);
+        if let Some(tx) = self.transactions_map.get_mut(&txn_index) {
+            if let Some(receipt) = tx.receipt.as_mut() {
+                receipt.logs.push(log);
+            }
+        }
 
         Ok(())
     }
 
     /// Finalize the block and return it
-    fn finalize(self) -> Result<Block> {
+    fn finalize(mut self) -> Result<Block> {
         info!("Finalizing block {}", self.block_number);
+
+        // Move transactions from map to vec, sorted by index
+        let mut transactions: Vec<TransactionTrace> = self
+            .transactions_map
+            .into_iter()
+            .map(|(_, tx)| {
+                let mut tx = tx;
+                // Calculate logs bloom from actual logs
+                if let Some(ref mut receipt) = tx.receipt {
+                    receipt.logs_bloom = calculate_logs_bloom(&receipt.logs);
+                }
+                tx
+            })
+            .collect();
+        transactions.sort_by_key(|tx| tx.index);
 
         let header = BlockHeader {
             number: self.block_number,
             hash: self.block_hash.clone(),
             parent_hash: self.parent_hash,
+            uncle_hash: self.uncle_hash,
+            state_root: self.state_root,
+            transactions_root: self.transactions_root,
+            receipt_root: self.receipts_root,
+            logs_bloom: self.logs_bloom,
+            difficulty: Some(BigInt { bytes: self.difficulty.to_be_bytes().to_vec() }),
             gas_limit: self.gas_limit,
             gas_used: self.gas_used,
             timestamp: Some(prost_types::Timestamp {
                 seconds: self.timestamp as i64,
                 nanos: 0,
             }),
+            extra_data: self.extra_data,
+            mix_hash: self.mix_hash,
+            nonce: self.nonce,
+            coinbase: self.coinbase,
+            base_fee_per_gas: Some(BigInt { bytes: u256_limbs_to_bytes(&self.base_fee_per_gas) }),
+            withdrawals_root: self.withdrawals_root,
+            parent_beacon_root: vec![0u8; 32],
+            blob_gas_used: Some(0),
+            excess_blob_gas: Some(0),
+            requests_hash: vec![0u8; 32],
             ..Default::default()
         };
 
@@ -329,12 +511,9 @@ impl BlockBuilder {
             hash: self.block_hash,
             size: self.size,
             header: Some(header),
-            transaction_traces: self.transactions,
-            balance_changes: self.balance_changes,
-            code_changes: self.code_changes,
-            system_calls: self.system_calls,
-            ver: 1,
-            detail_level: block::DetailLevel::DetaillevelExtended as i32,
+            transaction_traces: transactions,
+            ver: 4, // Version 4 for Firehose 3.0
+            detail_level: block::DetailLevel::DetaillevelBase as i32,
             ..Default::default()
         };
 

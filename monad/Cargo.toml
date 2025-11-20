@@ -27,3 +27,4 @@ clap = { workspace = true }
 color-eyre = { workspace = true }
 futures-util = { workspace = true }
 tokio-stream = { workspace = true }
+alloy-primitives = { workspace = true }
