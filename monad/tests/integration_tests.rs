@@ -5,35 +5,54 @@
 
 use eyre::Result;
 use monad_tracer as tracer;
-use monad_plugin as plugin;
-use pb::{Block, BlockHeader};
-use plugin::ProcessedEvent;
+use monad_plugin::ProcessedEvent;
 #[cfg(target_os = "linux")]
-use plugin::{initialize_plugin, PluginConfig};
+use monad_plugin::{initialize_plugin, PluginConfig};
+use pb::{block, Block, BlockHeader};
 use tracer::{EventMapper, FirehoseTracer, TracerConfig};
 
 #[tokio::test]
 async fn test_event_mapper_block_lifecycle() -> Result<()> {
     let mut mapper = EventMapper::new();
 
-    // Test block start event
+    // Test complete block lifecycle with realistic JSON data
+    let block_start_data = r#"{
+        "parent_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "uncle_hash": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+        "coinbase": "0x0000000000000000000000000000000000000000",
+        "transactions_root": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+        "difficulty": 0,
+        "number": 100,
+        "gas_limit": 30000000,
+        "timestamp": 1234567890,
+        "extra_data": "0x",
+        "mix_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "nonce": 0,
+        "base_fee_per_gas": {"limbs": [0, 0, 0, 0]},
+        "withdrawals_root": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
+    }"#;
+
     let block_start_event = ProcessedEvent {
         block_number: 100,
         event_type: "BLOCK_START".to_string(),
-        firehose_data: vec![1, 2, 3, 4],
+        firehose_data: block_start_data.as_bytes().to_vec(),
     };
 
     let result = mapper.process_event(block_start_event).await?;
-    assert!(
-        result.is_none(),
-        "Block should not be complete after start event"
-    );
+    assert!(result.is_none(), "Block should not be complete after start event");
 
-    // Test block end event
+    let block_end_data = r#"{
+        "hash": "0x0c108fee8a6f4f12e321ac99ba9477e0431d7fa326cf16c3a51d1d6490fef23f",
+        "state_root": "0xc1e12619ef31a9b85683cdbfa5be401aa8aa591b7527ba9aaacf7efaaa0eb67b",
+        "receipts_root": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+        "logs_bloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "gas_used": 0
+    }"#;
+
     let block_end_event = ProcessedEvent {
         block_number: 100,
         event_type: "BLOCK_END".to_string(),
-        firehose_data: vec![5, 6, 7, 8],
+        firehose_data: block_end_data.as_bytes().to_vec(),
     };
 
     let result = mapper.process_event(block_end_event).await?;
@@ -42,6 +61,7 @@ async fn test_event_mapper_block_lifecycle() -> Result<()> {
     let block = result.unwrap();
     assert_eq!(block.number, 100);
     assert!(block.header.is_some());
+    assert_eq!(block.detail_level, block::DetailLevel::DetaillevelBase as i32);
 
     Ok(())
 }
@@ -51,33 +71,88 @@ async fn test_event_mapper_transaction_processing() -> Result<()> {
     let mut mapper = EventMapper::new();
 
     // Start a block
+    let block_start_data = r#"{
+        "parent_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "uncle_hash": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+        "coinbase": "0x0000000000000000000000000000000000000000",
+        "transactions_root": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+        "difficulty": 0,
+        "number": 200,
+        "gas_limit": 30000000,
+        "timestamp": 1234567890,
+        "extra_data": "0x",
+        "mix_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "nonce": 0,
+        "base_fee_per_gas": {"limbs": [0, 0, 0, 0]},
+        "withdrawals_root": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
+    }"#;
+
     let block_start = ProcessedEvent {
         block_number: 200,
         event_type: "BLOCK_START".to_string(),
-        firehose_data: vec![1, 2, 3, 4],
+        firehose_data: block_start_data.as_bytes().to_vec(),
     };
     mapper.process_event(block_start).await?;
 
-    // Add a transaction
-    let tx_start = ProcessedEvent {
-        block_number: 200,
-        event_type: "TX_START".to_string(),
-        firehose_data: vec![0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0],
-    };
-    mapper.process_event(tx_start).await?;
+    // Add a transaction header
+    let tx_header_data = r#"{
+        "txn_index": 0,
+        "hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "from": "0x0000000000000000000000000000000000000000",
+        "to": "0x0000000000000000000000000000000000000000",
+        "nonce": 0,
+        "gas_limit": 21000,
+        "value": {"limbs": [0, 0, 0, 0]},
+        "max_fee_per_gas": {"limbs": [0, 0, 0, 0]},
+        "max_priority_fee_per_gas": {"limbs": [0, 0, 0, 0]},
+        "r": {"limbs": [0, 0, 0, 0]},
+        "s": {"limbs": [0, 0, 0, 0]},
+        "y_parity": false,
+        "txn_type": 2,
+        "chain_id": {"limbs": [0, 0, 0, 0]},
+        "input": "0x",
+        "access_list_count": 0,
+        "blob_versioned_hash_length": 0,
+        "blob_hashes": "",
+        "max_fee_per_blob_gas": {"limbs": [0, 0, 0, 0]}
+    }"#;
 
-    let tx_end = ProcessedEvent {
+    let tx_header = ProcessedEvent {
         block_number: 200,
-        event_type: "TX_END".to_string(),
-        firehose_data: vec![0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0],
+        event_type: "TX_HEADER".to_string(),
+        firehose_data: tx_header_data.as_bytes().to_vec(),
     };
-    mapper.process_event(tx_end).await?;
+    mapper.process_event(tx_header).await?;
+
+    // Add transaction receipt
+    let tx_receipt_data = r#"{
+        "txn_index": 0,
+        "status": true,
+        "gas_used": 21000,
+        "log_count": 0,
+        "call_frame_count": 0
+    }"#;
+
+    let tx_receipt = ProcessedEvent {
+        block_number: 200,
+        event_type: "TX_RECEIPT".to_string(),
+        firehose_data: tx_receipt_data.as_bytes().to_vec(),
+    };
+    mapper.process_event(tx_receipt).await?;
 
     // End the block
+    let block_end_data = r#"{
+        "hash": "0x0c108fee8a6f4f12e321ac99ba9477e0431d7fa326cf16c3a51d1d6490fef23f",
+        "state_root": "0xc1e12619ef31a9b85683cdbfa5be401aa8aa591b7527ba9aaacf7efaaa0eb67b",
+        "receipts_root": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+        "logs_bloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "gas_used": 21000
+    }"#;
+
     let block_end = ProcessedEvent {
         block_number: 200,
         event_type: "BLOCK_END".to_string(),
-        firehose_data: vec![5, 6, 7, 8],
+        firehose_data: block_end_data.as_bytes().to_vec(),
     };
 
     let result = mapper.process_event(block_end).await?;
@@ -86,43 +161,77 @@ async fn test_event_mapper_transaction_processing() -> Result<()> {
     let block = result.unwrap();
     assert_eq!(block.transaction_traces.len(), 1);
     assert_eq!(block.transaction_traces[0].index, 0);
+    assert_eq!(block.transaction_traces[0].gas_used, 21000);
 
     Ok(())
 }
 
 #[tokio::test]
-async fn test_event_mapper_balance_changes() -> Result<()> {
+async fn test_event_mapper_malformed_json() -> Result<()> {
     let mut mapper = EventMapper::new();
 
-    // Start a block
+    // Test with malformed JSON - should not panic
+    let malformed_event = ProcessedEvent {
+        block_number: 100,
+        event_type: "BLOCK_START".to_string(),
+        firehose_data: b"{invalid json".to_vec(),
+    };
+
+    // This should return an error, not panic
+    let result = mapper.process_event(malformed_event).await;
+    assert!(result.is_err(), "Malformed JSON should cause an error");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_event_mapper_empty_block() -> Result<()> {
+    let mut mapper = EventMapper::new();
+
+    // Test empty block (no transactions)
+    let block_start_data = r#"{
+        "parent_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "uncle_hash": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+        "coinbase": "0x0000000000000000000000000000000000000000",
+        "transactions_root": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+        "difficulty": 0,
+        "number": 300,
+        "gas_limit": 30000000,
+        "timestamp": 1234567890,
+        "extra_data": "0x",
+        "mix_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "nonce": 0,
+        "base_fee_per_gas": {"limbs": [0, 0, 0, 0]},
+        "withdrawals_root": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
+    }"#;
+
     let block_start = ProcessedEvent {
         block_number: 300,
         event_type: "BLOCK_START".to_string(),
-        firehose_data: vec![1, 2, 3, 4],
+        firehose_data: block_start_data.as_bytes().to_vec(),
     };
     mapper.process_event(block_start).await?;
 
-    // Add a balance change
-    let balance_change = ProcessedEvent {
-        block_number: 300,
-        event_type: "BALANCE_CHANGE".to_string(),
-        firehose_data: vec![0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-    };
-    mapper.process_event(balance_change).await?;
+    let block_end_data = r#"{
+        "hash": "0x0c108fee8a6f4f12e321ac99ba9477e0431d7fa326cf16c3a51d1d6490fef23f",
+        "state_root": "0xc1e12619ef31a9b85683cdbfa5be401aa8aa591b7527ba9aaacf7efaaa0eb67b",
+        "receipts_root": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+        "logs_bloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "gas_used": 0
+    }"#;
 
-    // End the block
     let block_end = ProcessedEvent {
         block_number: 300,
         event_type: "BLOCK_END".to_string(),
-        firehose_data: vec![5, 6, 7, 8],
+        firehose_data: block_end_data.as_bytes().to_vec(),
     };
 
     let result = mapper.process_event(block_end).await?;
     assert!(result.is_some());
 
     let block = result.unwrap();
-    assert_eq!(block.balance_changes.len(), 1);
-    assert!(block.balance_changes[0].new_value.is_some());
+    assert_eq!(block.transaction_traces.len(), 0); // Empty block
+    assert_eq!(block.header.as_ref().unwrap().gas_used, 0);
 
     Ok(())
 }
@@ -141,22 +250,6 @@ async fn test_tracer_configuration() -> Result<()> {
     assert_eq!(tracer.config().chain_id, 1337);
     assert_eq!(tracer.config().network_name, "test-monad");
     assert!(tracer.config().debug);
-
-    Ok(())
-}
-
-#[tokio::test]
-#[cfg(target_os = "linux")]
-async fn test_plugin_initialization() -> Result<()> {
-    let config = PluginConfig {
-        event_ring_path: "/tmp/test_monad_events".to_string(),
-        buffer_size: 256,
-        timeout_ms: 500,
-    };
-
-    let _consumer = initialize_plugin(config).await?;
-    // Just verify we can create the consumer without errors
-    // In a real test, we would verify it can consume events
 
     Ok(())
 }

@@ -97,21 +97,21 @@ impl EventProcessor {
         let nonce = u64::from_le_bytes(block_start.eth_block_input.nonce.bytes);
 
         let block_data = serde_json::json!({
-            "parent_hash": hex::encode(&block_start.parent_eth_hash.bytes),
-            "uncle_hash": hex::encode(&block_start.eth_block_input.ommers_hash.bytes),
-            "coinbase": hex::encode(&block_start.eth_block_input.beneficiary.bytes),
-            "transactions_root": hex::encode(&block_start.eth_block_input.transactions_root.bytes),
+            "parent_hash": hex::encode(block_start.parent_eth_hash.bytes),
+            "uncle_hash": hex::encode(block_start.eth_block_input.ommers_hash.bytes),
+            "coinbase": hex::encode(block_start.eth_block_input.beneficiary.bytes),
+            "transactions_root": hex::encode(block_start.eth_block_input.transactions_root.bytes),
             "difficulty": block_start.eth_block_input.difficulty,
             "number": block_start.eth_block_input.number,
             "gas_limit": block_start.eth_block_input.gas_limit,
             "timestamp": block_start.eth_block_input.timestamp,
             "extra_data": hex::encode(&block_start.eth_block_input.extra_data.bytes[..block_start.eth_block_input.extra_data_length as usize]),
-            "mix_hash": hex::encode(&block_start.eth_block_input.prev_randao.bytes),
+            "mix_hash": hex::encode(block_start.eth_block_input.prev_randao.bytes),
             "nonce": nonce,
             "base_fee_per_gas": {
                 "limbs": block_start.eth_block_input.base_fee_per_gas.limbs.to_vec()
             },
-            "withdrawals_root": hex::encode(&block_start.eth_block_input.withdrawals_root.bytes),
+            "withdrawals_root": hex::encode(block_start.eth_block_input.withdrawals_root.bytes),
         });
 
         let firehose_data = serde_json::to_vec(&block_data)?;
@@ -138,10 +138,10 @@ impl EventProcessor {
 
         // Extract all execution output fields
         let block_data = serde_json::json!({
-            "hash": hex::encode(&block_end.eth_block_hash.bytes),
-            "state_root": hex::encode(&block_end.exec_output.state_root.bytes),
-            "receipts_root": hex::encode(&block_end.exec_output.receipts_root.bytes),
-            "logs_bloom": hex::encode(&block_end.exec_output.logs_bloom.bytes),
+            "hash": hex::encode(block_end.eth_block_hash.bytes),
+            "state_root": hex::encode(block_end.exec_output.state_root.bytes),
+            "receipts_root": hex::encode(block_end.exec_output.receipts_root.bytes),
+            "logs_bloom": hex::encode(block_end.exec_output.logs_bloom.bytes),
             "gas_used": block_end.exec_output.gas_used,
         });
 
@@ -168,9 +168,9 @@ impl EventProcessor {
         // Serialize transaction header data using serde_json for structured format
         let tx_data = serde_json::json!({
             "txn_index": txn_index,
-            "hash": hex::encode(&txn_header.txn_hash.bytes),
-            "from": hex::encode(&txn_header.sender.bytes),
-            "to": hex::encode(&txn_header.txn_header.to.bytes),
+            "hash": hex::encode(txn_header.txn_hash.bytes),
+            "from": hex::encode(txn_header.sender.bytes),
+            "to": hex::encode(txn_header.txn_header.to.bytes),
             "is_contract_creation": txn_header.txn_header.is_contract_creation,
             "nonce": txn_header.txn_header.nonce,
             "gas_limit": txn_header.txn_header.gas_limit,
@@ -274,7 +274,7 @@ impl EventProcessor {
         let log_data = serde_json::json!({
             "txn_index": txn_index,
             "log_index": log.index,
-            "address": hex::encode(&log.address.bytes),
+            "address": hex::encode(log.address.bytes),
             "topics": topics,
             "data": hex::encode(&*data_bytes),
         });
