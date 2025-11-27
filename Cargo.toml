@@ -67,5 +67,5 @@ chrono = { version = "0.4", features = ["serde"] }
 color-eyre = "0.6"
 
 # Monad-specific dependencies
-monad-exec-events = { git = "https://github.com/category-labs/monad-bft", branch = "release/exec-events-sdk-v1.x" }
-monad-event-ring = { git = "https://github.com/category-labs/monad-bft", branch = "release/exec-events-sdk-v1.x" }
+monad-exec-events = { git = "https://github.com/category-labs/monad-bft", rev = "v0.12.2" }
+monad-event-ring = { git = "https://github.com/category-labs/monad-bft", rev = "v0.12.2" }
