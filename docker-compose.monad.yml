@@ -1,0 +1,23 @@
+version: "3.9"
+
+services:
+  monad:
+    build:
+      context: /data/evm-firehose-tracer
+      dockerfile: /data/monad-docker/Dockerfile.monad-unified
+    container_name: monad
+    volumes:
+      - /data/monad-docker/data:/data
+      - /dev/hugepages:/dev/hugepages
+    ports:
+      - "9000:9000"
+      - "9102:9102"
+      - "9103:9103"
+      - "10001:10001"
+      - "10102:10102"
+      - "8545:8545"
+    privileged: true
+    environment:
+      LD_LIBRARY_PATH: /usr/local/lib
+      RUST_LOG: info
+    restart: unless-stopped
