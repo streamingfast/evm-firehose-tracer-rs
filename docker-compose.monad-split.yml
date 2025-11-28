@@ -1,0 +1,83 @@
+version: "3.9"
+
+services:
+  # Container 1: Consensus Layer (monad-node)
+  monad-consensus:
+    build:
+      context: /data/evm-firehose-tracer
+      dockerfile: /data/monad-docker/Dockerfile.monad-split
+      target: consensus
+    container_name: monad-consensus
+    privileged: true
+    volumes:
+      - /data/monad-bft/docker/devnet/monad/config:/data/config
+      - /data/monad-bft/docker/devnet/monad/ledger:/data/ledger
+      - /data/monad-bft/docker/devnet/monad/wal:/data/wal
+      - /data/monad-bft/docker/devnet/monad/triedb:/data/triedb
+      - monad-sockets:/sockets
+    ports:
+      - "9000:9000"
+      - "9102:9102"
+    environment:
+      LD_LIBRARY_PATH: /usr/local/lib
+      RUST_LOG: info
+    restart: unless-stopped
+    networks:
+      - monad-network
+
+  # Container 2: Execution Layer (monad)
+  monad-execution:
+    build:
+      context: /data/evm-firehose-tracer
+      dockerfile: /data/monad-docker/Dockerfile.monad-split
+      target: execution
+    container_name: monad-execution
+    depends_on:
+      - monad-consensus
+    volumes:
+      - /data/monad-bft/docker/devnet/monad/ledger:/data/ledger:ro
+      - /data/monad-bft/docker/devnet/monad/triedb:/data/triedb
+      - /dev/hugepages:/dev/hugepages
+    ports:
+      - "9103:9103"    # Execution metrics
+    privileged: true
+    environment:
+      LD_LIBRARY_PATH: /usr/local/lib
+    restart: unless-stopped
+    networks:
+      - monad-network
+
+  monad-reader-rpc:
+    build:
+      context: /data/evm-firehose-tracer
+      dockerfile: /data/monad-docker/Dockerfile.monad-split
+      target: reader-rpc
+    container_name: monad-reader-rpc
+    depends_on:
+      - monad-consensus
+      - monad-execution
+    volumes:
+      - /data/monad-bft/docker/devnet/monad/config:/data/config:ro
+      - /data/monad-bft/docker/devnet/monad/triedb:/data/triedb:ro
+      - monad-sockets:/sockets
+      - monad-oneblocks:/data/one-blocks
+      - /dev/hugepages:/dev/hugepages
+    ports:
+      - "10001:10001"
+      - "10102:10102"
+      - "8545:8545"
+    privileged: true
+    environment:
+      LD_LIBRARY_PATH: /usr/local/lib
+      RUST_LOG: info
+    restart: unless-stopped
+    networks:
+      - monad-network
+
+volumes:
+  monad-sockets:
+  monad-oneblocks:
+
+networks:
+  monad-network:
+    driver: bridge

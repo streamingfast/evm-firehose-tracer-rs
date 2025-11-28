@@ -1,0 +1,26 @@
+version: "3.9"
+
+services:
+  monad-all-in-one:
+    build:
+      context: .
+      dockerfile: Dockerfile.monad-unified
+    container_name: monad-all-in-one
+    command: /app/start-all.sh
+    volumes:
+      - ./local-data/monad:/data
+      - ./local-data/sockets:/sockets
+      - ./local-data/one-blocks:/data/one-blocks
+      - /dev/hugepages:/dev/hugepages
+      - ./start-all.sh:/app/start-all.sh:ro
+    ports:
+      - "9000:9000"
+      - "9102:9102"
+      - "9103:9103"
+      - "10001:10001"
+      - "10102:10102"
+      - "8545:8545"
+    privileged: true
+    environment:
+      LD_LIBRARY_PATH: /usr/local/lib
+      RUST_LOG: info
