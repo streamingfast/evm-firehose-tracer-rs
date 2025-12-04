@@ -189,3 +189,4 @@ jobs:
         with:
           body: ${{ steps.changelog.outputs.changelog }}
           prerelease: ${{ contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
+
