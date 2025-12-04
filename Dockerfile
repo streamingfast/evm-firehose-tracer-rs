@@ -1,7 +1,9 @@
+# Extract binaries from categoryxyz images
 FROM categoryxyz/monad-bft:latest AS monad-bft
 FROM categoryxyz/monad-execution:latest AS monad-execution
 FROM categoryxyz/monad-rpc:latest AS monad-rpc
 
+# Build monad-firehose-tracer from source
 FROM ubuntu:24.04 AS tracer-builder
 
 WORKDIR /build
@@ -33,6 +35,7 @@ COPY . .
 
 RUN cargo build --release -p monad-tracer
 
+# Base image with all binaries and libraries
 FROM ubuntu:24.04 AS base
 
 WORKDIR /app
@@ -45,6 +48,7 @@ RUN apt-get update && apt-get install -y \
     procps \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy all binaries and libraries from categoryxyz images
 RUN --mount=type=bind,from=monad-bft,target=/mnt/monad-bft \
     --mount=type=bind,from=monad-execution,target=/mnt/monad-execution \
     --mount=type=bind,from=monad-rpc,target=/mnt/monad-rpc \
@@ -65,6 +69,7 @@ RUN ldconfig
 ENV LD_LIBRARY_PATH=/usr/local/lib
 ENV RUST_LOG=info
 
+# Container 1: Consensus (monad-node)
 FROM base AS consensus
 
 RUN cat > /app/start.sh <<'EOF'
@@ -93,6 +98,7 @@ RUN chmod +x /app/start.sh
 
 ENTRYPOINT ["/app/start.sh"]
 
+# Container 2: Execution (monad)
 FROM base AS execution
 
 RUN cat > /app/start.sh <<'EOF'
@@ -101,11 +107,13 @@ set -e
 
 echo "=== Starting Monad Execution Layer ==="
 
+# Wait for ledger to be initialized
 echo "Waiting for ledger initialization..."
 while [ ! -d /data/ledger ] || [ -z "$(ls -A /data/ledger 2>/dev/null)" ]; do
   sleep 2
 done
 
+# Create event-rings directory in hugepages
 mkdir -p /dev/hugepages/event-rings
 
 exec /app/monad \
@@ -121,6 +129,7 @@ RUN chmod +x /app/start.sh
 
 ENTRYPOINT ["/app/start.sh"]
 
+# Container 3: Reader + RPC (monad-firehose-tracer + monad-rpc)
 FROM base AS reader-rpc
 
 RUN cat > /app/start.sh <<'EOF'
@@ -131,6 +140,7 @@ echo "=== Starting Monad Reader + RPC ==="
 
 mkdir -p /data/one-blocks
 
+# Wait for event ring to be created
 echo "Waiting for event ring..."
 while [ ! -e /dev/hugepages/event-rings/monad-devnet-events ]; do
   sleep 2
@@ -146,6 +156,7 @@ echo "Starting monad-firehose-tracer..."
   --debug &
 READER_PID=$!
 
+# Wait for mempool socket
 echo "Waiting for mempool socket..."
 while [ ! -S /sockets/mempool.sock ]; do
   sleep 2
