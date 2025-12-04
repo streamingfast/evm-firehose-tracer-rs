@@ -35,8 +35,8 @@ COPY . .
 
 RUN cargo build --release -p monad-tracer
 
-# Base image with all binaries and libraries
-FROM ubuntu:24.04 AS base
+# Monad image with all binaries and libraries
+FROM ubuntu:24.04 AS monad-stack
 
 WORKDIR /app
 
@@ -63,6 +63,8 @@ RUN --mount=type=bind,from=monad-bft,target=/mnt/monad-bft \
     rm -f /usr/local/lib/libc.so* /usr/local/lib/libpthread.so* /usr/local/lib/libdl.so* /usr/local/lib/libm.so* /usr/local/lib/librt.so* /usr/local/lib/libresolv.so* /usr/local/lib/libutil.so* /usr/local/lib/libnss_*
 
 COPY --from=tracer-builder /build/target/release/monad-firehose-tracer /app/monad-firehose-tracer
+
+FROM monad-stack
 
 RUN ldconfig
 
