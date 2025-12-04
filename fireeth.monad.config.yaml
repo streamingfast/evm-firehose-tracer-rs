@@ -11,7 +11,7 @@ start:
 
     common-first-streamable-block: 31
 
-    reader-node-path: "/data/evm-firehose-tracer/target/release/monad-firehose-tracer"
+    reader-node-path: "/data/evm-firehose-tracer-rs/target/release/monad-firehose-tracer"
     reader-node-data-dir: "{data-dir}/reader-node"
     reader-node-bootstrap-data-url: "bash:///./fireeth.monad.bootstrap.sh"
     reader-node-arguments:
