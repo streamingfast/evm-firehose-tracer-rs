@@ -23,7 +23,15 @@ Build the Monad tracer from source:
 cargo build --release -p monad-tracer
 ```
 
-## Docker
+## Docker Images
+
+GitHub Actions automatically builds and publishes images to:
+
+- `ghcr.io/streamingfast/evm-firehose-tracer-rs/monad-consensus`
+- `ghcr.io/streamingfast/evm-firehose-tracer-rs/monad-execution`
+- `ghcr.io/streamingfast/evm-firehose-tracer-rs/monad-reader-rpc`
+
+### Local Build
 
 The Dockerfile supports building 3 separate container targets:
 

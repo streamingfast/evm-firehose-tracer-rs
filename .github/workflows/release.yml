@@ -39,7 +39,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-consensus
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/monad-consensus
           tags: |
             type=ref,event=tag
             type=ref,event=branch
@@ -83,7 +83,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-execution
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/monad-execution
           tags: |
             type=ref,event=tag
             type=ref,event=branch
@@ -131,7 +131,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-reader-rpc
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/monad-reader-rpc
           tags: |
             type=ref,event=tag
             type=ref,event=branch
