@@ -3,6 +3,16 @@ FROM categoryxyz/monad-bft:latest AS monad-bft
 FROM categoryxyz/monad-execution:latest AS monad-execution
 FROM categoryxyz/monad-rpc:latest AS monad-rpc
 
+# Build fireeth from firehose-ethereum
+FROM golang:1.23-alpine AS fireeth-builder
+
+RUN apk add --no-cache git
+
+WORKDIR /build
+
+RUN git clone https://github.com/streamingfast/firehose-ethereum.git . && \
+    go build -o fireeth ./cmd/fireeth
+
 # Build monad-firehose-tracer from source
 FROM ubuntu:24.04 AS tracer-builder
 
@@ -63,6 +73,7 @@ RUN --mount=type=bind,from=monad-bft,target=/mnt/monad-bft \
     rm -f /usr/local/lib/libc.so* /usr/local/lib/libpthread.so* /usr/local/lib/libdl.so* /usr/local/lib/libm.so* /usr/local/lib/librt.so* /usr/local/lib/libresolv.so* /usr/local/lib/libutil.so* /usr/local/lib/libnss_*
 
 COPY --from=tracer-builder /build/target/release/monad-firehose-tracer /app/monad-firehose-tracer
+COPY --from=fireeth-builder /build/fireeth /app/fireeth
 
 FROM monad-stack
 
