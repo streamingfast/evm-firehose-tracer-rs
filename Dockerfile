@@ -6,9 +6,11 @@ FROM categoryxyz/monad-rpc:latest AS monad-rpc
 # Build fireeth from firehose-ethereum
 FROM golang:1.23-alpine AS fireeth-builder
 
-RUN apk add --no-cache git
+RUN apk add --no-cache git build-base
 
 WORKDIR /build
+
+ENV GOTOOLCHAIN=auto
 
 RUN git clone https://github.com/streamingfast/firehose-ethereum.git . && \
     go build -o fireeth ./cmd/fireeth
