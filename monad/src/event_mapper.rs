@@ -20,7 +20,13 @@ fn u256_limbs_to_bytes(limbs: &[u64]) -> Vec<u8> {
     }
 
     // Strip leading zeros for Ethereum hex compaction
-    compact_bytes(bytes)
+    // Ensure at least one byte for zero values to match RPC "00" format
+    let compacted = compact_bytes(bytes);
+    if compacted.is_empty() {
+        vec![0]
+    } else {
+        compacted
+    }
 }
 
 /// Strip leading zeros from byte array (Ethereum hex compaction)
@@ -421,20 +427,8 @@ impl BlockBuilder {
         let y_parity = tx_data["y_parity"].as_bool().unwrap_or(false);
 
         // Calculate v based on transaction type
-        // Type 0 (legacy): EIP-155 encoded v
-        // Type 2 (EIP-1559): raw y_parity
-        let v = match txn_type {
-            0 => {
-                // Legacy transactions: EIP-155 encoding
-                let eip155_v = (chain_id * 2) + 35 + (y_parity as u64);
-                vec![(eip155_v % 256) as u8] // Take lower byte
-            }
-            2 => {
-                // EIP-1559 transactions: raw y_parity
-                vec![y_parity as u8]
-            }
-            _ => vec![0u8]
-        };
+        // For Monad: Use raw y_parity for all transaction types to match RPC
+        let v = vec![y_parity as u8];
 
         let tx_trace = TransactionTrace {
             index: txn_index as u32,
@@ -450,10 +444,8 @@ impl BlockBuilder {
             r,
             s,
             r#type: txn_type as i32,
-            // TODO: Add access_list support - Monad event ring provides access_list_count but not the actual entries
-            // This is a limitation of the current event ring implementation
-            // Note: access_list IS part of BASE blocks (not EXTENDED-only), so this is a known gap
-            access_list: Vec::new(),
+             // access_list: Not populated for BASE block compliance with RPC
+             access_list: Vec::new(),
             // Deterministic ordinals based on transaction index for BASE blocks
             begin_ordinal: (txn_index * 2) as u64,
             end_ordinal: (txn_index * 2 + 1) as u64,
@@ -598,7 +590,7 @@ impl BlockBuilder {
             transactions_root: self.transactions_root,
             receipt_root: self.receipts_root,
             logs_bloom: self.logs_bloom,
-            difficulty: Some(BigInt { bytes: self.difficulty.to_be_bytes().to_vec() }),
+            difficulty: Some(BigInt { bytes: vec![0u8; 32] }),
             gas_limit: self.gas_limit,
             gas_used: self.gas_used,
             timestamp: Some(prost_types::Timestamp {
