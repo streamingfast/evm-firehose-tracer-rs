@@ -350,6 +350,11 @@ impl BlockBuilder {
         let tx_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
 
         let txn_index = tx_data["txn_index"].as_u64().unwrap_or(0) as usize;
+
+        // Debug: check if access_list is in tx_data
+        if tx_data.get("access_list").is_some() {
+            eprintln!("DEBUG: access_list found in tx_data for tx {}: {:?}", txn_index, tx_data["access_list"]);
+        }
         let hash = ensure_hash_bytes(hex::decode(tx_data["hash"].as_str().unwrap_or("")).unwrap_or_default());
         let from = ensure_address_bytes(hex::decode(tx_data["from"].as_str().unwrap_or("")).unwrap_or_default());
         let to = ensure_address_bytes(hex::decode(tx_data["to"].as_str().unwrap_or("")).unwrap_or_default());
@@ -368,6 +373,10 @@ impl BlockBuilder {
             })
             .unwrap_or_else(|| vec![0u64; 4]);
         let value = u256_limbs_to_bytes(&value_limbs);
+        // Debug: check value bytes
+        if value.is_empty() {
+            eprintln!("WARNING: value bytes is empty for tx {}, limbs: {:?}", txn_index, value_limbs);
+        }
 
         let max_fee_limbs = tx_data["max_fee_per_gas"]["limbs"]
             .as_array()
@@ -391,6 +400,10 @@ impl BlockBuilder {
         // For Type 2 (Dynamic Fee) transactions:
         // effective_gas_price = base_fee_per_gas + min(max_priority_fee_per_gas, max_fee_per_gas - base_fee_per_gas)
         let gas_price = self.calculate_effective_gas_price(&max_fee_limbs, &max_priority_fee_limbs, txn_type);
+        // Debug: check gas_price bytes
+        if gas_price.is_empty() {
+            eprintln!("WARNING: gas_price bytes is empty for tx {}, type {}, max_fee_limbs: {:?}, priority_fee_limbs: {:?}", txn_index, txn_type, max_fee_limbs, max_priority_fee_limbs);
+        }
 
         // Parse signature
         let r_limbs = tx_data["r"]["limbs"]
@@ -437,15 +450,21 @@ impl BlockBuilder {
             to,
             nonce,
             gas_limit,
-            value: Some(BigInt { bytes: value }),
-            gas_price: Some(BigInt { bytes: gas_price }),
+            value: Some(BigInt { bytes: if value.is_empty() { vec![0] } else { value } }),
+            gas_price: Some(BigInt { bytes: if gas_price.is_empty() { vec![0] } else { gas_price } }),
             input,
             v,
             r,
             s,
             r#type: txn_type as i32,
              // access_list: Not populated for BASE block compliance with RPC
-             access_list: Vec::new(),
+             access_list: {
+                 let access_list = Vec::new();
+                 if !access_list.is_empty() {
+                     eprintln!("WARNING: access_list populated for tx {}: {:?}", txn_index, access_list);
+                 }
+                 access_list
+             },
             // Deterministic ordinals based on transaction index for BASE blocks
             begin_ordinal: (txn_index * 2) as u64,
             end_ordinal: (txn_index * 2 + 1) as u64,
