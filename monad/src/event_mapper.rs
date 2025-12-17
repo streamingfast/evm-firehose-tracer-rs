@@ -24,13 +24,14 @@ fn u256_limbs_to_bytes(limbs: &[u64]) -> Vec<u8> {
 }
 
 /// Strip leading zeros from byte array (Ethereum hex compaction)
+/// Returns at least one byte (0x00) for zero values to match RPC format
 fn compact_bytes(bytes: Vec<u8>) -> Vec<u8> {
     // Find first non-zero byte
     let first_non_zero = bytes.iter().position(|&b| b != 0);
 
     match first_non_zero {
         Some(pos) => bytes[pos..].to_vec(),
-        None => vec![0], // All zeros -> single zero byte
+        None => vec![0], // All zeros -> return vec![0x00] to match RPC "00" format
     }
 }
 
@@ -323,7 +324,20 @@ impl BlockBuilder {
                     .collect::<Vec<u64>>()
             })
             .unwrap_or_else(|| vec![0u64; 4]);
-        let gas_price = u256_limbs_to_bytes(&max_fee_limbs);
+
+        let max_priority_fee_limbs = tx_data["max_priority_fee_per_gas"]["limbs"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .map(|v| v.as_u64().unwrap_or(0))
+                    .collect::<Vec<u64>>()
+            })
+            .unwrap_or_else(|| vec![0u64; 4]);
+
+        // Calculate effective gas price based on EIP-1559
+        // For Type 2 (Dynamic Fee) transactions:
+        // effective_gas_price = base_fee_per_gas + min(max_priority_fee_per_gas, max_fee_per_gas - base_fee_per_gas)
+        let gas_price = self.calculate_effective_gas_price(&max_fee_limbs, &max_priority_fee_limbs, txn_type);
 
         // Parse signature
         let r_limbs = tx_data["r"]["limbs"]
@@ -346,7 +360,22 @@ impl BlockBuilder {
             .unwrap_or_else(|| vec![0u64; 4]);
         let s = u256_limbs_to_bytes(&s_limbs);
 
+        // Parse chain_id for v calculation
+        let chain_id_limbs = tx_data["chain_id"]["limbs"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .map(|v| v.as_u64().unwrap_or(0))
+                    .collect::<Vec<u64>>()
+            })
+            .unwrap_or_else(|| vec![0u64; 4]);
+        let chain_id = chain_id_limbs[0]; // Chain ID fits in u64
+
         let y_parity = tx_data["y_parity"].as_bool().unwrap_or(false);
+
+        // Calculate v based on transaction type
+        // All Monad transactions use simple y_parity (0 or 1) regardless of type
+        // EIP-155 encoding is handled at a different layer
         let v = if y_parity { vec![1u8] } else { vec![0u8] };
 
         let tx_trace = TransactionTrace {
@@ -363,6 +392,10 @@ impl BlockBuilder {
             r,
             s,
             r#type: txn_type as i32,
+            // TODO: Add access_list support when Monad event ring provides access list data
+            // Currently we only get access_list_count but not the actual entries
+            // For BASE blocks this is acceptable as most transactions don't use access lists
+            access_list: Vec::new(),
             // Deterministic ordinals based on transaction index for BASE blocks
             begin_ordinal: (txn_index * 2) as u64,
             end_ordinal: (txn_index * 2 + 1) as u64,
@@ -434,6 +467,25 @@ impl BlockBuilder {
         }
 
         Ok(())
+    }
+
+    /// Calculate gas price for a transaction
+    /// Monad RPC behavior (non-standard):
+    /// - Type 0 (Legacy): uses max_fee_per_gas as the gas price
+    /// - Type 1 (Access List): uses max_fee_per_gas as the gas price
+    /// - Type 2 (Dynamic Fee): uses max_fee_per_gas (NOT the effective price!)
+    ///
+    /// Note: This differs from standard EIP-1559 which calculates:
+    /// effective_price = base_fee + min(max_priority_fee, max_fee - base_fee)
+    /// However, Monad's RPC returns max_fee_per_gas for all transaction types.
+    fn calculate_effective_gas_price(
+        &self,
+        max_fee_limbs: &[u64],
+        _max_priority_fee_limbs: &[u64],
+        _txn_type: u32,
+    ) -> Vec<u8> {
+        // Monad RPC returns max_fee_per_gas as gasPrice for all transaction types
+        u256_limbs_to_bytes(max_fee_limbs)
     }
 
     /// Finalize the block and return it
