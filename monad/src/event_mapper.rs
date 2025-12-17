@@ -37,7 +37,11 @@ fn compact_bytes(bytes: Vec<u8>) -> Vec<u8> {
 
     match first_non_zero {
         Some(pos) => bytes[pos..].to_vec(),
-        None => vec![0], // All zeros -> return vec![0x00] to match RPC "00" format
+        None => {
+            // All zeros -> return vec![0x00] to match RPC "00" format
+            eprintln!("DEBUG compact_bytes: all zeros input, returning vec![0]");
+            vec![0]
+        }
     }
 }
 
@@ -373,10 +377,7 @@ impl BlockBuilder {
             })
             .unwrap_or_else(|| vec![0u64; 4]);
         let value = u256_limbs_to_bytes(&value_limbs);
-        // Debug: check value bytes
-        if value.is_empty() {
-            eprintln!("WARNING: value bytes is empty for tx {}, limbs: {:?}", txn_index, value_limbs);
-        }
+        eprintln!("DEBUG TX {}: value_limbs={:?}, value_bytes={:02x?}, len={}", txn_index, value_limbs, value, value.len());
 
         let max_fee_limbs = tx_data["max_fee_per_gas"]["limbs"]
             .as_array()
@@ -400,10 +401,8 @@ impl BlockBuilder {
         // For Type 2 (Dynamic Fee) transactions:
         // effective_gas_price = base_fee_per_gas + min(max_priority_fee_per_gas, max_fee_per_gas - base_fee_per_gas)
         let gas_price = self.calculate_effective_gas_price(&max_fee_limbs, &max_priority_fee_limbs, txn_type);
-        // Debug: check gas_price bytes
-        if gas_price.is_empty() {
-            eprintln!("WARNING: gas_price bytes is empty for tx {}, type {}, max_fee_limbs: {:?}, priority_fee_limbs: {:?}", txn_index, txn_type, max_fee_limbs, max_priority_fee_limbs);
-        }
+        eprintln!("DEBUG TX {}: type={}, max_fee_limbs={:?}, priority_fee_limbs={:?}, base_fee_limbs={:?}, gas_price={:02x?}, len={}",
+            txn_index, txn_type, max_fee_limbs, max_priority_fee_limbs, self.base_fee_per_gas, gas_price, gas_price.len());
 
         // Parse signature
         let r_limbs = tx_data["r"]["limbs"]
@@ -442,6 +441,7 @@ impl BlockBuilder {
         // Calculate v based on transaction type
         // For Monad: Use raw y_parity for all transaction types to match RPC
         let v = vec![y_parity as u8];
+        eprintln!("DEBUG TX {}: y_parity={}, v={:02x?}", txn_index, y_parity, v);
 
         let tx_trace = TransactionTrace {
             index: txn_index as u32,
@@ -450,8 +450,8 @@ impl BlockBuilder {
             to,
             nonce,
             gas_limit,
-            value: Some(BigInt { bytes: if value.is_empty() { vec![0] } else { value } }),
-            gas_price: Some(BigInt { bytes: if gas_price.is_empty() { vec![0] } else { gas_price } }),
+            value: Some(BigInt { bytes: value }),
+            gas_price: Some(BigInt { bytes: gas_price }),
             input,
             v,
             r,
@@ -609,7 +609,7 @@ impl BlockBuilder {
             transactions_root: self.transactions_root,
             receipt_root: self.receipts_root,
             logs_bloom: self.logs_bloom,
-            difficulty: Some(BigInt { bytes: vec![0u8; 32] }),
+            difficulty: Some(BigInt { bytes: vec![0] }),
             gas_limit: self.gas_limit,
             gas_used: self.gas_used,
             timestamp: Some(prost_types::Timestamp {
