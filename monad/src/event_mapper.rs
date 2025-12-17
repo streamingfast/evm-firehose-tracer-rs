@@ -168,6 +168,7 @@ struct BlockBuilder {
     gas_limit: u64,
     transactions_map: std::collections::HashMap<usize, TransactionTrace>,
     cumulative_gas_used: u64,
+    total_log_count: usize,
 }
 
 /// Builder for constructing Firehose blocks from events
@@ -195,6 +196,7 @@ impl BlockBuilder {
             gas_limit: 30_000_000,
             transactions_map: std::collections::HashMap::new(),
             cumulative_gas_used: 0,
+            total_log_count: 0,
         }
     }
 
@@ -392,9 +394,9 @@ impl BlockBuilder {
             r,
             s,
             r#type: txn_type as i32,
-            // TODO: Add access_list support when Monad event ring provides access list data
-            // Currently we only get access_list_count but not the actual entries
-            // For BASE blocks this is acceptable as most transactions don't use access lists
+            // TODO: Add access_list support - Monad event ring provides access_list_count but not the actual entries
+            // This is a limitation of the current event ring implementation
+            // Note: access_list IS part of BASE blocks (not EXTENDED-only), so this is a known gap
             access_list: Vec::new(),
             // Deterministic ordinals based on transaction index for BASE blocks
             begin_ordinal: (txn_index * 2) as u64,
@@ -442,6 +444,7 @@ impl BlockBuilder {
         let log_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
 
         let txn_index = log_data["txn_index"].as_u64().unwrap_or(0) as usize;
+        let log_index = log_data["log_index"].as_u64().unwrap_or(0) as u32;
         let address = ensure_address_bytes(hex::decode(log_data["address"].as_str().unwrap_or("")).unwrap_or_default());
         let topics = log_data["topics"]
             .as_array()
@@ -453,10 +456,17 @@ impl BlockBuilder {
             .unwrap_or_default();
         let data = hex::decode(log_data["data"].as_str().unwrap_or("")).unwrap_or_default();
 
+        // Calculate blockIndex: this is the global log index within the block
+        // We track this by incrementing for each log we see
+        let block_index = self.total_log_count as u32;
+        self.total_log_count += 1;
+
         let log = pb::sf::ethereum::r#type::v2::Log {
             address,
             topics,
             data,
+            index: log_index,
+            block_index,
             ..Default::default()
         };
 
