@@ -15,8 +15,8 @@ start:
     reader-node-data-dir: "{data-dir}/reader-node"
     reader-node-bootstrap-data-url: "bash:///./fireeth.monad.bootstrap.sh"
     reader-node-arguments:
-      --chain-id=20143
-      --network-name=devnet
+      --chain-id=143
+      --network-name=monad-mainnet
       --monad-event-ring-path=/dev/hugepages/event-rings/monad-devnet-events
       --buffer-size=1024
       --timeout-ms=1000

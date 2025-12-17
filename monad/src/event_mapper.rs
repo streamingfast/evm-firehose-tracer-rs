@@ -35,6 +35,51 @@ fn compact_bytes(bytes: Vec<u8>) -> Vec<u8> {
     }
 }
 
+/// Add two u256 values represented as big-endian byte arrays
+fn add_u256_bytes(a: &[u8], b: &[u8]) -> Vec<u8> {
+    // Pad to 32 bytes for addition
+    let mut a_padded = vec![0u8; 32];
+    let mut b_padded = vec![0u8; 32];
+
+    let a_start = 32 - a.len();
+    let b_start = 32 - b.len();
+    a_padded[a_start..].copy_from_slice(a);
+    b_padded[b_start..].copy_from_slice(b);
+
+    let mut result = vec![0u8; 32];
+    let mut carry = 0u16;
+
+    // Add from least significant byte (end of array)
+    for i in (0..32).rev() {
+        let sum = a_padded[i] as u16 + b_padded[i] as u16 + carry;
+        result[i] = (sum & 0xff) as u8;
+        carry = sum >> 8;
+    }
+
+    compact_bytes(result)
+}
+
+/// Compare two u256 values represented as big-endian byte arrays
+/// Returns: -1 if a < b, 0 if a == b, 1 if a > b
+fn compare_u256_bytes(a: &[u8], b: &[u8]) -> i32 {
+    let a_len = a.len();
+    let b_len = b.len();
+
+    // Compare lengths first (longer is larger, assuming no leading zeros)
+    if a_len != b_len {
+        return if a_len > b_len { 1 } else { -1 };
+    }
+
+    // Same length, compare byte by byte from most significant
+    for i in 0..a_len {
+        if a[i] != b[i] {
+            return if a[i] > b[i] { 1 } else { -1 };
+        }
+    }
+
+    0
+}
+
 /// Ensure address bytes are 20 bytes (zero-pad if empty)
 fn ensure_address_bytes(bytes: Vec<u8>) -> Vec<u8> {
     if bytes.is_empty() {
@@ -376,9 +421,20 @@ impl BlockBuilder {
         let y_parity = tx_data["y_parity"].as_bool().unwrap_or(false);
 
         // Calculate v based on transaction type
-        // All Monad transactions use simple y_parity (0 or 1) regardless of type
-        // EIP-155 encoding is handled at a different layer
-        let v = if y_parity { vec![1u8] } else { vec![0u8] };
+        // Type 0 (legacy): EIP-155 encoded v
+        // Type 2 (EIP-1559): raw y_parity
+        let v = match txn_type {
+            0 => {
+                // Legacy transactions: EIP-155 encoding
+                let eip155_v = (chain_id * 2) + 35 + (y_parity as u64);
+                vec![(eip155_v % 256) as u8] // Take lower byte
+            }
+            2 => {
+                // EIP-1559 transactions: raw y_parity
+                vec![y_parity as u8]
+            }
+            _ => vec![0u8]
+        };
 
         let tx_trace = TransactionTrace {
             index: txn_index as u32,
@@ -480,22 +536,38 @@ impl BlockBuilder {
     }
 
     /// Calculate gas price for a transaction
-    /// Monad RPC behavior (non-standard):
+    /// Standard EIP-1559 behavior:
     /// - Type 0 (Legacy): uses max_fee_per_gas as the gas price
-    /// - Type 1 (Access List): uses max_fee_per_gas as the gas price
-    /// - Type 2 (Dynamic Fee): uses max_fee_per_gas (NOT the effective price!)
-    ///
-    /// Note: This differs from standard EIP-1559 which calculates:
-    /// effective_price = base_fee + min(max_priority_fee, max_fee - base_fee)
-    /// However, Monad's RPC returns max_fee_per_gas for all transaction types.
+    /// - Type 2 (Dynamic Fee): effective_price = min(max_fee_per_gas, base_fee_per_gas + max_priority_fee_per_gas)
     fn calculate_effective_gas_price(
         &self,
         max_fee_limbs: &[u64],
-        _max_priority_fee_limbs: &[u64],
-        _txn_type: u32,
+        priority_fee_limbs: &[u64],
+        txn_type: u32,
     ) -> Vec<u8> {
-        // Monad RPC returns max_fee_per_gas as gasPrice for all transaction types
-        u256_limbs_to_bytes(max_fee_limbs)
+        match txn_type {
+            0 => {
+                // Legacy transactions: gas_price = max_fee_per_gas
+                u256_limbs_to_bytes(max_fee_limbs)
+            }
+            2 => {
+                // EIP-1559: effective_gas_price = min(max_fee_per_gas, base_fee_per_gas + max_priority_fee_per_gas)
+                let max_fee = u256_limbs_to_bytes(max_fee_limbs);
+                let priority_fee = u256_limbs_to_bytes(priority_fee_limbs);
+                let base_fee = u256_limbs_to_bytes(&self.base_fee_per_gas);
+
+                // Calculate base_fee + priority_fee
+                let sum = add_u256_bytes(&base_fee, &priority_fee);
+
+                // Return min(max_fee, sum)
+                if compare_u256_bytes(&max_fee, &sum) <= 0 {
+                    max_fee
+                } else {
+                    sum
+                }
+            }
+            _ => u256_limbs_to_bytes(max_fee_limbs)
+        }
     }
 
     /// Finalize the block and return it
