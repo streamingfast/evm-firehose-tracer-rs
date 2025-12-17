@@ -595,6 +595,17 @@ impl BlockBuilder {
                 if let Some(ref mut receipt) = tx.receipt {
                     receipt.logs_bloom = calculate_logs_bloom(&receipt.logs);
                 }
+
+                // Debug: print final transaction values before serialization
+                eprintln!("FINAL TX {}: v={:02x?} (len={}), value={:02x?} (len={}), gas_price={:02x?} (len={})",
+                    tx.index,
+                    tx.v, tx.v.len(),
+                    tx.value.as_ref().map(|v| &v.bytes).unwrap_or(&vec![]),
+                    tx.value.as_ref().map(|v| v.bytes.len()).unwrap_or(0),
+                    tx.gas_price.as_ref().map(|v| &v.bytes).unwrap_or(&vec![]),
+                    tx.gas_price.as_ref().map(|v| v.bytes.len()).unwrap_or(0)
+                );
+
                 tx
             })
             .collect();
