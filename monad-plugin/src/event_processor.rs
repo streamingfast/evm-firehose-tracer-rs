@@ -196,6 +196,9 @@ impl EventProcessor {
             },
             "input": hex::encode(&*data_bytes),
             "access_list_count": txn_header.txn_header.access_list_count,
+            // TODO: Extract actual access_list entries from txn_header
+            // For now, placeholder empty array - needs to be populated from transaction data
+            "access_list": [],
             "blob_versioned_hash_length": txn_header.txn_header.blob_versioned_hash_length,
             "blob_hashes": if blob_bytes.len() > 0 { hex::encode(&*blob_bytes) } else { String::new() },
             "max_fee_per_blob_gas": {

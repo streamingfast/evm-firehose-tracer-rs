@@ -3,7 +3,7 @@
 //! Maps processed Monad events to Firehose protobuf blocks.
 
 use crate::{Block, BlockHeader, ProcessedEvent, TransactionTrace};
-use pb::sf::ethereum::r#type::v2::{block, BigInt};
+use pb::sf::ethereum::r#type::v2::{block, BigInt, AccessTuple};
 use alloy_primitives::{Bloom, BloomInput};
 use eyre::Result;
 use serde_json;
@@ -362,12 +362,38 @@ impl BlockBuilder {
         let txn_index = tx_data["txn_index"].as_u64().unwrap_or(0) as usize;
         eprintln!("DEBUG: txn_index = {}", txn_index);
 
-        // Debug: check if access_list is in tx_data
-        if let Some(access_list_json) = tx_data.get("access_list") {
+        // Extract access_list from tx_data
+        let access_list_entries = if let Some(access_list_json) = tx_data.get("access_list") {
             eprintln!("DEBUG: access_list FOUND in tx_data for tx {}: {:?}", txn_index, access_list_json);
+            if let Some(access_list_array) = access_list_json.as_array() {
+                access_list_array.iter().filter_map(|entry| {
+                    if let (Some(address), Some(storage_keys)) = (entry.get("address"), entry.get("storage_keys")) {
+                        if let (Some(address_str), Some(storage_keys_array)) = (address.as_str(), storage_keys.as_array()) {
+                            if let Ok(address_bytes) = hex::decode(address_str.trim_start_matches("0x")) {
+                                let storage_keys_bytes = storage_keys_array.iter().filter_map(|key| {
+                                    key.as_str().and_then(|k| hex::decode(k.trim_start_matches("0x")).ok())
+                                }).collect::<Vec<Vec<u8>>>();
+                                Some(AccessTuple {
+                                    address: address_bytes,
+                                    storage_keys: storage_keys_bytes,
+                                })
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }).collect::<Vec<AccessTuple>>()
+            } else {
+                Vec::new()
+            }
         } else {
             eprintln!("DEBUG: access_list NOT found in tx_data for tx {}", txn_index);
-        }
+            Vec::new()
+        };
         let hash = ensure_hash_bytes(hex::decode(tx_data["hash"].as_str().unwrap_or("")).unwrap_or_default());
         let from = ensure_address_bytes(hex::decode(tx_data["from"].as_str().unwrap_or("")).unwrap_or_default());
         let to = ensure_address_bytes(hex::decode(tx_data["to"].as_str().unwrap_or("")).unwrap_or_default());
@@ -449,8 +475,22 @@ impl BlockBuilder {
 
         let y_parity = tx_data["y_parity"].as_u64().unwrap_or(0) as u8;
 
-        // For Monad, v is the y_parity value from the event data
-        let v = vec![y_parity];
+        // Calculate proper v based on transaction type (EIP-155 for legacy, y_parity for EIP-1559)
+        let v = match txn_type {
+            0 => {
+                // Legacy transaction: v = chain_id * 2 + 35 + y_parity (EIP-155)
+                let v_value = (chain_id * 2 + 35 + y_parity as u64) as u8;
+                vec![v_value]
+            }
+            2 => {
+                // EIP-1559 transaction: v = y_parity
+                vec![y_parity]
+            }
+            _ => {
+                // Default to y_parity for other types
+                vec![y_parity]
+            }
+        };
         let tx_trace = TransactionTrace {
             index: txn_index as u32,
             hash,
@@ -459,12 +499,12 @@ impl BlockBuilder {
             nonce,
             gas_limit,
             value: {
-                let value_bytes = if value.is_empty() { vec![0] } else { value };
+                let value_bytes = if value.is_empty() { vec![0x00] } else { value };
                 eprintln!("DEBUG: BigInt value bytes final = {:?}", value_bytes);
                 Some(BigInt { bytes: value_bytes })
             },
             gas_price: {
-                let gas_price_bytes = if gas_price.is_empty() { vec![0] } else { gas_price };
+                let gas_price_bytes = if gas_price.is_empty() { vec![0x00] } else { gas_price };
                 eprintln!("DEBUG: BigInt gas_price bytes final = {:?}", gas_price_bytes);
                 Some(BigInt { bytes: gas_price_bytes })
             },
@@ -473,14 +513,7 @@ impl BlockBuilder {
             r,
             s,
             r#type: txn_type as i32,
-             // access_list: Not populated for BASE block compliance with RPC
-             access_list: {
-                 let access_list = Vec::new();
-                 if !access_list.is_empty() {
-                     eprintln!("WARNING: access_list populated for tx {}: {:?}", txn_index, access_list);
-                 }
-                 access_list
-             },
+              access_list: access_list_entries.clone(),
             // Deterministic ordinals based on transaction index for BASE blocks
             begin_ordinal: (txn_index * 2) as u64,
             end_ordinal: (txn_index * 2 + 1) as u64,
@@ -631,8 +664,7 @@ impl BlockBuilder {
                     receipt.logs_bloom = calculate_logs_bloom(&receipt.logs);
                 }
 
-                // Ensure access_list is empty for BASE block compliance
-                tx.access_list.clear();
+                // access_list is now populated from event data, no need to clear
 
                 // Debug: Check BigInt bytes content
                 if let Some(ref value) = tx.value {
