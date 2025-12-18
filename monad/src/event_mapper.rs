@@ -511,16 +511,8 @@ impl BlockBuilder {
             to,
             nonce,
             gas_limit,
-            value: {
-                let value_bytes = if value.is_empty() { vec![0] } else { value };
-                eprintln!("DEBUG: BigInt value bytes final = {:?}", value_bytes);
-                Some(BigInt { bytes: value_bytes })
-            },
-            gas_price: {
-                let gas_price_bytes = if gas_price.is_empty() { vec![0] } else { gas_price };
-                eprintln!("DEBUG: BigInt gas_price bytes final = {:?}", gas_price_bytes);
-                Some(BigInt { bytes: gas_price_bytes })
-            },
+            value: Some(BigInt { bytes: value }),
+            gas_price: Some(BigInt { bytes: gas_price }),
             input,
             v,
             r,
@@ -717,7 +709,7 @@ impl BlockBuilder {
             parent_beacon_root: vec![0u8; 32],
             blob_gas_used: Some(0),
             excess_blob_gas: Some(0),
-            requests_hash: vec![],
+            requests_hash: vec![0u8; 32],
             ..Default::default()
         };
 
