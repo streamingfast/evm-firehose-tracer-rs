@@ -9,6 +9,16 @@ use eyre::Result;
 use serde_json;
 use tracing::{debug, info};
 
+/// Encode v value as big-endian bytes with leading zero trimming
+fn encode_v_bytes(v_value: u64) -> Vec<u8> {
+    let mut bytes = v_value.to_be_bytes().to_vec();
+    // Remove leading zeros but keep at least one byte
+    while bytes.len() > 1 && bytes[0] == 0 {
+        bytes.remove(0);
+    }
+    bytes
+}
+
 /// Convert U256 limbs (4x u64 in little-endian) to big-endian bytes with leading zero compaction
 fn u256_limbs_to_bytes(limbs: &[u64]) -> Vec<u8> {
     eprintln!("DEBUG: u256_limbs_to_bytes input limbs = {:?}", limbs);
@@ -479,8 +489,9 @@ impl BlockBuilder {
         let v = match txn_type {
             0 => {
                 // Legacy transaction: v = chain_id * 2 + 35 + y_parity (EIP-155)
-                let v_value = (chain_id * 2 + 35 + y_parity as u64) as u8;
-                vec![v_value]
+                // Encode as big-endian bytes with leading zero trimming
+                let v_value = chain_id * 2 + 35 + y_parity as u64;
+                encode_v_bytes(v_value)
             }
             2 => {
                 // EIP-1559 transaction: v = y_parity
@@ -499,12 +510,12 @@ impl BlockBuilder {
             nonce,
             gas_limit,
             value: {
-                let value_bytes = if value.is_empty() { vec![0x00] } else { value };
+                let value_bytes = if value.is_empty() { vec![0] } else { value };
                 eprintln!("DEBUG: BigInt value bytes final = {:?}", value_bytes);
                 Some(BigInt { bytes: value_bytes })
             },
             gas_price: {
-                let gas_price_bytes = if gas_price.is_empty() { vec![0x00] } else { gas_price };
+                let gas_price_bytes = if gas_price.is_empty() { vec![0] } else { gas_price };
                 eprintln!("DEBUG: BigInt gas_price bytes final = {:?}", gas_price_bytes);
                 Some(BigInt { bytes: gas_price_bytes })
             },
