@@ -502,6 +502,8 @@ impl BlockBuilder {
                 vec![y_parity]
             }
         };
+
+        eprintln!("DEBUG: txn_index={}, txn_type={}, y_parity={}, v={:?}", txn_index, txn_type, y_parity, v);
         let tx_trace = TransactionTrace {
             index: txn_index as u32,
             hash,
@@ -715,7 +717,7 @@ impl BlockBuilder {
             parent_beacon_root: vec![0u8; 32],
             blob_gas_used: Some(0),
             excess_blob_gas: Some(0),
-            requests_hash: vec![0u8; 32],
+            requests_hash: vec![],
             ..Default::default()
         };
 
