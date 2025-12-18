@@ -176,6 +176,8 @@ impl EventProcessor {
     ) -> Result<Option<ProcessedEvent>> {
         let event_type = "TX_HEADER".to_string();
 
+        eprintln!("DEBUG: txn_index={}, access_list_count={}", txn_index, txn_header.txn_header.access_list_count);
+
         // Serialize transaction header data using serde_json for structured format
         let tx_data = serde_json::json!({
             "txn_index": txn_index,
@@ -208,11 +210,6 @@ impl EventProcessor {
             "input": hex::encode(&*data_bytes),
             "access_list_count": txn_header.txn_header.access_list_count,
             "access_list": self.pending_access_lists.remove(&txn_index).unwrap_or_default(),
-            "blob_versioned_hash_length": txn_header.txn_header.blob_versioned_hash_length,
-            "blob_hashes": if blob_bytes.len() > 0 { hex::encode(&*blob_bytes) } else { String::new() },
-            "max_fee_per_blob_gas": {
-                "limbs": txn_header.txn_header.max_fee_per_blob_gas.limbs.to_vec()
-            },
         });
 
         let firehose_data = serde_json::to_vec(&tx_data)?;
