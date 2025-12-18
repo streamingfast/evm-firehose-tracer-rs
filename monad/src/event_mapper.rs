@@ -483,10 +483,25 @@ impl BlockBuilder {
             .unwrap_or_else(|| vec![0u64; 4]);
         let chain_id = chain_id_limbs[0]; // Chain ID fits in u64
 
-        let y_parity = tx_data["y_parity"].as_u64().unwrap_or(0) as u8;
+        let y_parity = tx_data["y_parity"].as_bool().unwrap_or(false);
 
-        // Calculate proper v: use y_parity directly (0 or 1)
-        let v = vec![y_parity];
+        // Calculate proper v based on transaction type
+        let v = match txn_type {
+            0 => {
+                // Legacy transaction: EIP-155 v = chain_id * 2 + 35 + y_parity
+                let v_value = chain_id * 2 + 35 + (y_parity as u64);
+                // Encode as big-endian bytes with leading zero trimming
+                encode_v_bytes(v_value)
+            }
+            2 => {
+                // EIP-1559 transaction: v = y_parity (0 or 1)
+                vec![y_parity as u8]
+            }
+            _ => {
+                // Default to y_parity
+                vec![y_parity as u8]
+            }
+        };
 
         eprintln!("DEBUG: txn_index={}, txn_type={}, y_parity={}, v={:?}, chain_id={}", txn_index, txn_type, y_parity, v, chain_id);
         let tx_trace = TransactionTrace {
