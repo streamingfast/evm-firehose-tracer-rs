@@ -485,8 +485,8 @@ impl BlockBuilder {
 
         let y_parity = tx_data["y_parity"].as_u64().unwrap_or(0) as u8;
 
-        // Calculate proper v: use 27 + y_parity for all transactions (legacy style)
-        let v = vec![27 + y_parity];
+        // Calculate proper v: use y_parity directly (0 or 1)
+        let v = vec![y_parity];
 
         eprintln!("DEBUG: txn_index={}, txn_type={}, y_parity={}, v={:?}, chain_id={}", txn_index, txn_type, y_parity, v, chain_id);
         let tx_trace = TransactionTrace {
