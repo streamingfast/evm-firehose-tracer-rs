@@ -32,20 +32,14 @@ fn u256_limbs_to_bytes(limbs: &[u64]) -> Vec<u8> {
     eprintln!("DEBUG: raw bytes before compaction = {:?}", bytes);
 
     // Strip leading zeros for Ethereum hex compaction
-    // Ensure at least one byte for zero values to match RPC "00" format
-    let compacted = compact_bytes(bytes);
-    eprintln!("DEBUG: compacted bytes = {:?}", compacted);
-    let result = if compacted.is_empty() {
-        vec![0]
-    } else {
-        compacted
-    };
-    eprintln!("DEBUG: final result = {:?}", result);
+    // For zero values, compact_bytes returns empty vec (serializes as "00" in protobuf JSON)
+    let result = compact_bytes(bytes);
+    eprintln!("DEBUG: compacted/final result = {:?}", result);
     result
 }
 
 /// Strip leading zeros from byte array (Ethereum hex compaction)
-/// Returns at least one byte (0x00) for zero values to match RPC format
+/// Returns empty vec for zero values (protobuf serializes this as "00" in JSON)
 fn compact_bytes(bytes: Vec<u8>) -> Vec<u8> {
     eprintln!("DEBUG: compact_bytes input = {:?}", bytes);
     // Find first non-zero byte
@@ -54,7 +48,7 @@ fn compact_bytes(bytes: Vec<u8>) -> Vec<u8> {
 
     let result = match first_non_zero {
         Some(pos) => bytes[pos..].to_vec(),
-        None => vec![0], // All zeros -> return vec![0x00] to match RPC "00" format
+        None => vec![], // All zeros -> return empty vec (protobuf JSON serializes as "00")
     };
     eprintln!("DEBUG: compact_bytes result = {:?}", result);
     result
