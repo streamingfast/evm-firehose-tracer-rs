@@ -13,6 +13,8 @@ use tracing::{debug, info};
 pub struct EventProcessor {
     current_block: Option<u64>,
     event_count: u64,
+    /// Pending access list entries for transactions (txn_index -> access_list)
+    pending_access_lists: std::collections::HashMap<usize, Vec<serde_json::Value>>,
 }
 
 impl EventProcessor {
@@ -21,6 +23,7 @@ impl EventProcessor {
         Self {
             current_block: None,
             event_count: 0,
+            pending_access_lists: std::collections::HashMap::new(),
         }
     }
 
@@ -53,6 +56,14 @@ impl EventProcessor {
                 blob_bytes,
             } => {
                 self.process_txn_header(txn_header_start, data_bytes, blob_bytes, txn_index, block_number)
+                    .await
+            }
+            ExecEvent::TxnAccessListEntry {
+                txn_index,
+                txn_access_list_entry,
+                storage_key_bytes,
+            } => {
+                self.process_txn_access_list_entry(txn_index, txn_access_list_entry, storage_key_bytes)
                     .await
             }
             ExecEvent::TxnEvmOutput { txn_index, output } => {
@@ -156,7 +167,7 @@ impl EventProcessor {
 
     /// Process transaction header event
     async fn process_txn_header(
-        &self,
+        &mut self,
         txn_header: monad_exec_events::ffi::monad_exec_txn_header_start,
         data_bytes: Box<[u8]>,
         blob_bytes: Box<[u8]>,
@@ -196,9 +207,7 @@ impl EventProcessor {
             },
             "input": hex::encode(&*data_bytes),
             "access_list_count": txn_header.txn_header.access_list_count,
-            // TODO: Extract actual access_list entries from txn_header
-            // For now, placeholder empty array - needs to be populated from transaction data
-            "access_list": [],
+            "access_list": self.pending_access_lists.remove(&txn_index).unwrap_or_default(),
             "blob_versioned_hash_length": txn_header.txn_header.blob_versioned_hash_length,
             "blob_hashes": if blob_bytes.len() > 0 { hex::encode(&*blob_bytes) } else { String::new() },
             "max_fee_per_blob_gas": {
@@ -245,6 +254,48 @@ impl EventProcessor {
             event_type,
             firehose_data,
         }))
+    }
+
+    /// Process transaction access list entry event
+    async fn process_txn_access_list_entry(
+        &mut self,
+        txn_index: usize,
+        txn_access_list_entry: monad_exec_events::ffi::monad_exec_txn_access_list_entry,
+        storage_key_bytes: Box<[u8]>,
+    ) -> Result<Option<ProcessedEvent>> {
+        debug!(
+            "TxnAccessListEntry: txn_index={}, index={}, storage_key_count={}",
+            txn_index, txn_access_list_entry.index, txn_access_list_entry.entry.storage_key_count
+        );
+
+        // Parse address
+        let address = hex::encode(txn_access_list_entry.entry.address.bytes);
+
+        // Parse storage keys (each is 32 bytes)
+        let mut storage_keys = Vec::new();
+        let key_size = 32;
+        for i in 0..txn_access_list_entry.entry.storage_key_count as usize {
+            let start = i * key_size;
+            let end = start + key_size;
+            if end <= storage_key_bytes.len() {
+                let key = hex::encode(&storage_key_bytes[start..end]);
+                storage_keys.push(key);
+            }
+        }
+
+        // Create access list entry JSON
+        let entry = serde_json::json!({
+            "address": address,
+            "storage_keys": storage_keys
+        });
+
+        // Add to pending access list for this transaction
+        self.pending_access_lists
+            .entry(txn_index)
+            .or_insert_with(Vec::new)
+            .push(entry);
+
+        Ok(None)
     }
 
     async fn process_txn_end(&self, block_number: u64) -> Result<Option<ProcessedEvent>> {
@@ -313,5 +364,12 @@ impl EventProcessor {
 impl Default for EventProcessor {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Drop for EventProcessor {
+    fn drop(&mut self) {
+        // Clean up any remaining pending access lists
+        self.pending_access_lists.clear();
     }
 }
