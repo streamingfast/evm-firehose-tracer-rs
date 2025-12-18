@@ -39,6 +39,8 @@ impl EventProcessor {
         if self.current_block != Some(block_number) && block_number > 0 {
             info!("Processing new block: {}", block_number);
             self.current_block = Some(block_number);
+            // Clear pending access lists when starting a new block
+            self.pending_access_lists.clear();
         }
 
         // Match on the actual Monad event type
@@ -176,7 +178,8 @@ impl EventProcessor {
     ) -> Result<Option<ProcessedEvent>> {
         let event_type = "TX_HEADER".to_string();
 
-        eprintln!("DEBUG: txn_index={}, access_list_count={}", txn_index, txn_header.txn_header.access_list_count);
+        let collected_count = self.pending_access_lists.get(&txn_index).map(|list| list.len()).unwrap_or(0);
+        eprintln!("DEBUG: txn_index={}, access_list_count={}, collected_entries={}", txn_index, txn_header.txn_header.access_list_count, collected_count);
 
         // Serialize transaction header data using serde_json for structured format
         let tx_data = serde_json::json!({
