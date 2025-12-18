@@ -9,12 +9,26 @@ use monad_exec_events::ExecEvent;
 use serde_json;
 use tracing::{debug, info};
 
+/// Buffered transaction header waiting for access list entries
+struct PendingTxnHeader {
+    txn_header: monad_exec_events::ffi::monad_exec_txn_header_start,
+    data_bytes: Box<[u8]>,
+    #[allow(dead_code)]
+    blob_bytes: Box<[u8]>,
+    #[allow(dead_code)]
+    txn_index: usize,
+    block_number: u64,
+    expected_access_list_count: u32,
+}
+
 /// Processes raw Monad events into Firehose-compatible format
 pub struct EventProcessor {
     current_block: Option<u64>,
     event_count: u64,
     /// Pending access list entries for transactions (txn_index -> access_list)
     pending_access_lists: std::collections::HashMap<usize, Vec<serde_json::Value>>,
+    /// Buffered transaction headers waiting for access list entries
+    pending_txn_headers: std::collections::HashMap<usize, PendingTxnHeader>,
 }
 
 impl EventProcessor {
@@ -24,6 +38,7 @@ impl EventProcessor {
             current_block: None,
             event_count: 0,
             pending_access_lists: std::collections::HashMap::new(),
+            pending_txn_headers: std::collections::HashMap::new(),
         }
     }
 
@@ -39,8 +54,9 @@ impl EventProcessor {
         if self.current_block != Some(block_number) && block_number > 0 {
             info!("Processing new block: {}", block_number);
             self.current_block = Some(block_number);
-            // Clear pending access lists when starting a new block
+            // Clear pending access lists and headers when starting a new block
             self.pending_access_lists.clear();
+            self.pending_txn_headers.clear();
         }
 
         // Match on the actual Monad event type
@@ -167,7 +183,7 @@ impl EventProcessor {
         }))
     }
 
-    /// Process transaction header event
+    /// Process transaction header event - buffers header until access list is complete
     async fn process_txn_header(
         &mut self,
         txn_header: monad_exec_events::ffi::monad_exec_txn_header_start,
@@ -176,49 +192,92 @@ impl EventProcessor {
         txn_index: usize,
         block_number: u64,
     ) -> Result<Option<ProcessedEvent>> {
-        let event_type = "TX_HEADER".to_string();
+        let expected_access_list_count = txn_header.txn_header.access_list_count;
 
-        let collected_count = self.pending_access_lists.get(&txn_index).map(|list| list.len()).unwrap_or(0);
-        eprintln!("DEBUG: txn_index={}, access_list_count={}, collected_entries={}", txn_index, txn_header.txn_header.access_list_count, collected_count);
+        // Buffer the transaction header - we'll emit it later when all access list entries arrive
+        self.pending_txn_headers.insert(
+            txn_index,
+            PendingTxnHeader {
+                txn_header,
+                data_bytes,
+                blob_bytes,
+                txn_index,
+                block_number,
+                expected_access_list_count,
+            },
+        );
+
+        // If there are no access list entries expected, emit immediately
+        if expected_access_list_count == 0 {
+            return self.try_emit_txn_header(txn_index);
+        }
+
+        // Otherwise wait for access list entries
+        Ok(None)
+    }
+
+    /// Emit a buffered transaction header if ready (all access list entries collected)
+    fn try_emit_txn_header(&mut self, txn_index: usize) -> Result<Option<ProcessedEvent>> {
+        let pending = match self.pending_txn_headers.get(&txn_index) {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+
+        let collected_count = self
+            .pending_access_lists
+            .get(&txn_index)
+            .map(|list| list.len())
+            .unwrap_or(0);
+
+        // Check if we have all expected access list entries
+        if collected_count < pending.expected_access_list_count as usize {
+            return Ok(None); // Not ready yet
+        }
+
+        // Remove the pending header and access list
+        let pending = self.pending_txn_headers.remove(&txn_index).unwrap();
+        let access_list = self.pending_access_lists.remove(&txn_index).unwrap_or_default();
+
+        let event_type = "TX_HEADER".to_string();
 
         // Serialize transaction header data using serde_json for structured format
         let tx_data = serde_json::json!({
             "txn_index": txn_index,
-            "hash": hex::encode(txn_header.txn_hash.bytes),
-            "from": hex::encode(txn_header.sender.bytes),
-            "to": hex::encode(txn_header.txn_header.to.bytes),
-            "is_contract_creation": txn_header.txn_header.is_contract_creation,
-            "nonce": txn_header.txn_header.nonce,
-            "gas_limit": txn_header.txn_header.gas_limit,
+            "hash": hex::encode(pending.txn_header.txn_hash.bytes),
+            "from": hex::encode(pending.txn_header.sender.bytes),
+            "to": hex::encode(pending.txn_header.txn_header.to.bytes),
+            "is_contract_creation": pending.txn_header.txn_header.is_contract_creation,
+            "nonce": pending.txn_header.txn_header.nonce,
+            "gas_limit": pending.txn_header.txn_header.gas_limit,
             "value": {
-                "limbs": txn_header.txn_header.value.limbs.to_vec()
+                "limbs": pending.txn_header.txn_header.value.limbs.to_vec()
             },
             "max_fee_per_gas": {
-                "limbs": txn_header.txn_header.max_fee_per_gas.limbs.to_vec()
+                "limbs": pending.txn_header.txn_header.max_fee_per_gas.limbs.to_vec()
             },
             "max_priority_fee_per_gas": {
-                "limbs": txn_header.txn_header.max_priority_fee_per_gas.limbs.to_vec()
+                "limbs": pending.txn_header.txn_header.max_priority_fee_per_gas.limbs.to_vec()
             },
             "r": {
-                "limbs": txn_header.txn_header.r.limbs.to_vec()
+                "limbs": pending.txn_header.txn_header.r.limbs.to_vec()
             },
             "s": {
-                "limbs": txn_header.txn_header.s.limbs.to_vec()
+                "limbs": pending.txn_header.txn_header.s.limbs.to_vec()
             },
-            "y_parity": txn_header.txn_header.y_parity,
-            "txn_type": txn_header.txn_header.txn_type,
+            "y_parity": pending.txn_header.txn_header.y_parity,
+            "txn_type": pending.txn_header.txn_header.txn_type,
             "chain_id": {
-                "limbs": txn_header.txn_header.chain_id.limbs.to_vec()
+                "limbs": pending.txn_header.txn_header.chain_id.limbs.to_vec()
             },
-            "input": hex::encode(&*data_bytes),
-            "access_list_count": txn_header.txn_header.access_list_count,
-            "access_list": self.pending_access_lists.remove(&txn_index).unwrap_or_default(),
+            "input": hex::encode(&*pending.data_bytes),
+            "access_list_count": pending.txn_header.txn_header.access_list_count,
+            "access_list": access_list,
         });
 
         let firehose_data = serde_json::to_vec(&tx_data)?;
 
         Ok(Some(ProcessedEvent {
-            block_number,
+            block_number: pending.block_number,
             event_type,
             firehose_data,
         }))
@@ -295,7 +354,8 @@ impl EventProcessor {
             .or_insert_with(Vec::new)
             .push(entry);
 
-        Ok(None)
+        // Try to emit the TX_HEADER if we now have all access list entries
+        self.try_emit_txn_header(txn_index)
     }
 
     async fn process_txn_end(&self, block_number: u64) -> Result<Option<ProcessedEvent>> {
@@ -369,7 +429,8 @@ impl Default for EventProcessor {
 
 impl Drop for EventProcessor {
     fn drop(&mut self) {
-        // Clean up any remaining pending access lists
+        // Clean up any remaining pending access lists and headers
         self.pending_access_lists.clear();
+        self.pending_txn_headers.clear();
     }
 }
