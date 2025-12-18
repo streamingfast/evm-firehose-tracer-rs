@@ -486,6 +486,11 @@ impl BlockBuilder {
             ..Default::default()
         };
 
+        // Debug: Check if access_list is populated after creation
+        if !tx_trace.access_list.is_empty() {
+            eprintln!("DEBUG: ACCESS_LIST POPULATED for tx {} after creation: {:?}", txn_index, tx_trace.access_list);
+        }
+
         self.transactions_map.insert(txn_index, tx_trace);
 
         Ok(())
@@ -610,6 +615,19 @@ impl BlockBuilder {
                 if let Some(ref mut receipt) = tx.receipt {
                     receipt.logs_bloom = calculate_logs_bloom(&receipt.logs);
                 }
+
+                // Debug: Check for empty BigInt bytes
+                if let Some(ref value) = tx.value {
+                    if value.bytes.is_empty() {
+                        eprintln!("DEBUG: EMPTY VALUE BYTES for tx {}", tx.index);
+                    }
+                }
+                if let Some(ref gas_price) = tx.gas_price {
+                    if gas_price.bytes.is_empty() {
+                        eprintln!("DEBUG: EMPTY GAS_PRICE BYTES for tx {}", tx.index);
+                    }
+                }
+
                 tx
             })
             .collect();
