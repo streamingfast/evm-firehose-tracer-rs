@@ -716,6 +716,8 @@ impl BlockBuilder {
             ..Default::default()
         };
 
+        eprintln!("DEBUG: BlockHeader requests_hash len={}, content={:?}", header.requests_hash.len(), &header.requests_hash[..std::cmp::min(10, header.requests_hash.len())]);
+
         let block = Block {
             number: self.block_number,
             hash: self.block_hash,
