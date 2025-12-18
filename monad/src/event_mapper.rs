@@ -447,26 +447,10 @@ impl BlockBuilder {
             .unwrap_or_else(|| vec![0u64; 4]);
         let chain_id = chain_id_limbs[0]; // Chain ID fits in u64
 
-        let y_parity = tx_data["y_parity"].as_bool().unwrap_or(false);
-        eprintln!("DEBUG: y_parity = {}", y_parity);
+        let y_parity = tx_data["y_parity"].as_u64().unwrap_or(0) as u8;
 
-        // Calculate v based on transaction type
-        // Type 0 (legacy): EIP-155 encoded v
-        // Type 2 (EIP-1559): raw y_parity
-        let v = match txn_type {
-            0 => {
-                // Legacy transactions: EIP-155 encoding
-                let eip155_v = (chain_id * 2) + 35 + (y_parity as u64);
-                eprintln!("DEBUG: EIP-155 v calculation: chain_id={}, eip155_v={}", chain_id, eip155_v);
-                vec![(eip155_v % 256) as u8] // Take lower byte
-            }
-            2 => {
-                // EIP-1559 transactions: raw y_parity
-                vec![y_parity as u8]
-            }
-            _ => vec![0u8]
-        };
-        eprintln!("DEBUG: final v = {:?}", v);
+        // For Monad, v is the y_parity value from the event data
+        let v = vec![y_parity];
         let tx_trace = TransactionTrace {
             index: txn_index as u32,
             hash,
@@ -646,6 +630,9 @@ impl BlockBuilder {
                 if let Some(ref mut receipt) = tx.receipt {
                     receipt.logs_bloom = calculate_logs_bloom(&receipt.logs);
                 }
+
+                // Ensure access_list is empty for BASE block compliance
+                tx.access_list.clear();
 
                 // Debug: Check BigInt bytes content
                 if let Some(ref value) = tx.value {
