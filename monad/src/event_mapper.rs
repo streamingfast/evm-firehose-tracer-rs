@@ -489,11 +489,20 @@ impl BlockBuilder {
             }
             2 => {
                 // EIP-1559 transaction: v = y_parity (0 or 1)
-                vec![y_parity as u8]
+                // Use empty vec for 0
+                if y_parity {
+                    vec![1]
+                } else {
+                    vec![]
+                }
             }
             _ => {
                 // Default to y_parity
-                vec![y_parity as u8]
+                if y_parity {
+                    vec![1]
+                } else {
+                    vec![]
+                }
             }
         };
 
