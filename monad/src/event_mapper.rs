@@ -11,6 +11,7 @@ use tracing::{debug, info};
 
 /// Convert U256 limbs (4x u64 in little-endian) to big-endian bytes with leading zero compaction
 fn u256_limbs_to_bytes(limbs: &[u64]) -> Vec<u8> {
+    eprintln!("DEBUG: u256_limbs_to_bytes input limbs = {:?}", limbs);
     let mut bytes = Vec::with_capacity(32);
     // U256 is stored as 4 limbs in little-endian order
     // We need to convert to big-endian for protobuf
@@ -18,30 +19,35 @@ fn u256_limbs_to_bytes(limbs: &[u64]) -> Vec<u8> {
         let limb = limbs.get(i).copied().unwrap_or(0);
         bytes.extend_from_slice(&limb.to_be_bytes());
     }
+    eprintln!("DEBUG: raw bytes before compaction = {:?}", bytes);
 
     // Strip leading zeros for Ethereum hex compaction
     // Ensure at least one byte for zero values to match RPC "00" format
     let compacted = compact_bytes(bytes);
-    if compacted.is_empty() {
+    eprintln!("DEBUG: compacted bytes = {:?}", compacted);
+    let result = if compacted.is_empty() {
         vec![0]
     } else {
         compacted
-    }
+    };
+    eprintln!("DEBUG: final result = {:?}", result);
+    result
 }
 
 /// Strip leading zeros from byte array (Ethereum hex compaction)
 /// Returns at least one byte (0x00) for zero values to match RPC format
 fn compact_bytes(bytes: Vec<u8>) -> Vec<u8> {
+    eprintln!("DEBUG: compact_bytes input = {:?}", bytes);
     // Find first non-zero byte
     let first_non_zero = bytes.iter().position(|&b| b != 0);
+    eprintln!("DEBUG: first_non_zero = {:?}", first_non_zero);
 
-    match first_non_zero {
+    let result = match first_non_zero {
         Some(pos) => bytes[pos..].to_vec(),
-        None => {
-            // All zeros -> return vec![0x00] to match RPC "0x0" format
-            vec![0]
-        }
-    }
+        None => vec![0], // All zeros -> return vec![0x00] to match RPC "00" format
+    };
+    eprintln!("DEBUG: compact_bytes result = {:?}", result);
+    result
 }
 
 /// Add two u256 values represented as big-endian byte arrays
@@ -351,12 +357,16 @@ impl BlockBuilder {
         debug!("Handling transaction header");
 
         let tx_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
+        eprintln!("DEBUG: Processing tx_data keys: {:?}", tx_data.as_object().map(|o| o.keys().collect::<Vec<_>>()));
 
         let txn_index = tx_data["txn_index"].as_u64().unwrap_or(0) as usize;
+        eprintln!("DEBUG: txn_index = {}", txn_index);
 
         // Debug: check if access_list is in tx_data
-        if tx_data.get("access_list").is_some() {
-            eprintln!("DEBUG: access_list found in tx_data for tx {}: {:?}", txn_index, tx_data["access_list"]);
+        if let Some(access_list_json) = tx_data.get("access_list") {
+            eprintln!("DEBUG: access_list FOUND in tx_data for tx {}: {:?}", txn_index, access_list_json);
+        } else {
+            eprintln!("DEBUG: access_list NOT found in tx_data for tx {}", txn_index);
         }
         let hash = ensure_hash_bytes(hex::decode(tx_data["hash"].as_str().unwrap_or("")).unwrap_or_default());
         let from = ensure_address_bytes(hex::decode(tx_data["from"].as_str().unwrap_or("")).unwrap_or_default());
@@ -375,7 +385,9 @@ impl BlockBuilder {
                     .collect::<Vec<u64>>()
             })
             .unwrap_or_else(|| vec![0u64; 4]);
+        eprintln!("DEBUG: value_limbs = {:?}", value_limbs);
         let value = u256_limbs_to_bytes(&value_limbs);
+        eprintln!("DEBUG: value bytes after u256_limbs_to_bytes = {:?}", value);
 
         let max_fee_limbs = tx_data["max_fee_per_gas"]["limbs"]
             .as_array()
@@ -385,6 +397,7 @@ impl BlockBuilder {
                     .collect::<Vec<u64>>()
             })
             .unwrap_or_else(|| vec![0u64; 4]);
+        eprintln!("DEBUG: max_fee_limbs = {:?}", max_fee_limbs);
 
         let max_priority_fee_limbs = tx_data["max_priority_fee_per_gas"]["limbs"]
             .as_array()
@@ -394,11 +407,13 @@ impl BlockBuilder {
                     .collect::<Vec<u64>>()
             })
             .unwrap_or_else(|| vec![0u64; 4]);
+        eprintln!("DEBUG: max_priority_fee_limbs = {:?}", max_priority_fee_limbs);
 
         // Calculate effective gas price based on EIP-1559
         // For Type 2 (Dynamic Fee) transactions:
         // effective_gas_price = base_fee_per_gas + min(max_priority_fee_per_gas, max_fee_per_gas - base_fee_per_gas)
         let gas_price = self.calculate_effective_gas_price(&max_fee_limbs, &max_priority_fee_limbs, txn_type);
+        eprintln!("DEBUG: gas_price bytes after calculation = {:?}", gas_price);
 
         // Parse signature
         let r_limbs = tx_data["r"]["limbs"]
@@ -433,31 +448,25 @@ impl BlockBuilder {
         let chain_id = chain_id_limbs[0]; // Chain ID fits in u64
 
         let y_parity = tx_data["y_parity"].as_bool().unwrap_or(false);
+        eprintln!("DEBUG: y_parity = {}", y_parity);
 
         // Calculate v based on transaction type
-        // For Type 2 (EIP-1559): v = y_parity (0 or 1)
-        // For Type 0 (Legacy): v = chain_id * 2 + 35 + y_parity
+        // Type 0 (legacy): EIP-155 encoded v
+        // Type 2 (EIP-1559): raw y_parity
         let v = match txn_type {
             0 => {
-                // Legacy transaction: v = chain_id * 2 + 35 + y_parity
-                let v_value = chain_id * 2 + 35 + (y_parity as u64);
-                if v_value <= 0xFF {
-                    vec![v_value as u8]
-                } else {
-                    // For larger chain IDs, encode as big-endian bytes
-                    let mut bytes = v_value.to_be_bytes().to_vec();
-                    // Strip leading zeros
-                    while bytes.len() > 1 && bytes[0] == 0 {
-                        bytes.remove(0);
-                    }
-                    bytes
-                }
+                // Legacy transactions: EIP-155 encoding
+                let eip155_v = (chain_id * 2) + 35 + (y_parity as u64);
+                eprintln!("DEBUG: EIP-155 v calculation: chain_id={}, eip155_v={}", chain_id, eip155_v);
+                vec![(eip155_v % 256) as u8] // Take lower byte
             }
-            _ => {
-                // Type 2 (EIP-1559): v = y_parity (0 or 1)
+            2 => {
+                // EIP-1559 transactions: raw y_parity
                 vec![y_parity as u8]
             }
+            _ => vec![0u8]
         };
+        eprintln!("DEBUG: final v = {:?}", v);
         let tx_trace = TransactionTrace {
             index: txn_index as u32,
             hash,
@@ -465,8 +474,16 @@ impl BlockBuilder {
             to,
             nonce,
             gas_limit,
-            value: Some(BigInt { bytes: value }),
-            gas_price: Some(BigInt { bytes: gas_price }),
+            value: {
+                let value_bytes = if value.is_empty() { vec![0] } else { value };
+                eprintln!("DEBUG: BigInt value bytes final = {:?}", value_bytes);
+                Some(BigInt { bytes: value_bytes })
+            },
+            gas_price: {
+                let gas_price_bytes = if gas_price.is_empty() { vec![0] } else { gas_price };
+                eprintln!("DEBUG: BigInt gas_price bytes final = {:?}", gas_price_bytes);
+                Some(BigInt { bytes: gas_price_bytes })
+            },
             input,
             v,
             r,
@@ -486,9 +503,10 @@ impl BlockBuilder {
             ..Default::default()
         };
 
-        // Debug: Check if access_list is populated after creation
+        // Debug: Check access_list content
+        eprintln!("DEBUG: ACCESS_LIST for tx {}: len={}", txn_index, tx_trace.access_list.len());
         if !tx_trace.access_list.is_empty() {
-            eprintln!("DEBUG: ACCESS_LIST POPULATED for tx {} after creation: {:?}", txn_index, tx_trace.access_list);
+            eprintln!("DEBUG: ACCESS_LIST CONTENT for tx {}: {:?}", txn_index, tx_trace.access_list);
         }
 
         self.transactions_map.insert(txn_index, tx_trace);
@@ -576,28 +594,41 @@ impl BlockBuilder {
         priority_fee_limbs: &[u64],
         txn_type: u32,
     ) -> Vec<u8> {
+        eprintln!("DEBUG: calculate_effective_gas_price: txn_type={}, max_fee_limbs={:?}, priority_fee_limbs={:?}", txn_type, max_fee_limbs, priority_fee_limbs);
         match txn_type {
             0 => {
                 // Legacy transactions: gas_price = max_fee_per_gas
-                u256_limbs_to_bytes(max_fee_limbs)
+                let result = u256_limbs_to_bytes(max_fee_limbs);
+                eprintln!("DEBUG: type 0 gas_price result = {:?}", result);
+                result
             }
             2 => {
                 // EIP-1559: effective_gas_price = min(max_fee_per_gas, base_fee_per_gas + max_priority_fee_per_gas)
                 let max_fee = u256_limbs_to_bytes(max_fee_limbs);
                 let priority_fee = u256_limbs_to_bytes(priority_fee_limbs);
                 let base_fee = u256_limbs_to_bytes(&self.base_fee_per_gas);
+                eprintln!("DEBUG: EIP-1559: max_fee={:?}, priority_fee={:?}, base_fee={:?}", max_fee, priority_fee, base_fee);
 
                 // Calculate base_fee + priority_fee
                 let sum = add_u256_bytes(&base_fee, &priority_fee);
+                eprintln!("DEBUG: base_fee + priority_fee = {:?}", sum);
 
                 // Return min(max_fee, sum)
-                if compare_u256_bytes(&max_fee, &sum) <= 0 {
+                let result = if compare_u256_bytes(&max_fee, &sum) <= 0 {
+                    eprintln!("DEBUG: using max_fee");
                     max_fee
                 } else {
+                    eprintln!("DEBUG: using sum");
                     sum
-                }
+                };
+                eprintln!("DEBUG: type 2 gas_price result = {:?}", result);
+                result
             }
-            _ => u256_limbs_to_bytes(max_fee_limbs)
+            _ => {
+                let result = u256_limbs_to_bytes(max_fee_limbs);
+                eprintln!("DEBUG: type {} gas_price result = {:?}", txn_type, result);
+                result
+            }
         }
     }
 
@@ -616,16 +647,12 @@ impl BlockBuilder {
                     receipt.logs_bloom = calculate_logs_bloom(&receipt.logs);
                 }
 
-                // Debug: Check for empty BigInt bytes
+                // Debug: Check BigInt bytes content
                 if let Some(ref value) = tx.value {
-                    if value.bytes.is_empty() {
-                        eprintln!("DEBUG: EMPTY VALUE BYTES for tx {}", tx.index);
-                    }
+                    eprintln!("DEBUG: VALUE BYTES for tx {}: len={}, content={:?}", tx.index, value.bytes.len(), &value.bytes[..std::cmp::min(10, value.bytes.len())]);
                 }
                 if let Some(ref gas_price) = tx.gas_price {
-                    if gas_price.bytes.is_empty() {
-                        eprintln!("DEBUG: EMPTY GAS_PRICE BYTES for tx {}", tx.index);
-                    }
+                    eprintln!("DEBUG: GAS_PRICE BYTES for tx {}: len={}, content={:?}", tx.index, gas_price.bytes.len(), &gas_price.bytes[..std::cmp::min(10, gas_price.bytes.len())]);
                 }
 
                 tx
