@@ -38,8 +38,7 @@ fn compact_bytes(bytes: Vec<u8>) -> Vec<u8> {
     match first_non_zero {
         Some(pos) => bytes[pos..].to_vec(),
         None => {
-            // All zeros -> return vec![0x00] to match RPC "00" format
-            eprintln!("DEBUG compact_bytes: all zeros input, returning vec![0]");
+            // All zeros -> return vec![0x00] to match RPC "0x0" format
             vec![0]
         }
     }
@@ -377,7 +376,6 @@ impl BlockBuilder {
             })
             .unwrap_or_else(|| vec![0u64; 4]);
         let value = u256_limbs_to_bytes(&value_limbs);
-        eprintln!("DEBUG TX {}: value_limbs={:?}, value_bytes={:02x?}, len={}", txn_index, value_limbs, value, value.len());
 
         let max_fee_limbs = tx_data["max_fee_per_gas"]["limbs"]
             .as_array()
@@ -401,8 +399,6 @@ impl BlockBuilder {
         // For Type 2 (Dynamic Fee) transactions:
         // effective_gas_price = base_fee_per_gas + min(max_priority_fee_per_gas, max_fee_per_gas - base_fee_per_gas)
         let gas_price = self.calculate_effective_gas_price(&max_fee_limbs, &max_priority_fee_limbs, txn_type);
-        eprintln!("DEBUG TX {}: type={}, max_fee_limbs={:?}, priority_fee_limbs={:?}, base_fee_limbs={:?}, gas_price={:02x?}, len={}",
-            txn_index, txn_type, max_fee_limbs, max_priority_fee_limbs, self.base_fee_per_gas, gas_price, gas_price.len());
 
         // Parse signature
         let r_limbs = tx_data["r"]["limbs"]
@@ -439,10 +435,29 @@ impl BlockBuilder {
         let y_parity = tx_data["y_parity"].as_bool().unwrap_or(false);
 
         // Calculate v based on transaction type
-        // For Monad: Use raw y_parity for all transaction types to match RPC
-        let v = vec![y_parity as u8];
-        eprintln!("DEBUG TX {}: y_parity={}, v={:02x?}", txn_index, y_parity, v);
-
+        // For Type 2 (EIP-1559): v = y_parity (0 or 1)
+        // For Type 0 (Legacy): v = chain_id * 2 + 35 + y_parity
+        let v = match txn_type {
+            0 => {
+                // Legacy transaction: v = chain_id * 2 + 35 + y_parity
+                let v_value = chain_id * 2 + 35 + (y_parity as u64);
+                if v_value <= 0xFF {
+                    vec![v_value as u8]
+                } else {
+                    // For larger chain IDs, encode as big-endian bytes
+                    let mut bytes = v_value.to_be_bytes().to_vec();
+                    // Strip leading zeros
+                    while bytes.len() > 1 && bytes[0] == 0 {
+                        bytes.remove(0);
+                    }
+                    bytes
+                }
+            }
+            _ => {
+                // Type 2 (EIP-1559): v = y_parity (0 or 1)
+                vec![y_parity as u8]
+            }
+        };
         let tx_trace = TransactionTrace {
             index: txn_index as u32,
             hash,
@@ -582,7 +597,7 @@ impl BlockBuilder {
     }
 
     /// Finalize the block and return it
-    fn finalize(mut self) -> Result<Block> {
+    fn finalize(self) -> Result<Block> {
         info!("Finalizing block {}", self.block_number);
 
         // Move transactions from map to vec, sorted by index
@@ -595,17 +610,6 @@ impl BlockBuilder {
                 if let Some(ref mut receipt) = tx.receipt {
                     receipt.logs_bloom = calculate_logs_bloom(&receipt.logs);
                 }
-
-                // Debug: print final transaction values before serialization
-                eprintln!("FINAL TX {}: v={:02x?} (len={}), value={:02x?} (len={}), gas_price={:02x?} (len={})",
-                    tx.index,
-                    tx.v, tx.v.len(),
-                    tx.value.as_ref().map(|v| &v.bytes).unwrap_or(&vec![]),
-                    tx.value.as_ref().map(|v| v.bytes.len()).unwrap_or(0),
-                    tx.gas_price.as_ref().map(|v| &v.bytes).unwrap_or(&vec![]),
-                    tx.gas_price.as_ref().map(|v| v.bytes.len()).unwrap_or(0)
-                );
-
                 tx
             })
             .collect();
