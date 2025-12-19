@@ -351,6 +351,11 @@ impl BlockBuilder {
             self.gas_used = gas_used;
         }
 
+        // TODO: Calculate proper RLP-encoded block size
+        // Currently using event data length as approximation. The actual size should be
+        // the RLP-encoded length of the complete block (header + transactions).
+        // This requires full RLP encoding which is not available from Monad events.
+        // The difference is consistently ~2 bytes (e.g., 0x30f vs 0x311).
         self.size = event.firehose_data.len() as u64;
 
         Ok(())
@@ -712,11 +717,19 @@ impl BlockBuilder {
             parent_beacon_root: vec![0u8; 32],
             blob_gas_used: Some(0),
             excess_blob_gas: Some(0),
-            requests_hash: vec![0u8; 32],
+            // Prague fork EIP-7685: requests_hash (keccak256 of requests)
+            // Monad uses zero hash for empty requests
+            requests_hash: vec![
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            ],
             ..Default::default()
         };
 
-        eprintln!("DEBUG: BlockHeader requests_hash len={}, content={:?}", header.requests_hash.len(), &header.requests_hash[..std::cmp::min(10, header.requests_hash.len())]);
+        eprintln!("DEBUG: BlockHeader requests_hash len={}, content={:?}, as_hex={}",
+            header.requests_hash.len(),
+            &header.requests_hash[..std::cmp::min(10, header.requests_hash.len())],
+            hex::encode(&header.requests_hash));
 
         let block = Block {
             number: self.block_number,
