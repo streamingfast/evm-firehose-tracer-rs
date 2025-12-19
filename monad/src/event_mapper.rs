@@ -355,16 +355,19 @@ impl BlockBuilder {
 
         // Try to extract size from Monad event data if available
         if let Some(size_str) = block_data["size"].as_str() {
-            // Parse hex string
+            // Parse hex string (e.g., "0x312") to u64
             if let Ok(size_val) = u64::from_str_radix(size_str.trim_start_matches("0x"), 16) {
                 self.size = size_val;
+                eprintln!("DEBUG: Extracted size from event data: 0x{:x}", size_val);
             } else {
-                // Fallback to event data length + RLP overhead approximation
-                self.size = (event.firehose_data.len() as u64) + 3;
+                // Fallback to event data length
+                self.size = event.firehose_data.len() as u64;
+                eprintln!("DEBUG: Size parse failed, using event length: {}", self.size);
             }
         } else {
-            // Fallback: use event data length + RLP overhead approximation
-            self.size = (event.firehose_data.len() as u64) + 3;
+            // Fallback: use event data length
+            self.size = event.firehose_data.len() as u64;
+            eprintln!("DEBUG: No size field in event, using event length: {}", self.size);
         }
 
         Ok(())
