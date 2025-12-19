@@ -365,9 +365,10 @@ impl BlockBuilder {
                 eprintln!("DEBUG: Size parse failed, using event length: {}", self.size);
             }
         } else {
-            // Fallback: use event data length
-            self.size = event.firehose_data.len() as u64;
-            eprintln!("DEBUG: No size field in event, using event length: {}", self.size);
+            // Fallback: use event data length + 1 byte RLP overhead
+            // The RLP block encoding adds 1 byte for the list header
+            self.size = (event.firehose_data.len() as u64) + 1;
+            eprintln!("DEBUG: No size field in event, using event length + 1: {}", self.size);
         }
 
         Ok(())
