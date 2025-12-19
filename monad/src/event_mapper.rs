@@ -4,7 +4,9 @@
 
 use crate::{Block, BlockHeader, ProcessedEvent, TransactionTrace};
 use pb::sf::ethereum::r#type::v2::{block, BigInt, AccessTuple};
-use alloy_primitives::{Bloom, BloomInput};
+use alloy_primitives::{Bloom, BloomInput, B256, Address, U256, Bytes};
+use alloy_consensus::{Header as AlloyHeader, Transaction as AlloyTransaction, TxEip1559, TxEip2930, TxLegacy, TxType, Signed};
+use alloy_rlp::Encodable;
 use eyre::Result;
 use serde_json;
 use tracing::{debug, info};
@@ -351,12 +353,19 @@ impl BlockBuilder {
             self.gas_used = gas_used;
         }
 
-        // TODO: Calculate proper RLP-encoded block size
-        // Currently using event data length as approximation. The actual size should be
-        // the RLP-encoded length of the complete block (header + transactions).
-        // This requires full RLP encoding which is not available from Monad events.
-        // The difference is consistently ~2 bytes (e.g., 0x30f vs 0x311).
-        self.size = event.firehose_data.len() as u64;
+        // Try to extract size from Monad event data if available
+        if let Some(size_str) = block_data["size"].as_str() {
+            // Parse hex string
+            if let Ok(size_val) = u64::from_str_radix(size_str.trim_start_matches("0x"), 16) {
+                self.size = size_val;
+            } else {
+                // Fallback to event data length + RLP overhead approximation
+                self.size = (event.firehose_data.len() as u64) + 3;
+            }
+        } else {
+            // Fallback: use event data length + RLP overhead approximation
+            self.size = (event.firehose_data.len() as u64) + 3;
+        }
 
         Ok(())
     }
