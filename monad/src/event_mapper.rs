@@ -730,12 +730,11 @@ impl BlockBuilder {
             blob_gas_used: Some(0),
             excess_blob_gas: Some(0),
             // Prague fork EIP-7685: requests_hash (keccak256 of requests)
-            requests_hash: vec![],
-            // TODO : remove, keeping it because too lazy to rewrite the whole thing
-            // requests_hash: vec![
-            //     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            //     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-            // ],
+            // Monad returns zero hash for empty requests
+            requests_hash: vec![
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            ],
             ..Default::default()
         };
 
