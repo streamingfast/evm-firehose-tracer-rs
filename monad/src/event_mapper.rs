@@ -365,9 +365,9 @@ impl BlockBuilder {
                 eprintln!("DEBUG SIZE: Block {} size parse failed, using event length: {}", self.block_number, self.size);
             }
         } else {
-            // Fallback: use event data length
-            self.size = (event.firehose_data.len() as u64).saturating_sub(2);
-            eprintln!("DEBUG SIZE: Block {} no size field, using event length - 2: {}", self.block_number, self.size);
+            // Fallback: use event data length - 3 bytes overhead
+            self.size = (event.firehose_data.len() as u64).saturating_sub(3);
+            eprintln!("DEBUG SIZE: Block {} no size field, using event length - 3: {}", self.block_number, self.size);
         }
 
         Ok(())
