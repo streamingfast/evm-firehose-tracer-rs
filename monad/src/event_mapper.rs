@@ -4,9 +4,7 @@
 
 use crate::{Block, BlockHeader, ProcessedEvent, TransactionTrace};
 use pb::sf::ethereum::r#type::v2::{block, BigInt, AccessTuple};
-use alloy_primitives::{Bloom, BloomInput, B256, Address, U256, Bytes};
-use alloy_consensus::Header as AlloyHeader;
-use alloy_rlp::Encodable;
+use alloy_primitives::{Bloom, BloomInput};
 use eyre::Result;
 use serde_json;
 use tracing::{debug, info};
@@ -353,24 +351,9 @@ impl BlockBuilder {
             self.gas_used = gas_used;
         }
 
-        // Try to extract size from Monad event data if available
-        if let Some(size_str) = block_data["size"].as_str() {
-            // Parse hex string (e.g., "0x312") to u64
-            if let Ok(size_val) = u64::from_str_radix(size_str.trim_start_matches("0x"), 16) {
-                self.size = size_val;
-                eprintln!("DEBUG SIZE: Block {} extracted size from event: 0x{:x}", self.block_number, size_val);
-            } else {
-                // Fallback to event data length
-                self.size = event.firehose_data.len() as u64;
-                eprintln!("DEBUG SIZE: Block {} size parse failed, using event length: {}", self.block_number, self.size);
-            }
-        } else {
-            // Monad's RPC always returns 0x30f (783) for block size
-            // This is a constant placeholder value, not actually calculated
-            self.size = 783;
-            eprintln!("DEBUG SIZE: Block {} no size field in event, using fixed value: {} (event_len={})",
-                self.block_number, self.size, event.firehose_data.len());
-        }
+        // Monad's RPC always returns 0x30f (783) for block size
+        // This is a constant placeholder value, not actually calculated per block
+        self.size = 783;
 
         Ok(())
     }
@@ -680,10 +663,6 @@ impl BlockBuilder {
     fn finalize(self) -> Result<Block> {
         info!("Finalizing block {}", self.block_number);
 
-        // Calculate the actual block size from RLP-encoded header BEFORE moving transactions
-        let rlp_size = self.calculate_rlp_header_size();
-        eprintln!("DEBUG SIZE DIRECT: rlp_size just calculated = {}", rlp_size);
-
         // Move transactions from map to vec, sorted by index
         let mut transactions: Vec<TransactionTrace> = self
             .transactions_map
@@ -744,20 +723,13 @@ impl BlockBuilder {
             ..Default::default()
         };
 
-        // eprintln!("DEBUG: BlockHeader requests_hash len={}, content={:?}, as_hex={}",
-        //     header.requests_hash.len(),
-        //     &header.requests_hash[..std::cmp::min(10, header.requests_hash.len())],
-        //     hex::encode(&header.requests_hash));
-        eprintln!("DEBUG SIZE: Block {} calculated RLP header size: {} bytes (was using: {})",
-            self.block_number, rlp_size, self.size);
-
         let block = Block {
             number: self.block_number,
             hash: self.block_hash,
-            size: self.size, // Use Monad's event data size, not RLP calculation
+            size: self.size, // Monad uses constant 783
             header: Some(header),
             transaction_traces: transactions,
-            ver: 4, // Version 4 for Firehose 3.0
+            ver: 4,
             detail_level: block::DetailLevel::DetaillevelBase as i32,
             ..Default::default()
         };
@@ -765,44 +737,4 @@ impl BlockBuilder {
         Ok(block)
     }
 
-    /// Calculate the RLP-encoded size of the block header
-    /// This matches what alloy_consensus::Header::length() does
-    fn calculate_rlp_header_size(&self) -> u64 {
-        // Convert base_fee_per_gas from Vec<u64> to [u64; 4]
-        let base_fee_array: [u64; 4] = [
-            self.base_fee_per_gas.get(0).copied().unwrap_or(0),
-            self.base_fee_per_gas.get(1).copied().unwrap_or(0),
-            self.base_fee_per_gas.get(2).copied().unwrap_or(0),
-            self.base_fee_per_gas.get(3).copied().unwrap_or(0),
-        ];
-
-        // Convert to Alloy header and calculate RLP size
-        let alloy_header = AlloyHeader {
-            parent_hash: B256::from_slice(&self.parent_hash),
-            ommers_hash: B256::from_slice(&self.uncle_hash),
-            beneficiary: Address::from_slice(&self.coinbase),
-            state_root: B256::from_slice(&self.state_root),
-            transactions_root: B256::from_slice(&self.transactions_root),
-            receipts_root: B256::from_slice(&self.receipts_root),
-            logs_bloom: Bloom::from_slice(&self.logs_bloom),
-            difficulty: U256::ZERO,
-            number: self.block_number,
-            gas_limit: self.gas_limit,
-            gas_used: self.gas_used,
-            timestamp: self.timestamp,
-            extra_data: Bytes::copy_from_slice(&self.extra_data),
-            mix_hash: B256::from_slice(&self.mix_hash),
-            nonce: self.nonce.into(),
-            base_fee_per_gas: Some(U256::from_limbs(base_fee_array).try_into().ok()).flatten(),
-            withdrawals_root: Some(B256::from_slice(&self.withdrawals_root)),
-            blob_gas_used: Some(0),
-            excess_blob_gas: Some(0),
-            parent_beacon_block_root: Some(B256::ZERO),
-            requests_hash: Some(B256::ZERO),
-            target_blobs_per_block: None,
-        };
-
-        // Calculate the RLP encoded length
-        alloy_header.length() as u64
-    }
 }
