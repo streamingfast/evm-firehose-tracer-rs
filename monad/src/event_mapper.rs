@@ -368,8 +368,8 @@ impl BlockBuilder {
             // Fallback: Monad doesn't provide size in events
             // Use a fixed calculation based on RPC observation
             // Most blocks are around 782-783 bytes for empty/small blocks
-            self.size = (event.firehose_data.len() as u64).saturating_sub(4);
-            eprintln!("DEBUG SIZE: Block {} no size field in event, calculated: {} (event_len={}, using -4)",
+            self.size = (event.firehose_data.len() as u64).saturating_sub(2);
+            eprintln!("DEBUG SIZE: Block {} no size field in event, calculated: {} (event_len={}, using -2)",
                 self.block_number, self.size, event.firehose_data.len());
         }
 
