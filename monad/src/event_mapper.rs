@@ -5,7 +5,7 @@
 use crate::{Block, BlockHeader, ProcessedEvent, TransactionTrace};
 use pb::sf::ethereum::r#type::v2::{block, BigInt, AccessTuple};
 use alloy_primitives::{Bloom, BloomInput, B256, Address, U256, Bytes};
-use alloy_consensus::{Header as AlloyHeader, Transaction as AlloyTransaction, TxEip1559, TxEip2930, TxLegacy, TxType, Signed};
+use alloy_consensus::Header as AlloyHeader;
 use alloy_rlp::Encodable;
 use eyre::Result;
 use serde_json;
@@ -681,6 +681,9 @@ impl BlockBuilder {
     fn finalize(self) -> Result<Block> {
         info!("Finalizing block {}", self.block_number);
 
+        // Calculate the actual block size from RLP-encoded header BEFORE moving transactions
+        let rlp_size = self.calculate_rlp_header_size();
+
         // Move transactions from map to vec, sorted by index
         let mut transactions: Vec<TransactionTrace> = self
             .transactions_map
@@ -745,11 +748,13 @@ impl BlockBuilder {
         //     header.requests_hash.len(),
         //     &header.requests_hash[..std::cmp::min(10, header.requests_hash.len())],
         //     hex::encode(&header.requests_hash));
+        eprintln!("DEBUG SIZE: Block {} calculated RLP header size: {} bytes (was using: {})",
+            self.block_number, rlp_size, self.size);
 
         let block = Block {
             number: self.block_number,
             hash: self.block_hash,
-            size: self.size,
+            size: rlp_size,
             header: Some(header),
             transaction_traces: transactions,
             ver: 4, // Version 4 for Firehose 3.0
@@ -758,5 +763,45 @@ impl BlockBuilder {
         };
 
         Ok(block)
+    }
+
+    /// Calculate the RLP-encoded size of the block header
+    /// This matches what alloy_consensus::Header::length() does
+    fn calculate_rlp_header_size(&self) -> u64 {
+        // Convert base_fee_per_gas from Vec<u64> to [u64; 4]
+        let base_fee_array: [u64; 4] = [
+            self.base_fee_per_gas.get(0).copied().unwrap_or(0),
+            self.base_fee_per_gas.get(1).copied().unwrap_or(0),
+            self.base_fee_per_gas.get(2).copied().unwrap_or(0),
+            self.base_fee_per_gas.get(3).copied().unwrap_or(0),
+        ];
+
+        // Convert to Alloy header and calculate RLP size
+        let alloy_header = AlloyHeader {
+            parent_hash: B256::from_slice(&self.parent_hash),
+            ommers_hash: B256::from_slice(&self.uncle_hash),
+            beneficiary: Address::from_slice(&self.coinbase),
+            state_root: B256::from_slice(&self.state_root),
+            transactions_root: B256::from_slice(&self.transactions_root),
+            receipts_root: B256::from_slice(&self.receipts_root),
+            logs_bloom: Bloom::from_slice(&self.logs_bloom),
+            difficulty: U256::ZERO,
+            number: self.block_number,
+            gas_limit: self.gas_limit,
+            gas_used: self.gas_used,
+            timestamp: self.timestamp,
+            extra_data: Bytes::copy_from_slice(&self.extra_data),
+            mix_hash: B256::from_slice(&self.mix_hash),
+            nonce: self.nonce.into(),
+            base_fee_per_gas: Some(U256::from_limbs(base_fee_array).try_into().ok()).flatten(),
+            withdrawals_root: Some(B256::from_slice(&self.withdrawals_root)),
+            blob_gas_used: Some(0),
+            excess_blob_gas: Some(0),
+            parent_beacon_block_root: Some(B256::ZERO),
+            requests_hash: Some(B256::ZERO),
+        };
+
+        // Calculate the RLP encoded length
+        alloy_header.length() as u64
     }
 }
