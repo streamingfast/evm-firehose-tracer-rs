@@ -358,16 +358,16 @@ impl BlockBuilder {
             // Parse hex string (e.g., "0x312") to u64
             if let Ok(size_val) = u64::from_str_radix(size_str.trim_start_matches("0x"), 16) {
                 self.size = size_val;
-                // eprintln!("DEBUG: Extracted size from event data: 0x{:x}", size_val);
+                eprintln!("DEBUG SIZE: Block {} extracted size from event: 0x{:x}", self.block_number, size_val);
             } else {
                 // Fallback to event data length
                 self.size = event.firehose_data.len() as u64;
-                // eprintln!("DEBUG: Size parse failed, using event length: {}", self.size);
+                eprintln!("DEBUG SIZE: Block {} size parse failed, using event length: {}", self.block_number, self.size);
             }
         } else {
             // Fallback: use event data length
             self.size = (event.firehose_data.len() as u64).saturating_sub(2);
-            // eprintln!("DEBUG: No size field in event, using event length - 2: {}", self.size);
+            eprintln!("DEBUG SIZE: Block {} no size field, using event length - 2: {}", self.block_number, self.size);
         }
 
         Ok(())
