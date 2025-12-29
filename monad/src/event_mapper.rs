@@ -800,7 +800,7 @@ impl BlockBuilder {
             excess_blob_gas: Some(0),
             parent_beacon_block_root: Some(B256::ZERO),
             requests_hash: Some(B256::ZERO),
-            target_blobs_per_block: Some(3), // EIP-4844 default target
+            target_blobs_per_block: None,
         };
 
         // Calculate the RLP encoded length
