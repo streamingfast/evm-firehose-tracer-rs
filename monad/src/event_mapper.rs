@@ -755,7 +755,7 @@ impl BlockBuilder {
         let block = Block {
             number: self.block_number,
             hash: self.block_hash,
-            size: rlp_size,
+            size: self.size, // Use Monad's event data size, not RLP calculation
             header: Some(header),
             transaction_traces: transactions,
             ver: 4, // Version 4 for Firehose 3.0
