@@ -42,7 +42,6 @@ impl FirehosePrinter {
 
     /// Print block in Firehose protocol format
     fn print_firehose_block(&mut self, block: Block) -> Result<()> {
-        eprintln!("DEBUG SIZE BEFORE SERIALIZE: Block {} has size field = {}", block.number, block.size);
         // Serialize the block to protobuf bytes
         let block_bytes = self.serialize_block(&block)?;
 
