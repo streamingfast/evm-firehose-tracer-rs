@@ -683,6 +683,7 @@ impl BlockBuilder {
 
         // Calculate the actual block size from RLP-encoded header BEFORE moving transactions
         let rlp_size = self.calculate_rlp_header_size();
+        eprintln!("DEBUG SIZE DIRECT: rlp_size just calculated = {}", rlp_size);
 
         // Move transactions from map to vec, sorted by index
         let mut transactions: Vec<TransactionTrace> = self
