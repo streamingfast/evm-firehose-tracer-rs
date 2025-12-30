@@ -87,30 +87,49 @@ impl MonadConsumer {
         // Start on a block boundary
         event_reader.consensus_prev(Some(ExecEventType::BlockStart));
 
+        // Setup graceful shutdown signal handling
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to setup SIGTERM handler");
+        let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+            .expect("failed to setup SIGINT handler");
+
         loop {
-            // Read events from Monad SDK
-            match event_reader.next_descriptor() {
-                EventNextResult::Gap => {
-                    error!("Event sequence number gap occurred!");
-                    event_reader.reset();
-                    continue;
+            // Check for shutdown signals
+            tokio::select! {
+                _ = sigterm.recv() => {
+                    info!("Received SIGTERM, shutting down gracefully");
+                    break;
                 }
-                EventNextResult::NotReady => {
-                    // No event available, sleep briefly and continue polling
-                    tokio::time::sleep(tokio::time::Duration::from_micros(100)).await;
-                    continue;
+                _ = sigint.recv() => {
+                    info!("Received SIGINT (Ctrl+C), shutting down gracefully");
+                    break;
                 }
-                EventNextResult::Ready(event) => {
-                    if let Err(e) =
-                        Self::process_and_send_event(&mut event_processor, &event, &tx).await
-                    {
-                        error!("Failed to process event: {}", e);
-                        // Reset on error to avoid getting stuck
-                        event_reader.reset();
+                _ = tokio::time::sleep(tokio::time::Duration::from_micros(100)) => {
+                    // Read events from Monad SDK
+                    match event_reader.next_descriptor() {
+                        EventNextResult::Gap => {
+                            error!("Event sequence number gap occurred!");
+                            event_reader.reset();
+                        }
+                        EventNextResult::NotReady => {
+                            // No event available, continue polling
+                        }
+                        EventNextResult::Ready(event) => {
+                            if let Err(e) =
+                                Self::process_and_send_event(&mut event_processor, &event, &tx).await
+                            {
+                                error!("Failed to process event: {}", e);
+                                // Reset on error to avoid getting stuck
+                                event_reader.reset();
+                            }
+                        }
                     }
                 }
             }
         }
+
+        info!("Event consumption loop terminated gracefully");
+        Ok(())
     }
 
     /// Process an event descriptor and send it through the channel
