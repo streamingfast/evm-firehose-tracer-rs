@@ -9,6 +9,13 @@ use monad_exec_events::ExecEvent;
 use serde_json;
 use tracing::{debug, info};
 
+// Event type constants to avoid repeated string allocations
+const EVENT_TYPE_BLOCK_START: &str = "BLOCK_START";
+const EVENT_TYPE_BLOCK_END: &str = "BLOCK_END";
+const EVENT_TYPE_TX_HEADER: &str = "TX_HEADER";
+const EVENT_TYPE_TX_RECEIPT: &str = "TX_RECEIPT";
+const EVENT_TYPE_TX_LOG: &str = "TX_LOG";
+
 /// Buffered transaction header waiting for access list entries
 struct PendingTxnHeader {
     txn_header: monad_exec_events::ffi::monad_exec_txn_header_start,
@@ -119,7 +126,7 @@ impl EventProcessor {
             block_number, block_start.eth_block_input.timestamp
         );
 
-        let event_type = "BLOCK_START".to_string();
+        let event_type = EVENT_TYPE_BLOCK_START;
 
         // Extract all header fields from eth_block_input
         // Convert nonce from 8-byte array to u64 (little-endian)
@@ -147,7 +154,7 @@ impl EventProcessor {
 
         Ok(Some(ProcessedEvent {
             block_number,
-            event_type,
+            event_type: event_type.to_string(),
             firehose_data,
         }))
     }
@@ -163,7 +170,7 @@ impl EventProcessor {
             block_number, block_end.exec_output.gas_used
         );
 
-        let event_type = "BLOCK_END".to_string();
+        let event_type = EVENT_TYPE_BLOCK_END;
 
         // Extract all execution output fields
         let block_data = serde_json::json!({
@@ -178,7 +185,7 @@ impl EventProcessor {
 
         Ok(Some(ProcessedEvent {
             block_number,
-            event_type,
+            event_type: event_type.to_string(),
             firehose_data,
         }))
     }
@@ -239,7 +246,7 @@ impl EventProcessor {
             .expect("pending transaction header must exist after count validation");
         let access_list = self.pending_access_lists.remove(&txn_index).unwrap_or_default();
 
-        let event_type = "TX_HEADER".to_string();
+        let event_type = EVENT_TYPE_TX_HEADER;
 
         // Serialize transaction header data using serde_json for structured format
         let tx_data = serde_json::json!({
@@ -279,7 +286,7 @@ impl EventProcessor {
 
         Ok(Some(ProcessedEvent {
             block_number: pending.block_number,
-            event_type,
+            event_type: event_type.to_string(),
             firehose_data,
         }))
     }
@@ -296,7 +303,7 @@ impl EventProcessor {
             block_number, txn_index, output.receipt.status, output.receipt.gas_used
         );
 
-        let event_type = "TX_RECEIPT".to_string();
+        let event_type = EVENT_TYPE_TX_RECEIPT;
 
         // Serialize receipt data
         let receipt_data = serde_json::json!({
@@ -311,7 +318,7 @@ impl EventProcessor {
 
         Ok(Some(ProcessedEvent {
             block_number,
-            event_type,
+            event_type: event_type.to_string(),
             firehose_data,
         }))
     }
@@ -373,7 +380,7 @@ impl EventProcessor {
         txn_index: usize,
         block_number: u64,
     ) -> Result<Option<ProcessedEvent>> {
-        let event_type = "TX_LOG".to_string();
+        let event_type = EVENT_TYPE_TX_LOG;
 
         // Parse topics from topic_bytes (each topic is 32 bytes)
         let mut topics = Vec::new();
@@ -398,7 +405,7 @@ impl EventProcessor {
 
         Ok(Some(ProcessedEvent {
             block_number,
-            event_type,
+            event_type: event_type.to_string(),
             firehose_data,
         }))
     }
