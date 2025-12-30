@@ -359,7 +359,7 @@ impl EventProcessor {
         // Add to pending access list for this transaction
         self.pending_access_lists
             .entry(txn_index)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(entry);
 
         // Try to emit the TX_HEADER if we now have all access list entries
