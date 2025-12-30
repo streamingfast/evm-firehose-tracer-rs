@@ -33,9 +33,9 @@ fn u256_limbs_to_bytes(limbs: &[u64]) -> Vec<u8> {
 
     // Strip leading zeros for Ethereum hex compaction
     // For zero values, compact_bytes returns empty vec (serializes as "00" in protobuf JSON)
-    let result = compact_bytes(bytes);
+
     // eprintln!("DEBUG: compacted/final result = {:?}", result);
-    result
+    compact_bytes(bytes)
 }
 
 /// Strip leading zeros from byte array (Ethereum hex compaction)
@@ -46,19 +46,18 @@ fn compact_bytes(bytes: Vec<u8>) -> Vec<u8> {
     let first_non_zero = bytes.iter().position(|&b| b != 0);
     // eprintln!("DEBUG: first_non_zero = {:?}", first_non_zero);
 
-    let result = match first_non_zero {
+    // eprintln!("DEBUG: compact_bytes result = {:?}", result);
+    match first_non_zero {
         Some(pos) => bytes[pos..].to_vec(),
         None => vec![],
-    };
-    // eprintln!("DEBUG: compact_bytes result = {:?}", result);
-    result
+    }
 }
 
 /// Add two u256 values represented as big-endian byte arrays
 fn add_u256_bytes(a: &[u8], b: &[u8]) -> Vec<u8> {
     // Pad to 32 bytes for addition
-    let mut a_padded = vec![0u8; 32];
-    let mut b_padded = vec![0u8; 32];
+    let mut a_padded = [0u8; 32];
+    let mut b_padded = [0u8; 32];
 
     let a_start = 32 - a.len();
     let b_start = 32 - b.len();
@@ -630,9 +629,9 @@ impl BlockBuilder {
         match txn_type {
             0 => {
                 // Legacy transactions: gas_price = max_fee_per_gas
-                let result = u256_limbs_to_bytes(max_fee_limbs);
+
                 // eprintln!("DEBUG: type 0 gas_price result = {:?}", result);
-                result
+                u256_limbs_to_bytes(max_fee_limbs)
             }
             2 => {
                 // EIP-1559: effective_gas_price = min(max_fee_per_gas, base_fee_per_gas + max_priority_fee_per_gas)
@@ -646,20 +645,20 @@ impl BlockBuilder {
                 // eprintln!("DEBUG: base_fee + priority_fee = {:?}", sum);
 
                 // Return min(max_fee, sum)
-                let result = if compare_u256_bytes(&max_fee, &sum) <= 0 {
+
+                // eprintln!("DEBUG: type 2 gas_price result = {:?}", result);
+                if compare_u256_bytes(&max_fee, &sum) <= 0 {
                     // eprintln!("DEBUG: using max_fee");
                     max_fee
                 } else {
                     // eprintln!("DEBUG: using sum");
                     sum
-                };
-                // eprintln!("DEBUG: type 2 gas_price result = {:?}", result);
-                result
+                }
             }
             _ => {
-                let result = u256_limbs_to_bytes(max_fee_limbs);
+
                 // eprintln!("DEBUG: type {} gas_price result = {:?}", txn_type, result);
-                result
+                u256_limbs_to_bytes(max_fee_limbs)
             }
         }
     }
@@ -670,9 +669,7 @@ impl BlockBuilder {
 
         // Move transactions from map to vec, sorted by index
         let mut transactions: Vec<TransactionTrace> = self
-            .transactions_map
-            .into_iter()
-            .map(|(_, tx)| {
+            .transactions_map.into_values().map(|tx| {
                 let mut tx = tx;
                 // Calculate logs bloom from actual logs
                 if let Some(ref mut receipt) = tx.receipt {
