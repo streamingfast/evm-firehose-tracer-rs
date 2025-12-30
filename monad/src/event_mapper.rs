@@ -671,20 +671,21 @@ impl BlockBuilder {
         let mut transactions: Vec<TransactionTrace> = self
             .transactions_map.into_values().map(|tx| {
                 let mut tx = tx;
+
+                // Ensure receipt exists
+                if tx.receipt.is_none() {
+                    tx.receipt = Some(pb::sf::ethereum::r#type::v2::TransactionReceipt {
+                        cumulative_gas_used: 0,
+                        logs_bloom: vec![0u8; 256],
+                        logs: Vec::new(),
+                        ..Default::default()
+                    });
+                }
+
                 // Calculate logs bloom from actual logs
                 if let Some(ref mut receipt) = tx.receipt {
                     receipt.logs_bloom = calculate_logs_bloom(&receipt.logs);
                 }
-
-                // access_list is now populated from event data, no need to clear
-
-                // Debug: Check BigInt bytes content
-                // if let Some(ref value) = tx.value {
-                //     eprintln!("DEBUG: VALUE BYTES for tx {}: len={}, content={:?}", tx.index, value.bytes.len(), &value.bytes[..std::cmp::min(10, value.bytes.len())]);
-                // }
-                // if let Some(ref gas_price) = tx.gas_price {
-                //     eprintln!("DEBUG: GAS_PRICE BYTES for tx {}: len={}, content={:?}", tx.index, gas_price.bytes.len(), &gas_price.bytes[..std::cmp::min(10, gas_price.bytes.len())]);
-                // }
 
                 tx
             })
