@@ -235,7 +235,8 @@ impl EventProcessor {
         }
 
         // Remove the pending header and access list
-        let pending = self.pending_txn_headers.remove(&txn_index).unwrap();
+        let pending = self.pending_txn_headers.remove(&txn_index)
+            .expect("pending transaction header must exist after count validation");
         let access_list = self.pending_access_lists.remove(&txn_index).unwrap_or_default();
 
         let event_type = "TX_HEADER".to_string();
