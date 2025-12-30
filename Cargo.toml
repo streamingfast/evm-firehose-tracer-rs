@@ -42,12 +42,7 @@ reth-node-builder = { path = "../reth/crates/node/builder" }
 reth-provider = { path = "../reth/crates/storage/provider" }
 
 # Alloy dependencies
-alloy-genesis = "0.8"
-alloy-primitives = "=0.8.18"
-alloy-consensus = "0.8"
-alloy-rlp = "0.3"
-alloy-eips = "0.8"
-op-alloy-consensus = "0.8"
+alloy-primitives = "1.5.2"
 
 # Other dependencies
 base64 = "0.22"

@@ -28,5 +28,3 @@ color-eyre = { workspace = true }
 futures-util = { workspace = true }
 tokio-stream = { workspace = true }
 alloy-primitives = { workspace = true }
-alloy-rlp = { workspace = true }
-alloy-consensus = { workspace = true }

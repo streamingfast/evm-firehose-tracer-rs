@@ -1,13 +1,13 @@
-//! Event Mapper
-//!
-//! Maps processed Monad events to Firehose protobuf blocks.
-
 use crate::{Block, BlockHeader, ProcessedEvent, TransactionTrace};
 use pb::sf::ethereum::r#type::v2::{block, BigInt, AccessTuple};
 use alloy_primitives::{Bloom, BloomInput};
 use eyre::Result;
 use serde_json;
 use tracing::{debug, info};
+
+// Constants for Monad-specific values
+const MONAD_BLOCK_SIZE: u64 = 783;
+const DEFAULT_GAS_LIMIT: u64 = 30_000_000;
 
 /// Encode v value as big-endian bytes with leading zero trimming
 fn encode_v_bytes(v_value: u64) -> Vec<u8> {
@@ -48,7 +48,7 @@ fn compact_bytes(bytes: Vec<u8>) -> Vec<u8> {
 
     let result = match first_non_zero {
         Some(pos) => bytes[pos..].to_vec(),
-        None => vec![], // All zeros -> return empty vec (protobuf JSON serializes as "00")
+        None => vec![],
     };
     // eprintln!("DEBUG: compact_bytes result = {:?}", result);
     result
@@ -160,7 +160,7 @@ impl EventMapper {
 
         // Check if we need to start a new block
         if self.current_block.is_none()
-            || self.current_block.as_ref().unwrap().block_number != event.block_number
+            || self.current_block.as_ref().expect("current_block exists after is_none check").block_number != event.block_number
         {
             // Finalize the previous block if it exists
             let completed_block = if let Some(builder) = self.current_block.take() {
@@ -181,12 +181,16 @@ impl EventMapper {
         }
 
         // Add the event to the current block
-        if let Some(ref mut builder) = self.current_block {
-            builder.add_event(event.clone()).await?;
+        let is_block_end = event.event_type == "BLOCK_END";
 
-            // Check if this is a BLOCK_END event - if so, finalize the block
-            if event.event_type == "BLOCK_END" {
-                let completed_block = self.current_block.take().unwrap().finalize()?;
+        if let Some(ref mut builder) = self.current_block {
+            builder.add_event(event).await?;
+
+            // Check if this is a BLOCK_END event, finalize the block
+            if is_block_end {
+                let completed_block = self.current_block.take()
+                    .expect("current_block exists")
+                    .finalize()?;
                 return Ok(Some(completed_block));
             }
         }
@@ -257,7 +261,7 @@ impl BlockBuilder {
               withdrawals_root: vec![0u8; 32],
               size: 0,
             gas_used: 0,
-            gas_limit: 30_000_000,
+            gas_limit: DEFAULT_GAS_LIMIT,
             transactions_map: std::collections::HashMap::new(),
             cumulative_gas_used: 0,
             total_log_count: 0,
@@ -351,9 +355,8 @@ impl BlockBuilder {
             self.gas_used = gas_used;
         }
 
-        // Monad's RPC always returns 0x30f (783) for block size
-        // This is a constant placeholder value, not actually calculated per block
-        self.size = 783;
+        // Monad's RPC always returns 0x30f (783) for block size its not actually calculated per block
+        self.size = MONAD_BLOCK_SIZE;
 
         Ok(())
     }
@@ -477,7 +480,9 @@ impl BlockBuilder {
                     .collect::<Vec<u64>>()
             })
             .unwrap_or_else(|| vec![0u64; 4]);
-        let chain_id = chain_id_limbs[0]; // Chain ID fits in u64
+
+        // Chain ID fits in u64
+        let chain_id = chain_id_limbs[0];
 
         let y_parity = tx_data["y_parity"].as_bool().unwrap_or(false);
 
@@ -523,7 +528,7 @@ impl BlockBuilder {
             r,
             s,
             r#type: txn_type as i32,
-              access_list: access_list_entries.clone(),
+              access_list: access_list_entries,
             // Deterministic ordinals based on transaction index for BASE blocks
             begin_ordinal: (txn_index * 2) as u64,
             end_ordinal: (txn_index * 2 + 1) as u64,
@@ -691,7 +696,7 @@ impl BlockBuilder {
 
         let header = BlockHeader {
             number: self.block_number,
-            hash: self.block_hash.clone(),
+            hash: self.block_hash,
             parent_hash: self.parent_hash,
             uncle_hash: self.uncle_hash,
             state_root: self.state_root,
@@ -725,8 +730,8 @@ impl BlockBuilder {
 
         let block = Block {
             number: self.block_number,
-            hash: self.block_hash,
-            size: self.size, // Monad uses constant 783
+            hash: header.hash.clone(),
+            size: self.size,
             header: Some(header),
             transaction_traces: transactions,
             ver: 4,
