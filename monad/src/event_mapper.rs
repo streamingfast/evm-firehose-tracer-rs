@@ -707,6 +707,7 @@ impl BlockBuilder {
             }
 
             tx.end_ordinal = self.next_ordinal;
+            self.next_ordinal += 1;
         }
 
         let header = BlockHeader {
