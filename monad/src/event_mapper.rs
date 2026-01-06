@@ -21,7 +21,6 @@ fn encode_v_bytes(v_value: u64) -> Vec<u8> {
 
 /// Convert U256 limbs (4x u64 in little-endian) to big-endian bytes with leading zero compaction
 fn u256_limbs_to_bytes(limbs: &[u64]) -> Vec<u8> {
-    eprintln!("DEBUG: u256_limbs_to_bytes input limbs = {:?}", limbs);
     let mut bytes = Vec::with_capacity(32);
     // U256 is stored as 4 limbs in little-endian order
     // We need to convert to big-endian for protobuf
@@ -29,13 +28,10 @@ fn u256_limbs_to_bytes(limbs: &[u64]) -> Vec<u8> {
         let limb = limbs.get(i).copied().unwrap_or(0);
         bytes.extend_from_slice(&limb.to_be_bytes());
     }
-    eprintln!("DEBUG: raw bytes before compaction = {:?}", bytes);
 
     // Strip leading zeros for Ethereum hex compaction
     // For zero values, compact_bytes returns empty vec (serializes as "00" in protobuf JSON)
-    let result = compact_bytes(bytes);
-    eprintln!("DEBUG: compacted/final result = {:?}", result);
-    result
+    compact_bytes(bytes)
 }
 
 /// Strip leading zeros from byte array (Ethereum hex compaction)
@@ -224,7 +220,6 @@ struct BlockBuilder {
 /// Builder for constructing Firehose blocks from events
 impl BlockBuilder {
     fn new(block_number: u64) -> Self {
-        eprintln!("DEBUG: BlockBuilder::new({}) - initializing base_fee_per_gas to [0, 0, 0, 0]", block_number);
         Self {
             block_number,
             block_hash: vec![0u8; 32],
@@ -305,19 +300,11 @@ impl BlockBuilder {
         if let Some(nonce) = block_data["nonce"].as_u64() {
             self.nonce = nonce;
         }
-        // Debug: always log what we're doing with base_fee
-        eprintln!("DEBUG: BlockStart {} - checking base_fee_per_gas", self.block_number);
         if let Some(base_fee_limbs) = block_data["base_fee_per_gas"]["limbs"].as_array() {
             self.base_fee_per_gas = base_fee_limbs
                 .iter()
                 .map(|v| v.as_u64().unwrap_or(0))
                 .collect();
-            // Debug logging for base fee
-            eprintln!("DEBUG: BlockStart {} base_fee_limbs: {:?} -> bytes: {:?}",
-                     self.block_number, self.base_fee_per_gas, u256_limbs_to_bytes(&self.base_fee_per_gas));
-        } else {
-            eprintln!("DEBUG: BlockStart {} - NO base_fee_per_gas in event! Using previous: {:?}",
-                     self.block_number, self.base_fee_per_gas);
         }
         if let Some(withdrawals_root) = block_data["withdrawals_root"].as_str() {
             self.withdrawals_root = ensure_hash_bytes(hex::decode(withdrawals_root).unwrap_or_default());
@@ -329,19 +316,7 @@ impl BlockBuilder {
     async fn handle_block_end(&mut self, event: ProcessedEvent) -> Result<()> {
         debug!("Handling block end for block {}", event.block_number);
 
-        eprintln!("DEBUG: BlockEnd START for {} - current base_fee_per_gas = {:?}", self.block_number, self.base_fee_per_gas);
-
         let block_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
-
-        // Debug: check if BlockEnd has base_fee
-        if let Some(base_fee_limbs) = block_data["base_fee_per_gas"]["limbs"].as_array() {
-            let base_fee: Vec<u64> = base_fee_limbs
-                .iter()
-                .map(|v| v.as_u64().unwrap_or(0))
-                .collect();
-            eprintln!("DEBUG: BlockEnd for {} has base_fee_limbs: {:?} -> bytes: {:?}",
-                     self.block_number, base_fee, u256_limbs_to_bytes(&base_fee));
-        }
 
         if let Some(hash) = block_data["hash"].as_str() {
             self.block_hash = ensure_hash_bytes(hex::decode(hash).unwrap_or_default());
@@ -361,8 +336,6 @@ impl BlockBuilder {
 
         // Monad's RPC always returns 0x30f (783) for block size its not actually calculated per block
         self.size = MONAD_BLOCK_SIZE;
-
-        eprintln!("DEBUG: BlockEnd FINISH for {} - final base_fee_per_gas = {:?}", self.block_number, self.base_fee_per_gas);
 
         Ok(())
     }
@@ -720,9 +693,6 @@ impl BlockBuilder {
             self.next_ordinal += 1;
         }
 
-        // DEBUG: Check base_fee right before creating block header
-        eprintln!("DEBUG: FINALIZE block {} - self.base_fee_per_gas = {:?}", self.block_number, self.base_fee_per_gas);
-
         let header = BlockHeader {
             parent_hash: self.parent_hash,
             uncle_hash: self.uncle_hash,
@@ -744,12 +714,7 @@ impl BlockBuilder {
             mix_hash: self.mix_hash,
             nonce: self.nonce,
             hash: self.block_hash,
-            base_fee_per_gas: {
-                eprintln!("DEBUG: About to serialize base_fee for block header {} - limbs: {:?}", self.block_number, self.base_fee_per_gas);
-                let bytes = u256_limbs_to_bytes(&self.base_fee_per_gas);
-                eprintln!("DEBUG: Serialized base_fee to bytes: {:?}", bytes);
-                Some(BigInt { bytes })
-            },
+            base_fee_per_gas: Some(BigInt { bytes: u256_limbs_to_bytes(&self.base_fee_per_gas) }),
             withdrawals_root: self.withdrawals_root,
             tx_dependency: None,
             blob_gas_used: Some(0),
