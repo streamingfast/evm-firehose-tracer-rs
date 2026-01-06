@@ -327,6 +327,9 @@ impl BlockBuilder {
                 .iter()
                 .map(|v| v.as_u64().unwrap_or(0))
                 .collect();
+            // Debug logging for base fee
+            eprintln!("DEBUG: Block {} base_fee_limbs: {:?} -> bytes: {:?}",
+                     self.block_number, self.base_fee_per_gas, u256_limbs_to_bytes(&self.base_fee_per_gas));
         }
         if let Some(withdrawals_root) = block_data["withdrawals_root"].as_str() {
             self.withdrawals_root = ensure_hash_bytes(hex::decode(withdrawals_root).unwrap_or_default());
@@ -406,7 +409,16 @@ impl BlockBuilder {
         };
         let hash = ensure_hash_bytes(hex::decode(tx_data["hash"].as_str().unwrap_or("")).unwrap_or_default());
         let from = ensure_address_bytes(hex::decode(tx_data["from"].as_str().unwrap_or("")).unwrap_or_default());
-        let to = ensure_address_bytes(hex::decode(tx_data["to"].as_str().unwrap_or("")).unwrap_or_default());
+        // For contract creation, 'to' is empty, not zero address
+        let to = if let Some(to_str) = tx_data["to"].as_str() {
+            if to_str.is_empty() {
+                vec![]
+            } else {
+                ensure_address_bytes(hex::decode(to_str).unwrap_or_default())
+            }
+        } else {
+            vec![]
+        };
         let nonce = tx_data["nonce"].as_u64().unwrap_or(0);
         let gas_limit = tx_data["gas_limit"].as_u64().unwrap_or(0);
         let input = hex::decode(tx_data["input"].as_str().unwrap_or("")).unwrap_or_default();
