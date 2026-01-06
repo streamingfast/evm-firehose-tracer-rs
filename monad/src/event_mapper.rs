@@ -224,6 +224,7 @@ struct BlockBuilder {
 /// Builder for constructing Firehose blocks from events
 impl BlockBuilder {
     fn new(block_number: u64) -> Self {
+        eprintln!("DEBUG: BlockBuilder::new({}) - initializing base_fee_per_gas to [0, 0, 0, 0]", block_number);
         Self {
             block_number,
             block_hash: vec![0u8; 32],
@@ -328,6 +329,8 @@ impl BlockBuilder {
     async fn handle_block_end(&mut self, event: ProcessedEvent) -> Result<()> {
         debug!("Handling block end for block {}", event.block_number);
 
+        eprintln!("DEBUG: BlockEnd START for {} - current base_fee_per_gas = {:?}", self.block_number, self.base_fee_per_gas);
+
         let block_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
 
         // Debug: check if BlockEnd has base_fee
@@ -358,6 +361,8 @@ impl BlockBuilder {
 
         // Monad's RPC always returns 0x30f (783) for block size its not actually calculated per block
         self.size = MONAD_BLOCK_SIZE;
+
+        eprintln!("DEBUG: BlockEnd FINISH for {} - final base_fee_per_gas = {:?}", self.block_number, self.base_fee_per_gas);
 
         Ok(())
     }
@@ -715,6 +720,9 @@ impl BlockBuilder {
             self.next_ordinal += 1;
         }
 
+        // DEBUG: Check base_fee right before creating block header
+        eprintln!("DEBUG: FINALIZE block {} - self.base_fee_per_gas = {:?}", self.block_number, self.base_fee_per_gas);
+
         let header = BlockHeader {
             parent_hash: self.parent_hash,
             uncle_hash: self.uncle_hash,
@@ -736,7 +744,12 @@ impl BlockBuilder {
             mix_hash: self.mix_hash,
             nonce: self.nonce,
             hash: self.block_hash,
-            base_fee_per_gas: Some(BigInt { bytes: u256_limbs_to_bytes(&self.base_fee_per_gas) }),
+            base_fee_per_gas: {
+                eprintln!("DEBUG: About to serialize base_fee for block header {} - limbs: {:?}", self.block_number, self.base_fee_per_gas);
+                let bytes = u256_limbs_to_bytes(&self.base_fee_per_gas);
+                eprintln!("DEBUG: Serialized base_fee to bytes: {:?}", bytes);
+                Some(BigInt { bytes })
+            },
             withdrawals_root: self.withdrawals_root,
             tx_dependency: None,
             blob_gas_used: Some(0),
