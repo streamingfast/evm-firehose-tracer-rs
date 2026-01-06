@@ -579,7 +579,6 @@ impl BlockBuilder {
         let log_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
 
         let txn_index = log_data["txn_index"].as_u64().unwrap_or(0) as usize;
-        let log_index = log_data["log_index"].as_u64().unwrap_or(0) as u32 + 1;
         let address = ensure_address_bytes(hex::decode(log_data["address"].as_str().unwrap_or("")).unwrap_or_default());
         let topics = log_data["topics"]
             .as_array()
@@ -591,9 +590,8 @@ impl BlockBuilder {
             .unwrap_or_default();
         let data = hex::decode(log_data["data"].as_str().unwrap_or("")).unwrap_or_default();
 
-        // Calculate blockIndex: this is the global log index within the block
-        // We track this by incrementing for each log we see
-        let block_index = self.total_log_count as u32;
+        // This counter tracks all logs across all transactions in the block
+        let log_index = self.total_log_count as u32;
         self.total_log_count += 1;
 
         let log = pb::sf::ethereum::r#type::v2::Log {
@@ -601,7 +599,7 @@ impl BlockBuilder {
             topics,
             data,
             index: log_index,
-            block_index,
+            block_index: log_index,
             ..Default::default()
         };
 
