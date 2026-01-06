@@ -21,7 +21,7 @@ fn encode_v_bytes(v_value: u64) -> Vec<u8> {
 
 /// Convert U256 limbs (4x u64 in little-endian) to big-endian bytes with leading zero compaction
 fn u256_limbs_to_bytes(limbs: &[u64]) -> Vec<u8> {
-    // eprintln!("DEBUG: u256_limbs_to_bytes input limbs = {:?}", limbs);
+    eprintln!("DEBUG: u256_limbs_to_bytes input limbs = {:?}", limbs);
     let mut bytes = Vec::with_capacity(32);
     // U256 is stored as 4 limbs in little-endian order
     // We need to convert to big-endian for protobuf
@@ -29,13 +29,13 @@ fn u256_limbs_to_bytes(limbs: &[u64]) -> Vec<u8> {
         let limb = limbs.get(i).copied().unwrap_or(0);
         bytes.extend_from_slice(&limb.to_be_bytes());
     }
-    // eprintln!("DEBUG: raw bytes before compaction = {:?}", bytes);
+    eprintln!("DEBUG: raw bytes before compaction = {:?}", bytes);
 
     // Strip leading zeros for Ethereum hex compaction
     // For zero values, compact_bytes returns empty vec (serializes as "00" in protobuf JSON)
-
-    // eprintln!("DEBUG: compacted/final result = {:?}", result);
-    compact_bytes(bytes)
+    let result = compact_bytes(bytes);
+    eprintln!("DEBUG: compacted/final result = {:?}", result);
+    result
 }
 
 /// Strip leading zeros from byte array (Ethereum hex compaction)
