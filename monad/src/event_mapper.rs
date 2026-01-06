@@ -559,9 +559,7 @@ impl BlockBuilder {
 
         if let Some(tx) = self.transactions_map.get_mut(&txn_index) {
             tx.gas_used = gas_used;
-            // Monad only provides boolean status. Map false to REVERTED since most
-            // unsuccessful transactions are reverts, not catastrophic failures.
-            tx.status = if status { 1 } else { 3 };
+            tx.status = if status { 1 } else { 2 };
 
             // Create receipt with empty bloom - will be calculated in finalize() after logs are added
             tx.receipt = Some(pb::sf::ethereum::r#type::v2::TransactionReceipt {
@@ -581,7 +579,7 @@ impl BlockBuilder {
         let log_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
 
         let txn_index = log_data["txn_index"].as_u64().unwrap_or(0) as usize;
-        let log_index = log_data["log_index"].as_u64().unwrap_or(0) as u32;
+        let log_index = log_data["log_index"].as_u64().unwrap_or(0) as u32 + 1;
         let address = ensure_address_bytes(hex::decode(log_data["address"].as_str().unwrap_or("")).unwrap_or_default());
         let topics = log_data["topics"]
             .as_array()
@@ -746,7 +744,7 @@ impl BlockBuilder {
             size: self.size,
             header: Some(header),
             transaction_traces: transactions,
-            ver: 4,
+            ver: 3,
             detail_level: block::DetailLevel::DetaillevelBase as i32,
             ..Default::default()
         };
