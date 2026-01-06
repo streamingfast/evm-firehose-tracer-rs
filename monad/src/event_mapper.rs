@@ -711,14 +711,16 @@ impl BlockBuilder {
         }
 
         let header = BlockHeader {
-            number: self.block_number,
-            hash: self.block_hash,
             parent_hash: self.parent_hash,
             uncle_hash: self.uncle_hash,
+            coinbase: self.coinbase,
             state_root: self.state_root,
             transactions_root: self.transactions_root,
             receipt_root: self.receipts_root,
             logs_bloom: self.logs_bloom,
+            difficulty: Some(BigInt { bytes: vec![] }),
+            total_difficulty: None,
+            number: self.block_number,
             gas_limit: self.gas_limit,
             gas_used: self.gas_used,
             timestamp: Some(prost_types::Timestamp {
@@ -728,13 +730,14 @@ impl BlockBuilder {
             extra_data: self.extra_data,
             mix_hash: self.mix_hash,
             nonce: self.nonce,
-            coinbase: self.coinbase,
+            hash: self.block_hash,
             base_fee_per_gas: Some(BigInt { bytes: u256_limbs_to_bytes(&self.base_fee_per_gas) }),
             withdrawals_root: self.withdrawals_root,
-            parent_beacon_root: vec![0u8; 32],
+            tx_dependency: None,
             blob_gas_used: Some(0),
             excess_blob_gas: Some(0),
-            ..Default::default()
+            parent_beacon_root: vec![0u8; 32],
+            requests_hash: vec![],
         };
 
         let block = Block {
