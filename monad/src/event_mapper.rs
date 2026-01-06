@@ -343,6 +343,16 @@ impl BlockBuilder {
 
         let block_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
 
+        // Debug: check if BlockEnd has base_fee
+        if let Some(base_fee_limbs) = block_data["base_fee_per_gas"]["limbs"].as_array() {
+            let base_fee: Vec<u64> = base_fee_limbs
+                .iter()
+                .map(|v| v.as_u64().unwrap_or(0))
+                .collect();
+            eprintln!("DEBUG: BlockEnd for {} has base_fee_limbs: {:?} -> bytes: {:?}",
+                     self.block_number, base_fee, u256_limbs_to_bytes(&base_fee));
+        }
+
         if let Some(hash) = block_data["hash"].as_str() {
             self.block_hash = ensure_hash_bytes(hex::decode(hash).unwrap_or_default());
         }
