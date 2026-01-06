@@ -236,6 +236,7 @@ struct BlockBuilder {
     transactions_map: std::collections::HashMap<usize, TransactionTrace>,
     cumulative_gas_used: u64,
     total_log_count: usize,
+    next_ordinal: u64,
 }
 
 /// Builder for constructing Firehose blocks from events
@@ -264,6 +265,7 @@ impl BlockBuilder {
             transactions_map: std::collections::HashMap::new(),
             cumulative_gas_used: 0,
             total_log_count: 0,
+            next_ordinal: 0,
         }
     }
 
@@ -527,10 +529,9 @@ impl BlockBuilder {
             r,
             s,
             r#type: txn_type as i32,
-              access_list: access_list_entries,
-            // Deterministic ordinals based on transaction index for BASE blocks
-            begin_ordinal: (txn_index * 2) as u64,
-            end_ordinal: (txn_index * 2 + 1) as u64,
+            access_list: access_list_entries,
+            begin_ordinal: 0,
+            end_ordinal: 0,
             ..Default::default()
         };
 
@@ -664,7 +665,7 @@ impl BlockBuilder {
     }
 
     /// Finalize the block and return it
-    fn finalize(self) -> Result<Block> {
+    fn finalize(mut self) -> Result<Block> {
         info!("Finalizing block {}", self.block_number);
 
         // Move transactions from map to vec, sorted by index
@@ -692,6 +693,22 @@ impl BlockBuilder {
             .collect();
         transactions.sort_by_key(|tx| tx.index);
 
+        // Assign ordinals to transactions and logs
+        for tx in &mut transactions {
+            tx.begin_ordinal = self.next_ordinal;
+            self.next_ordinal += 1;
+
+            // Assign ordinals to logs
+            if let Some(ref mut receipt) = tx.receipt {
+                for log in &mut receipt.logs {
+                    log.ordinal = self.next_ordinal;
+                    self.next_ordinal += 1;
+                }
+            }
+
+            tx.end_ordinal = self.next_ordinal;
+        }
+
         let header = BlockHeader {
             number: self.block_number,
             hash: self.block_hash,
@@ -701,7 +718,6 @@ impl BlockBuilder {
             transactions_root: self.transactions_root,
             receipt_root: self.receipts_root,
             logs_bloom: self.logs_bloom,
-            difficulty: Some(BigInt { bytes: vec![0] }),
             gas_limit: self.gas_limit,
             gas_used: self.gas_used,
             timestamp: Some(prost_types::Timestamp {
@@ -717,12 +733,6 @@ impl BlockBuilder {
             parent_beacon_root: vec![0u8; 32],
             blob_gas_used: Some(0),
             excess_blob_gas: Some(0),
-            // Prague fork EIP-7685: requests_hash (keccak256 of requests)
-            // Monad returns zero hash for empty requests
-            requests_hash: vec![
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-            ],
             ..Default::default()
         };
 
