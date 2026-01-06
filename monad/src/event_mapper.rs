@@ -139,14 +139,14 @@ fn calculate_logs_bloom(logs: &[pb::sf::ethereum::r#type::v2::Log]) -> Vec<u8> {
 
 /// Maps processed events to Firehose blocks
 pub struct EventMapper {
-    current_block: Option<BlockBuilder>,
+    blocks: std::collections::HashMap<u64, BlockBuilder>,
 }
 
 impl EventMapper {
     /// Create a new event mapper
     pub fn new() -> Self {
         Self {
-            current_block: None,
+            blocks: std::collections::HashMap::new(),
         }
     }
 
@@ -157,39 +157,19 @@ impl EventMapper {
             event.block_number, event.event_type
         );
 
-        // Check if we need to start a new block
-        if self.current_block.is_none()
-            || self.current_block.as_ref().expect("current_block exists after is_none check").block_number != event.block_number
-        {
-            // Finalize the previous block if it exists
-            let completed_block = if let Some(builder) = self.current_block.take() {
-                Some(builder.finalize()?)
-            } else {
-                None
-            };
-
-            // Start a new block
-            self.current_block = Some(BlockBuilder::new(event.block_number));
-
-            // Add the event to the new block
-            if let Some(ref mut builder) = self.current_block {
-                builder.add_event(event).await?;
-            }
-
-            return Ok(completed_block);
-        }
-
-        // Add the event to the current block
+        let block_num = event.block_number;
         let is_block_end = event.event_type == "BLOCK_END";
 
-        if let Some(ref mut builder) = self.current_block {
-            builder.add_event(event).await?;
+        // Get or create the block builder for this block number
+        let builder = self.blocks.entry(block_num).or_insert_with(|| BlockBuilder::new(block_num));
 
-            // Check if this is a BLOCK_END event, finalize the block
-            if is_block_end {
-                let completed_block = self.current_block.take()
-                    .expect("current_block exists")
-                    .finalize()?;
+        // Add the event to the block
+        builder.add_event(event).await?;
+
+        // Check if this is a BLOCK_END event, finalize the block
+        if is_block_end {
+            if let Some(builder) = self.blocks.remove(&block_num) {
+                let completed_block = builder.finalize()?;
                 return Ok(Some(completed_block));
             }
         }
@@ -197,13 +177,15 @@ impl EventMapper {
         Ok(None)
     }
 
-    /// Finalize any pending block
+    /// Finalize any pending blocks
     pub fn finalize_pending(&mut self) -> Result<Option<Block>> {
-        if let Some(builder) = self.current_block.take() {
-            Ok(Some(builder.finalize()?))
-        } else {
-            Ok(None)
+        // Finalize the oldest pending block if any exist
+        if let Some((&block_num, _)) = self.blocks.iter().next() {
+            if let Some(builder) = self.blocks.remove(&block_num) {
+                return Ok(Some(builder.finalize()?));
+            }
         }
+        Ok(None)
     }
 }
 
@@ -322,14 +304,19 @@ impl BlockBuilder {
         if let Some(nonce) = block_data["nonce"].as_u64() {
             self.nonce = nonce;
         }
+        // Debug: always log what we're doing with base_fee
+        eprintln!("DEBUG: BlockStart {} - checking base_fee_per_gas", self.block_number);
         if let Some(base_fee_limbs) = block_data["base_fee_per_gas"]["limbs"].as_array() {
             self.base_fee_per_gas = base_fee_limbs
                 .iter()
                 .map(|v| v.as_u64().unwrap_or(0))
                 .collect();
             // Debug logging for base fee
-            eprintln!("DEBUG: Block {} base_fee_limbs: {:?} -> bytes: {:?}",
+            eprintln!("DEBUG: BlockStart {} base_fee_limbs: {:?} -> bytes: {:?}",
                      self.block_number, self.base_fee_per_gas, u256_limbs_to_bytes(&self.base_fee_per_gas));
+        } else {
+            eprintln!("DEBUG: BlockStart {} - NO base_fee_per_gas in event! Using previous: {:?}",
+                     self.block_number, self.base_fee_per_gas);
         }
         if let Some(withdrawals_root) = block_data["withdrawals_root"].as_str() {
             self.withdrawals_root = ensure_hash_bytes(hex::decode(withdrawals_root).unwrap_or_default());
