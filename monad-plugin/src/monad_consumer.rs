@@ -94,10 +94,8 @@ impl MonadConsumer {
             .expect("failed to setup SIGINT handler");
 
         loop {
-            // Check for shutdown signals with biased select (checks signals first)
+            // Check for shutdown signals
             tokio::select! {
-                biased;
-
                 _ = sigterm.recv() => {
                     info!("Received SIGTERM, shutting down gracefully");
                     break;
@@ -106,16 +104,15 @@ impl MonadConsumer {
                     info!("Received SIGINT (Ctrl+C), shutting down gracefully");
                     break;
                 }
-                else => {
-                    // No signals pending, process events
+                _ = tokio::time::sleep(tokio::time::Duration::from_micros(1)) => {
+                    // Read events from Monad SDK
                     match event_reader.next_descriptor() {
                         EventNextResult::Gap => {
                             error!("Event sequence number gap occurred!");
                             event_reader.reset();
                         }
                         EventNextResult::NotReady => {
-                            // No event available, yield briefly
-                            tokio::task::yield_now().await;
+                            // No event available, continue polling
                         }
                         EventNextResult::Ready(event) => {
                             if let Err(e) =
