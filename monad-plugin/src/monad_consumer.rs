@@ -94,54 +94,55 @@ impl MonadConsumer {
             .expect("failed to setup SIGINT handler");
 
         loop {
-            // Check for shutdown signals
-            tokio::select! {
-                _ = sigterm.recv() => {
-                    info!("Received SIGTERM, shutting down gracefully");
-                    break;
+            // Read events from Monad SDK
+            match event_reader.next_descriptor() {
+                EventNextResult::Gap => {
+                    error!("Event sequence number gap occurred!");
+                    event_reader.reset();
                 }
-                _ = sigint.recv() => {
-                    info!("Received SIGINT (Ctrl+C), shutting down gracefully");
-                    break;
+                EventNextResult::NotReady => {
+                    // No event available, check for signals with timeout
+                    tokio::select! {
+                        _ = sigterm.recv() => {
+                            info!("Received SIGTERM, shutting down gracefully");
+                            break;
+                        }
+                        _ = sigint.recv() => {
+                            info!("Received SIGINT (Ctrl+C), shutting down gracefully");
+                            break;
+                        }
+                        _ = tokio::time::sleep(tokio::time::Duration::from_millis(1)) => {
+                            // Timeout, continue polling
+                            continue;
+                        }
+                    }
                 }
-                _ = tokio::time::sleep(tokio::time::Duration::from_micros(1)) => {
-                    // Read events from Monad SDK
-                    match event_reader.next_descriptor() {
-                        EventNextResult::Gap => {
-                            error!("Event sequence number gap occurred!");
-                            event_reader.reset();
-                        }
-                        EventNextResult::NotReady => {
-                            // No event available, continue polling
-                        }
-                        EventNextResult::Ready(event) => {
-                            // Process the event inline
-                            let block_number = event.get_block_number().unwrap_or(0);
+                EventNextResult::Ready(event) => {
+                    // Process the event inline
+                    let block_number = event.get_block_number().unwrap_or(0);
 
-                            let exec_event = match event.try_read() {
-                                EventPayloadResult::Expired => {
-                                    warn!("Event payload expired!");
-                                    continue;
-                                }
-                                EventPayloadResult::Ready(exec_event) => exec_event,
-                            };
+                    let exec_event = match event.try_read() {
+                        EventPayloadResult::Expired => {
+                            warn!("Event payload expired!");
+                            continue;
+                        }
+                        EventPayloadResult::Ready(exec_event) => exec_event,
+                    };
 
-                            // Event descriptor will drop here at end of scope
-                            // Process and send asynchronously
-                            match event_processor.process_monad_event(exec_event, block_number).await {
-                                Ok(Some(processed_event)) => {
-                                    if let Err(e) = tx.send(processed_event).await {
-                                        warn!("Failed to send processed event: {}", e);
-                                        break; // Channel closed
-                                    }
-                                }
-                                Ok(None) => {
-                                    // Event processed but no output needed
-                                }
-                                Err(e) => {
-                                    error!("Failed to process event: {}", e);
-                                }
+                    // Event descriptor will drop here at end of scope
+                    // Process and send asynchronously
+                    match event_processor.process_monad_event(exec_event, block_number).await {
+                        Ok(Some(processed_event)) => {
+                            if let Err(e) = tx.send(processed_event).await {
+                                warn!("Failed to send processed event: {}", e);
+                                break; // Channel closed
                             }
+                        }
+                        Ok(None) => {
+                            // Event processed but no output needed
+                        }
+                        Err(e) => {
+                            error!("Failed to process event: {}", e);
                         }
                     }
                 }
