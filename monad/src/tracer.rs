@@ -116,6 +116,13 @@ impl FirehoseTracer {
                 return Ok(());
             }
 
+            // PROFILING: Skip block field access if requested
+            if self.config.skip_block_access {
+                // Just access the block number (unavoidable) and return
+                let _ = block.number;
+                return Ok(());
+            }
+
             // Update HEAD block number
             self.current_head = block.number;
 

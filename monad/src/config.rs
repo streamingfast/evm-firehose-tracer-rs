@@ -33,6 +33,8 @@ pub struct TracerConfig {
     pub skip_after_mapper: bool,
     /// Process events but skip JSON parsing and data building (just call finalize immediately)
     pub skip_event_processing: bool,
+    /// Skip all block field access (hash, header, transaction_traces) after mapper
+    pub skip_block_access: bool,
 }
 
 /// Output format for Firehose messages
@@ -62,6 +64,7 @@ impl Default for TracerConfig {
             skip_logging: false,
             skip_after_mapper: false,
             skip_event_processing: false,
+            skip_block_access: false,
         }
     }
 }
@@ -140,6 +143,12 @@ impl TracerConfig {
     /// Skip event processing (JSON parse, data building)
     pub fn with_skip_event_processing(mut self, skip: bool) -> Self {
         self.skip_event_processing = skip;
+        self
+    }
+
+    /// Skip block field access
+    pub fn with_skip_block_access(mut self, skip: bool) -> Self {
+        self.skip_block_access = skip;
         self
     }
 }
