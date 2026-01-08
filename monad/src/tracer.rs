@@ -19,8 +19,13 @@ pub struct FirehoseTracer {
 impl FirehoseTracer {
     /// Create a new Firehose tracer
     pub fn new(config: TracerConfig) -> Self {
-        let event_mapper = EventMapper::new();
-        let printer = FirehosePrinter::new(config.clone());
+        let event_mapper = EventMapper::new_with_config(
+            config.skip_finalization,
+        );
+        let printer = FirehosePrinter::new_with_config(
+            config.clone(),
+            config.skip_serialization,
+        );
 
         Self {
             config,
@@ -94,8 +99,20 @@ impl FirehoseTracer {
             return Ok(());
         }
 
+        // PROFILING: Skip event mapping if requested
+        if self.config.skip_event_mapping {
+            // Just log that we saw the event
+            if event.event_type == "BLOCK_END" {
+                info!("PROFILING: Seen BLOCK_END for block {}", event.block_number);
+            }
+            return Ok(());
+        }
+
         // Process the event through the mapper
         if let Some(block) = self.event_mapper.process_event(event).await? {
+            // PROFILING: Skip finalization if requested (we already have the block from mapper)
+            // Note: finalization happens inside the mapper, we'll handle this differently
+
             // Update HEAD block number
             self.current_head = block.number;
 
@@ -130,8 +147,11 @@ impl FirehoseTracer {
                 gas_mgas
             );
 
-            // Print the completed block
-            self.printer.print_block(block)?;
+            // PROFILING: Skip output if requested
+            if !self.config.skip_output {
+                // Print the completed block
+                self.printer.print_block(block)?;
+            }
         }
 
         Ok(())

@@ -133,6 +133,7 @@ fn calculate_logs_bloom(logs: &[pb::sf::ethereum::r#type::v2::Log]) -> Vec<u8> {
 /// Maps processed events to Firehose blocks
 pub struct EventMapper {
     blocks: std::collections::HashMap<u64, BlockBuilder>,
+    skip_finalization: bool, // TEMPORARY - REMOVE AFTER OPTIMIZATION
 }
 
 impl EventMapper {
@@ -140,6 +141,15 @@ impl EventMapper {
     pub fn new() -> Self {
         Self {
             blocks: std::collections::HashMap::new(),
+            skip_finalization: false,
+        }
+    }
+
+    /// Create a new event mapper with config (TEMPORARY - REMOVE AFTER OPTIMIZATION)
+    pub fn new_with_config(skip_finalization: bool) -> Self {
+        Self {
+            blocks: std::collections::HashMap::new(),
+            skip_finalization,
         }
     }
 
@@ -162,7 +172,7 @@ impl EventMapper {
         // Check if this is a BLOCK_END event, finalize the block
         if is_block_end {
             if let Some(builder) = self.blocks.remove(&block_num) {
-                let completed_block = builder.finalize()?;
+                let completed_block = builder.finalize(self.skip_finalization)?;
                 return Ok(Some(completed_block));
             }
         }
@@ -175,7 +185,7 @@ impl EventMapper {
         // Finalize the oldest pending block if any exist
         if let Some((&block_num, _)) = self.blocks.iter().next() {
             if let Some(builder) = self.blocks.remove(&block_num) {
-                return Ok(Some(builder.finalize()?));
+                return Ok(Some(builder.finalize(self.skip_finalization)?));
             }
         }
         Ok(None)
@@ -619,7 +629,7 @@ impl BlockBuilder {
     }
 
     /// Finalize the block and return it
-    fn finalize(mut self) -> Result<Block> {
+    fn finalize(mut self, skip_finalization: bool) -> Result<Block> {
         info!("Finalizing block {}", self.block_number);
 
         // Move transactions from map to vec, sorted by index
@@ -637,9 +647,12 @@ impl BlockBuilder {
                     });
                 }
 
-                // Calculate logs bloom from actual logs
-                if let Some(ref mut receipt) = tx.receipt {
-                    receipt.logs_bloom = calculate_logs_bloom(&receipt.logs);
+                // PROFILING: Skip bloom filter calculation if requested
+                if !skip_finalization {
+                    // Calculate logs bloom from actual logs
+                    if let Some(ref mut receipt) = tx.receipt {
+                        receipt.logs_bloom = calculate_logs_bloom(&receipt.logs);
+                    }
                 }
 
                 tx
