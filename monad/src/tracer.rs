@@ -116,7 +116,7 @@ impl FirehoseTracer {
             let gas_mgas = gas_used as f64 / 1_000_000.0;
 
             info!(
-                "Firehose block finalized                 number={:>9} hash={} lib={:>9} txs={:>3} mgas={:.3}",
+                "Firehose block finalized number={:>9} hash={} lib={:>9} txs={:>3} mgas={:.3}",
                 block.number,
                 hash_short,
                 lib,
