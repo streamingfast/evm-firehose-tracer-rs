@@ -44,7 +44,7 @@ impl FirehosePrinter {
     }
 
     /// Print a FIRE BLOCK message
-    pub fn print_block(&mut self, block: Block) -> Result<()> {
+    pub fn print_block(&mut self, block: &Block) -> Result<()> {
         match self.config.output_format {
             OutputFormat::Firehose => self.print_firehose_block(block),
             OutputFormat::Json => self.print_json_block(block),
@@ -53,7 +53,7 @@ impl FirehosePrinter {
     }
 
     /// Print block in Firehose protocol format
-    fn print_firehose_block(&mut self, block: Block) -> Result<()> {
+    fn print_firehose_block(&mut self, block: &Block) -> Result<()> {
         // PROFILING: Skip serialization if requested
         let block_b64 = if self.skip_serialization {
             String::new() // Empty string to skip serialization
@@ -112,14 +112,14 @@ impl FirehosePrinter {
     }
 
     /// Print block in JSON format for debugging
-    fn print_json_block(&self, block: Block) -> Result<()> {
+    fn print_json_block(&self, block: &Block) -> Result<()> {
         // TODO: Implement JSON serialization when serde support is added to protobuf types
         println!("Block #{} (JSON output not yet implemented)", block.number);
         Ok(())
     }
 
     /// Print block in binary format
-    fn print_binary_block(&self, block: Block) -> Result<()> {
+    fn print_binary_block(&self, block: &Block) -> Result<()> {
         let block_bytes = self.serialize_block(&block)?;
         use std::io::{self, Write};
         io::stdout().write_all(&block_bytes)?;
