@@ -122,6 +122,8 @@ impl MonadConsumer {
                                 // Reset on error to avoid getting stuck
                                 event_reader.reset();
                             }
+                            // Explicitly drop the event descriptor to advance the reader
+                            drop(event);
                         }
                     }
                 }
