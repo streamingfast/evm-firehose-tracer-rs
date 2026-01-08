@@ -15,6 +15,8 @@ pub struct TracerConfig {
     pub buffer_size: usize,
     /// Output format for Firehose messages
     pub output_format: OutputFormat,
+    /// Enable no-op mode
+    pub no_op: bool,
 }
 
 /// Output format for Firehose messages
@@ -36,6 +38,7 @@ impl Default for TracerConfig {
             debug: false,
             buffer_size: 1024,
             output_format: OutputFormat::Firehose,
+            no_op: false,
         }
     }
 }
@@ -65,6 +68,12 @@ impl TracerConfig {
     /// Set output format
     pub fn with_output_format(mut self, output_format: OutputFormat) -> Self {
         self.output_format = output_format;
+        self
+    }
+
+    /// Set no-op mode
+    pub fn with_no_op(mut self, no_op: bool) -> Self {
+        self.no_op = no_op;
         self
     }
 }

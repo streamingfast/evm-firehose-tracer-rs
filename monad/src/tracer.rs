@@ -88,6 +88,12 @@ impl FirehoseTracer {
 
     /// Process a single event
     async fn process_event(&mut self, event: ProcessedEvent) -> Result<()> {
+        // If no-op mode is enabled, only log the block number and skip processing
+        if self.config.no_op {
+            info!("NO-OP: Seen block {}", event.block_number);
+            return Ok(());
+        }
+
         // Process the event through the mapper
         if let Some(block) = self.event_mapper.process_event(event).await? {
             // Update HEAD block number

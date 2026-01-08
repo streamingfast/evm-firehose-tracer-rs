@@ -244,6 +244,7 @@ async fn test_tracer_configuration() -> Result<()> {
         debug: true,
         buffer_size: 512,
         output_format: tracer::config::OutputFormat::Json,
+        no_op: false
     };
 
     let tracer = FirehoseTracer::new(config);
