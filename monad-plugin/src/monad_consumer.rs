@@ -7,8 +7,8 @@ use crate::{EventProcessor, PluginConfig};
 use eyre::Result;
 use monad_event_ring::{EventDescriptor, EventNextResult, EventPayloadResult, EventRingPath};
 use monad_exec_events::{
-    ffi::DEFAULT_FILE_NAME, ExecEventDecoder, ExecEventDescriptorExt, ExecEventReaderExt,
-    ExecEventRing, ExecEventType,
+    ffi::DEFAULT_FILE_NAME, ExecEvent, ExecEventDecoder, ExecEventDescriptorExt,
+    ExecEventReaderExt, ExecEventRing, ExecEventType,
 };
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, Stream};
@@ -115,15 +115,35 @@ impl MonadConsumer {
                             // No event available, continue polling
                         }
                         EventNextResult::Ready(event) => {
-                            if let Err(e) =
-                                Self::process_and_send_event(&mut event_processor, &event, &tx).await
-                            {
-                                error!("Failed to process event: {}", e);
-                                // Reset on error to avoid getting stuck
-                                event_reader.reset();
-                            }
-                            // Explicitly drop the event descriptor to advance the reader
+                            // Extract raw event data synchronously
+                            let (exec_event, block_number) = match Self::extract_event_data(&mut event_processor, &event) {
+                                Ok(Some(data)) => data,
+                                Ok(None) => continue, // Expired event, skip
+                                Err(e) => {
+                                    error!("Failed to extract event data: {}", e);
+                                    event_reader.reset();
+                                    continue;
+                                }
+                            };
+                            // Descriptor is dropped here, advance the reader
                             drop(event);
+
+                            // Now process and send asynchronously
+                            match Self::process_extracted_event(&mut event_processor, exec_event, block_number).await {
+                                Ok(Some(processed_event)) => {
+                                    if let Err(e) = tx.send(processed_event).await {
+                                        warn!("Failed to send processed event: {}", e);
+                                        break; // Channel closed
+                                    }
+                                }
+                                Ok(None) => {
+                                    // Event processed but no output needed
+                                }
+                                Err(e) => {
+                                    error!("Failed to process event: {}", e);
+                                    event_reader.reset();
+                                }
+                            }
                         }
                     }
                 }
@@ -134,17 +154,16 @@ impl MonadConsumer {
         Ok(())
     }
 
-    /// Process an event descriptor and send it through the channel
-    async fn process_and_send_event(
+    /// Extract event data from descriptor synchronously (MUST be non-async to drop descriptor quickly)
+    fn extract_event_data(
         event_processor: &mut EventProcessor,
         event: &EventDescriptor<'_, ExecEventDecoder>,
-        tx: &mpsc::Sender<ProcessedEvent>,
-    ) -> Result<()> {
+    ) -> Result<Option<(ExecEvent, u64)>> {
         // Try to read the event payload
         let exec_event = match event.try_read() {
             EventPayloadResult::Expired => {
                 warn!("Event payload expired!");
-                return Ok(()); // Skip expired events
+                return Ok(None); // Skip expired events
             }
             EventPayloadResult::Ready(exec_event) => exec_event,
         };
@@ -154,26 +173,27 @@ impl MonadConsumer {
         // Get block number if available
         let block_number = event.get_block_number().unwrap_or(0);
 
+        // Return the raw event data (descriptor will be dropped after this returns)
+        Ok(Some((exec_event, block_number)))
+    }
+
+    /// Process extracted event data asynchronously (after descriptor is dropped)
+    async fn process_extracted_event(
+        event_processor: &mut EventProcessor,
+        exec_event: ExecEvent,
+        block_number: u64,
+    ) -> Result<Option<ProcessedEvent>> {
         // Process the event through the event processor
         match event_processor
             .process_monad_event(exec_event, block_number)
             .await
         {
-            Ok(Some(processed_event)) => {
-                if let Err(e) = tx.send(processed_event).await {
-                    warn!("Failed to send processed event: {}", e);
-                    return Err(eyre::eyre!("Channel closed"));
-                }
-            }
-            Ok(None) => {
-                // Event processed but no output needed
-            }
+            Ok(processed_event) => Ok(processed_event),
             Err(e) => {
                 error!("Failed to process Monad event: {}", e);
+                Err(e)
             }
         }
-
-        Ok(())
     }
 }
 
