@@ -19,7 +19,7 @@ pub struct TracerConfig {
     pub no_op: bool,
 
     // Temporary flags for performance profiling - REMOVE AFTER OPTIMIZATION
-    /// Skip event mapping (JSON parse, hex decode, data structures)
+    /// Skip event mapping (JSON parse, hex decode, data structures) - CAUSES MEMORY LEAK
     pub skip_event_mapping: bool,
     /// Skip block finalization (bloom filter, gas calculations)
     pub skip_finalization: bool,
@@ -27,6 +27,12 @@ pub struct TracerConfig {
     pub skip_serialization: bool,
     /// Skip base64 encoding and stdout output
     pub skip_output: bool,
+    /// Skip logging (info! statements with hex encoding)
+    pub skip_logging: bool,
+    /// Skip everything after event mapper returns (all post-processing)
+    pub skip_after_mapper: bool,
+    /// Process events but skip JSON parsing and data building (just call finalize immediately)
+    pub skip_event_processing: bool,
 }
 
 /// Output format for Firehose messages
@@ -53,6 +59,9 @@ impl Default for TracerConfig {
             skip_finalization: false,
             skip_serialization: false,
             skip_output: false,
+            skip_logging: false,
+            skip_after_mapper: false,
+            skip_event_processing: false,
         }
     }
 }
@@ -113,6 +122,24 @@ impl TracerConfig {
     /// Skip output (base64 + stdout)
     pub fn with_skip_output(mut self, skip: bool) -> Self {
         self.skip_output = skip;
+        self
+    }
+
+    /// Skip logging
+    pub fn with_skip_logging(mut self, skip: bool) -> Self {
+        self.skip_logging = skip;
+        self
+    }
+
+    /// Skip everything after mapper
+    pub fn with_skip_after_mapper(mut self, skip: bool) -> Self {
+        self.skip_after_mapper = skip;
+        self
+    }
+
+    /// Skip event processing (JSON parse, data building)
+    pub fn with_skip_event_processing(mut self, skip: bool) -> Self {
+        self.skip_event_processing = skip;
         self
     }
 }

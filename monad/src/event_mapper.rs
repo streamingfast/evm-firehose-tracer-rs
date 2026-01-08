@@ -134,6 +134,7 @@ fn calculate_logs_bloom(logs: &[pb::sf::ethereum::r#type::v2::Log]) -> Vec<u8> {
 pub struct EventMapper {
     blocks: std::collections::HashMap<u64, BlockBuilder>,
     skip_finalization: bool, // TEMPORARY - REMOVE AFTER OPTIMIZATION
+    skip_event_processing: bool, // TEMPORARY - REMOVE AFTER OPTIMIZATION
 }
 
 impl EventMapper {
@@ -142,6 +143,7 @@ impl EventMapper {
         Self {
             blocks: std::collections::HashMap::new(),
             skip_finalization: false,
+            skip_event_processing: false,
         }
     }
 
@@ -150,6 +152,16 @@ impl EventMapper {
         Self {
             blocks: std::collections::HashMap::new(),
             skip_finalization,
+            skip_event_processing: false,
+        }
+    }
+
+    /// Create a new event mapper with full config (TEMPORARY - REMOVE AFTER OPTIMIZATION)
+    pub fn new_with_full_config(skip_finalization: bool, skip_event_processing: bool) -> Self {
+        Self {
+            blocks: std::collections::HashMap::new(),
+            skip_finalization,
+            skip_event_processing,
         }
     }
 
@@ -166,8 +178,11 @@ impl EventMapper {
         // Get or create the block builder for this block number
         let builder = self.blocks.entry(block_num).or_insert_with(|| BlockBuilder::new(block_num));
 
-        // Add the event to the block
-        builder.add_event(event).await?;
+        // PROFILING: Skip event processing if requested (but still finalize to avoid memory leak)
+        if !self.skip_event_processing {
+            // Add the event to the block
+            builder.add_event(event).await?;
+        }
 
         // Check if this is a BLOCK_END event, finalize the block
         if is_block_end {
