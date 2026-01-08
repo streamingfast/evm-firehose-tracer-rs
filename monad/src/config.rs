@@ -17,6 +17,16 @@ pub struct TracerConfig {
     pub output_format: OutputFormat,
     /// Enable no-op mode
     pub no_op: bool,
+
+    // Temporary flags for performance profiling - REMOVE AFTER OPTIMIZATION
+    /// Skip event mapping (JSON parse, hex decode, data structures)
+    pub skip_event_mapping: bool,
+    /// Skip block finalization (bloom filter, gas calculations)
+    pub skip_finalization: bool,
+    /// Skip protobuf serialization
+    pub skip_serialization: bool,
+    /// Skip base64 encoding and stdout output
+    pub skip_output: bool,
 }
 
 /// Output format for Firehose messages
@@ -39,6 +49,10 @@ impl Default for TracerConfig {
             buffer_size: 1024,
             output_format: OutputFormat::Firehose,
             no_op: false,
+            skip_event_mapping: false,
+            skip_finalization: false,
+            skip_serialization: false,
+            skip_output: false,
         }
     }
 }
@@ -74,6 +88,31 @@ impl TracerConfig {
     /// Set no-op mode
     pub fn with_no_op(mut self, no_op: bool) -> Self {
         self.no_op = no_op;
+        self
+    }
+
+    // TEMPORARY - REMOVE AFTER OPTIMIZATION
+    /// Skip event mapping
+    pub fn with_skip_event_mapping(mut self, skip: bool) -> Self {
+        self.skip_event_mapping = skip;
+        self
+    }
+
+    /// Skip block finalization
+    pub fn with_skip_finalization(mut self, skip: bool) -> Self {
+        self.skip_finalization = skip;
+        self
+    }
+
+    /// Skip protobuf serialization
+    pub fn with_skip_serialization(mut self, skip: bool) -> Self {
+        self.skip_serialization = skip;
+        self
+    }
+
+    /// Skip output (base64 + stdout)
+    pub fn with_skip_output(mut self, skip: bool) -> Self {
+        self.skip_output = skip;
         self
     }
 }

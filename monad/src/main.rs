@@ -52,6 +52,23 @@ struct Args {
     /// Enable no-op mode
     #[arg(long)]
     no_op: bool,
+
+    // TEMPORARY FLAGS FOR PERFORMANCE PROFILING - REMOVE AFTER OPTIMIZATION
+    /// Skip event mapping (JSON parse, hex decode, data structures)
+    #[arg(long)]
+    skip_event_mapping: bool,
+
+    /// Skip block finalization (bloom filter, gas calculations)
+    #[arg(long)]
+    skip_finalization: bool,
+
+    /// Skip protobuf serialization
+    #[arg(long)]
+    skip_serialization: bool,
+
+    /// Skip base64 encoding and stdout output
+    #[arg(long)]
+    skip_output: bool,
 }
 
 #[tokio::main]
@@ -106,13 +123,29 @@ async fn main() -> Result<()> {
         .with_debug(args.debug)
         .with_buffer_size(args.buffer_size)
         .with_output_format(output_format)
-        .with_no_op(args.no_op);
+        .with_no_op(args.no_op)
+        .with_skip_event_mapping(args.skip_event_mapping)
+        .with_skip_finalization(args.skip_finalization)
+        .with_skip_serialization(args.skip_serialization)
+        .with_skip_output(args.skip_output);
 
     // Create and start the tracer
     let mut tracer = FirehoseTracer::new(tracer_config).with_consumer(consumer);
 
     if args.no_op {
         info!("NO-OP MODE ENABLED: Only logging block numbers, no processing");
+    }
+    if args.skip_event_mapping {
+        info!("PROFILING: Skipping event mapping");
+    }
+    if args.skip_finalization {
+        info!("PROFILING: Skipping block finalization");
+    }
+    if args.skip_serialization {
+        info!("PROFILING: Skipping protobuf serialization");
+    }
+    if args.skip_output {
+        info!("PROFILING: Skipping base64 encoding and stdout");
     }
 
     info!("Starting Firehose tracer...");

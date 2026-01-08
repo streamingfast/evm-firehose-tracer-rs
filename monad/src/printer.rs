@@ -9,6 +9,7 @@ pub struct FirehosePrinter {
     config: TracerConfig,
     finality: FinalityStatus,
     initialized: bool,
+    skip_serialization: bool, // TEMPORARY - REMOVE AFTER OPTIMIZATION
 }
 
 impl FirehosePrinter {
@@ -18,6 +19,17 @@ impl FirehosePrinter {
             config,
             finality: FinalityStatus::new(),
             initialized: false,
+            skip_serialization: false,
+        }
+    }
+
+    /// Create a new Firehose printer with config (TEMPORARY - REMOVE AFTER OPTIMIZATION)
+    pub fn new_with_config(config: TracerConfig, skip_serialization: bool) -> Self {
+        Self {
+            config,
+            finality: FinalityStatus::new(),
+            initialized: false,
+            skip_serialization,
         }
     }
 
@@ -42,12 +54,17 @@ impl FirehosePrinter {
 
     /// Print block in Firehose protocol format
     fn print_firehose_block(&mut self, block: Block) -> Result<()> {
-        // Serialize the block to protobuf bytes
-        let block_bytes = self.serialize_block(&block)?;
+        // PROFILING: Skip serialization if requested
+        let block_b64 = if self.skip_serialization {
+            String::new() // Empty string to skip serialization
+        } else {
+            // Serialize the block to protobuf bytes
+            let block_bytes = self.serialize_block(&block)?;
 
-        // Encode as base64
-        use base64::Engine;
-        let block_b64 = base64::engine::general_purpose::STANDARD.encode(&block_bytes);
+            // Encode as base64
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(&block_bytes)
+        };
 
         // Format block hash and parent hash as hex (without 0x prefix)
         let block_hash = hex::encode(&block.hash);
