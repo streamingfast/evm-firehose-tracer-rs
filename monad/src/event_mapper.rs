@@ -37,12 +37,9 @@ fn u256_limbs_to_bytes(limbs: &[u64]) -> Vec<u8> {
 /// Strip leading zeros from byte array (Ethereum hex compaction)
 /// Returns empty vec for zero values (protobuf serializes this as "00" in JSON)
 fn compact_bytes(bytes: Vec<u8>) -> Vec<u8> {
-    // eprintln!("DEBUG: compact_bytes input = {:?}", bytes);
     // Find first non-zero byte
     let first_non_zero = bytes.iter().position(|&b| b != 0);
-    // eprintln!("DEBUG: first_non_zero = {:?}", first_non_zero);
 
-    // eprintln!("DEBUG: compact_bytes result = {:?}", result);
     match first_non_zero {
         Some(pos) => bytes[pos..].to_vec(),
         None => vec![],
@@ -345,10 +342,8 @@ impl BlockBuilder {
         debug!("Handling transaction header");
 
         let tx_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
-        // eprintln!("DEBUG: Processing tx_data keys: {:?}", tx_data.as_object().map(|o| o.keys().collect::<Vec<_>>()));
 
         let txn_index = tx_data["txn_index"].as_u64().unwrap_or(0) as usize;
-        // eprintln!("DEBUG: txn_index = {}", txn_index);
 
         // Extract access_list from tx_data
         let access_list_entries = if let Some(access_list_json) = tx_data.get("access_list") {
@@ -379,7 +374,6 @@ impl BlockBuilder {
                 Vec::new()
             }
         } else {
-            // eprintln!("DEBUG: access_list NOT found in tx_data for tx {}", txn_index);
             Vec::new()
         };
         let hash = ensure_hash_bytes(hex::decode(tx_data["hash"].as_str().unwrap_or("")).unwrap_or_default());
@@ -408,9 +402,7 @@ impl BlockBuilder {
                     .collect::<Vec<u64>>()
             })
             .unwrap_or_else(|| vec![0u64; 4]);
-        // eprintln!("DEBUG: value_limbs = {:?}", value_limbs);
         let value = u256_limbs_to_bytes(&value_limbs);
-        // eprintln!("DEBUG: value bytes after u256_limbs_to_bytes = {:?}", value);
 
         let max_fee_limbs = tx_data["max_fee_per_gas"]["limbs"]
             .as_array()
@@ -420,7 +412,6 @@ impl BlockBuilder {
                     .collect::<Vec<u64>>()
             })
             .unwrap_or_else(|| vec![0u64; 4]);
-        // eprintln!("DEBUG: max_fee_limbs = {:?}", max_fee_limbs);
 
         let max_priority_fee_limbs = tx_data["max_priority_fee_per_gas"]["limbs"]
             .as_array()
@@ -430,13 +421,11 @@ impl BlockBuilder {
                     .collect::<Vec<u64>>()
             })
             .unwrap_or_else(|| vec![0u64; 4]);
-        // eprintln!("DEBUG: max_priority_fee_limbs = {:?}", max_priority_fee_limbs);
 
         // Calculate effective gas price based on EIP-1559
         // For Type 2 (Dynamic Fee) transactions:
         // effective_gas_price = base_fee_per_gas + min(max_priority_fee_per_gas, max_fee_per_gas - base_fee_per_gas)
         let gas_price = self.calculate_effective_gas_price(&max_fee_limbs, &max_priority_fee_limbs, txn_type);
-        // eprintln!("DEBUG: gas_price bytes after calculation = {:?}", gas_price);
 
         // Parse signature
         let r_limbs = tx_data["r"]["limbs"]
@@ -501,7 +490,6 @@ impl BlockBuilder {
             }
         };
 
-        // eprintln!("DEBUG: txn_index={}, txn_type={}, y_parity={}, v={:?}, chain_id={}", txn_index, txn_type, y_parity, v, chain_id);
         let tx_trace = TransactionTrace {
             index: txn_index as u32,
             hash,
@@ -521,12 +509,6 @@ impl BlockBuilder {
             end_ordinal: 0,
             ..Default::default()
         };
-
-        // Debug: Check access_list content
-        // eprintln!("DEBUG: ACCESS_LIST for tx {}: len={}", txn_index, tx_trace.access_list.len());
-        // if !tx_trace.access_list.is_empty() {
-        //     eprintln!("DEBUG: ACCESS_LIST CONTENT for tx {}: {:?}", txn_index, tx_trace.access_list);
-        // }
 
         self.transactions_map.insert(txn_index, tx_trace);
 
@@ -609,12 +591,9 @@ impl BlockBuilder {
         priority_fee_limbs: &[u64],
         txn_type: u32,
     ) -> Vec<u8> {
-        // eprintln!("DEBUG: calculate_effective_gas_price: txn_type={}, max_fee_limbs={:?}, priority_fee_limbs={:?}", txn_type, max_fee_limbs, priority_fee_limbs);
         match txn_type {
             0 => {
                 // Legacy transactions: gas_price = max_fee_per_gas
-
-                // eprintln!("DEBUG: type 0 gas_price result = {:?}", result);
                 u256_limbs_to_bytes(max_fee_limbs)
             }
             2 => {
@@ -622,26 +601,18 @@ impl BlockBuilder {
                 let max_fee = u256_limbs_to_bytes(max_fee_limbs);
                 let priority_fee = u256_limbs_to_bytes(priority_fee_limbs);
                 let base_fee = u256_limbs_to_bytes(&self.base_fee_per_gas);
-                // eprintln!("DEBUG: EIP-1559: max_fee={:?}, priority_fee={:?}, base_fee={:?}", max_fee, priority_fee, base_fee);
 
                 // Calculate base_fee + priority_fee
                 let sum = add_u256_bytes(&base_fee, &priority_fee);
-                // eprintln!("DEBUG: base_fee + priority_fee = {:?}", sum);
 
-                // Return min(max_fee, sum)
-
-                // eprintln!("DEBUG: type 2 gas_price result = {:?}", result);
                 if compare_u256_bytes(&max_fee, &sum) <= 0 {
-                    // eprintln!("DEBUG: using max_fee");
                     max_fee
                 } else {
-                    // eprintln!("DEBUG: using sum");
                     sum
                 }
             }
             _ => {
 
-                // eprintln!("DEBUG: type {} gas_price result = {:?}", txn_type, result);
                 u256_limbs_to_bytes(max_fee_limbs)
             }
         }
