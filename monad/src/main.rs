@@ -48,6 +48,10 @@ struct Args {
     /// Output format (firehose, json, binary)
     #[arg(long, default_value = "firehose")]
     output_format: String,
+
+    /// Enable no-op mode
+    #[arg(long)]
+    no_op: bool,
 }
 
 #[tokio::main]
@@ -101,10 +105,15 @@ async fn main() -> Result<()> {
     let tracer_config = TracerConfig::new(args.chain_id, args.network_name)
         .with_debug(args.debug)
         .with_buffer_size(args.buffer_size)
-        .with_output_format(output_format);
+        .with_output_format(output_format)
+        .with_no_op(args.no_op);
 
     // Create and start the tracer
     let mut tracer = FirehoseTracer::new(tracer_config).with_consumer(consumer);
+
+    if args.no_op {
+        info!("NO-OP MODE ENABLED: Only logging block numbers, no processing");
+    }
 
     info!("Starting Firehose tracer...");
     tracer.start().await?;
