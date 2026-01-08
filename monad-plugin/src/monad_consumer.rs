@@ -5,14 +5,14 @@
 
 use crate::{EventProcessor, PluginConfig};
 use eyre::Result;
-use monad_event_ring::{EventDescriptor, EventNextResult, EventPayloadResult, EventRingPath};
+use monad_event_ring::{EventNextResult, EventPayloadResult, EventRingPath};
 use monad_exec_events::{
-    ffi::DEFAULT_FILE_NAME, ExecEvent, ExecEventDecoder, ExecEventDescriptorExt,
+    ffi::DEFAULT_FILE_NAME, ExecEventDescriptorExt,
     ExecEventReaderExt, ExecEventRing, ExecEventType,
 };
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, Stream};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use monad_event_ring::DecodedEventRing;
 
 /// Consumer for Monad execution events
