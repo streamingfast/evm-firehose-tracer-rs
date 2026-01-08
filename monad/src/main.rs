@@ -81,6 +81,10 @@ struct Args {
     /// Skip event processing (JSON parse, data building) but still finalize blocks
     #[arg(long)]
     skip_event_processing: bool,
+
+    /// Skip all block field access after mapper returns
+    #[arg(long)]
+    skip_block_access: bool,
 }
 
 #[tokio::main]
@@ -142,7 +146,8 @@ async fn main() -> Result<()> {
         .with_skip_output(args.skip_output)
         .with_skip_logging(args.skip_logging)
         .with_skip_after_mapper(args.skip_after_mapper)
-        .with_skip_event_processing(args.skip_event_processing);
+        .with_skip_event_processing(args.skip_event_processing)
+        .with_skip_block_access(args.skip_block_access);
 
     // Create and start the tracer
     let mut tracer = FirehoseTracer::new(tracer_config).with_consumer(consumer);
@@ -170,6 +175,9 @@ async fn main() -> Result<()> {
     }
     if args.skip_event_processing {
         info!("PROFILING: Skipping event processing (JSON parse, data building)");
+    }
+    if args.skip_block_access {
+        info!("PROFILING: Skipping block field access");
     }
 
     info!("Starting Firehose tracer...");
