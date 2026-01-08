@@ -52,39 +52,6 @@ struct Args {
     /// Enable no-op mode
     #[arg(long)]
     no_op: bool,
-
-    // TEMPORARY FLAGS FOR PERFORMANCE PROFILING - REMOVE AFTER OPTIMIZATION
-    /// Skip event mapping (JSON parse, hex decode, data structures)
-    #[arg(long)]
-    skip_event_mapping: bool,
-
-    /// Skip block finalization (bloom filter, gas calculations)
-    #[arg(long)]
-    skip_finalization: bool,
-
-    /// Skip protobuf serialization
-    #[arg(long)]
-    skip_serialization: bool,
-
-    /// Skip base64 encoding and stdout output
-    #[arg(long)]
-    skip_output: bool,
-
-    /// Skip logging (info! statements with hex encoding)
-    #[arg(long)]
-    skip_logging: bool,
-
-    /// Skip everything after event mapper returns
-    #[arg(long)]
-    skip_after_mapper: bool,
-
-    /// Skip event processing (JSON parse, data building) but still finalize blocks
-    #[arg(long)]
-    skip_event_processing: bool,
-
-    /// Skip all block field access after mapper returns
-    #[arg(long)]
-    skip_block_access: bool,
 }
 
 #[tokio::main]
@@ -139,45 +106,13 @@ async fn main() -> Result<()> {
         .with_debug(args.debug)
         .with_buffer_size(args.buffer_size)
         .with_output_format(output_format)
-        .with_no_op(args.no_op)
-        .with_skip_event_mapping(args.skip_event_mapping)
-        .with_skip_finalization(args.skip_finalization)
-        .with_skip_serialization(args.skip_serialization)
-        .with_skip_output(args.skip_output)
-        .with_skip_logging(args.skip_logging)
-        .with_skip_after_mapper(args.skip_after_mapper)
-        .with_skip_event_processing(args.skip_event_processing)
-        .with_skip_block_access(args.skip_block_access);
+        .with_no_op(args.no_op);
 
     // Create and start the tracer
     let mut tracer = FirehoseTracer::new(tracer_config).with_consumer(consumer);
 
     if args.no_op {
         info!("NO-OP MODE ENABLED: Only logging block numbers, no processing");
-    }
-    if args.skip_event_mapping {
-        info!("PROFILING: Skipping event mapping (WARNING: causes memory leak)");
-    }
-    if args.skip_finalization {
-        info!("PROFILING: Skipping block finalization");
-    }
-    if args.skip_serialization {
-        info!("PROFILING: Skipping protobuf serialization");
-    }
-    if args.skip_output {
-        info!("PROFILING: Skipping base64 encoding and stdout");
-    }
-    if args.skip_logging {
-        info!("PROFILING: Skipping logging");
-    }
-    if args.skip_after_mapper {
-        info!("PROFILING: Skipping all post-processing after mapper");
-    }
-    if args.skip_event_processing {
-        info!("PROFILING: Skipping event processing (JSON parse, data building)");
-    }
-    if args.skip_block_access {
-        info!("PROFILING: Skipping block field access");
     }
 
     info!("Starting Firehose tracer...");

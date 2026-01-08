@@ -133,8 +133,6 @@ fn calculate_logs_bloom(logs: &[pb::sf::ethereum::r#type::v2::Log]) -> Vec<u8> {
 /// Maps processed events to Firehose blocks
 pub struct EventMapper {
     blocks: std::collections::HashMap<u64, BlockBuilder>,
-    skip_finalization: bool, // TEMPORARY - REMOVE AFTER OPTIMIZATION
-    skip_event_processing: bool, // TEMPORARY - REMOVE AFTER OPTIMIZATION
 }
 
 impl EventMapper {
@@ -142,26 +140,6 @@ impl EventMapper {
     pub fn new() -> Self {
         Self {
             blocks: std::collections::HashMap::new(),
-            skip_finalization: false,
-            skip_event_processing: false,
-        }
-    }
-
-    /// Create a new event mapper with config (TEMPORARY - REMOVE AFTER OPTIMIZATION)
-    pub fn new_with_config(skip_finalization: bool) -> Self {
-        Self {
-            blocks: std::collections::HashMap::new(),
-            skip_finalization,
-            skip_event_processing: false,
-        }
-    }
-
-    /// Create a new event mapper with full config (TEMPORARY - REMOVE AFTER OPTIMIZATION)
-    pub fn new_with_full_config(skip_finalization: bool, skip_event_processing: bool) -> Self {
-        Self {
-            blocks: std::collections::HashMap::new(),
-            skip_finalization,
-            skip_event_processing,
         }
     }
 
@@ -178,16 +156,13 @@ impl EventMapper {
         // Get or create the block builder for this block number
         let builder = self.blocks.entry(block_num).or_insert_with(|| BlockBuilder::new(block_num));
 
-        // PROFILING: Skip event processing if requested (but still finalize to avoid memory leak)
-        if !self.skip_event_processing {
-            // Add the event to the block
-            builder.add_event(event).await?;
-        }
+        // Add the event to the block
+        builder.add_event(event).await?;
 
         // Check if this is a BLOCK_END event, finalize the block
         if is_block_end {
             if let Some(builder) = self.blocks.remove(&block_num) {
-                let completed_block = builder.finalize(self.skip_finalization)?;
+                let completed_block = builder.finalize()?;
                 // Box the block to avoid expensive move - only moves a pointer instead of the whole struct
                 return Ok(Some(Box::new(completed_block)));
             }
@@ -202,7 +177,7 @@ impl EventMapper {
         if let Some((&block_num, _)) = self.blocks.iter().next() {
             if let Some(builder) = self.blocks.remove(&block_num) {
                 // Box the block to avoid expensive move
-                return Ok(Some(Box::new(builder.finalize(self.skip_finalization)?)));
+                return Ok(Some(Box::new(builder.finalize()?)));
             }
         }
         Ok(None)
@@ -646,7 +621,7 @@ impl BlockBuilder {
     }
 
     /// Finalize the block and return it
-    fn finalize(mut self, skip_finalization: bool) -> Result<Block> {
+    fn finalize(mut self) -> Result<Block> {
         info!("Finalizing block {}", self.block_number);
 
         // Move transactions from map to vec, sorted by index
@@ -664,12 +639,9 @@ impl BlockBuilder {
                     });
                 }
 
-                // PROFILING: Skip bloom filter calculation if requested
-                if !skip_finalization {
-                    // Calculate logs bloom from actual logs
-                    if let Some(ref mut receipt) = tx.receipt {
-                        receipt.logs_bloom = calculate_logs_bloom(&receipt.logs);
-                    }
+                // Calculate logs bloom from actual logs
+                if let Some(ref mut receipt) = tx.receipt {
+                    receipt.logs_bloom = calculate_logs_bloom(&receipt.logs);
                 }
 
                 tx
