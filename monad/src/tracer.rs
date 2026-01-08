@@ -19,8 +19,9 @@ pub struct FirehoseTracer {
 impl FirehoseTracer {
     /// Create a new Firehose tracer
     pub fn new(config: TracerConfig) -> Self {
-        let event_mapper = EventMapper::new_with_config(
+        let event_mapper = EventMapper::new_with_full_config(
             config.skip_finalization,
+            config.skip_event_processing,
         );
         let printer = FirehosePrinter::new_with_config(
             config.clone(),
@@ -110,8 +111,10 @@ impl FirehoseTracer {
 
         // Process the event through the mapper
         if let Some(block) = self.event_mapper.process_event(event).await? {
-            // PROFILING: Skip finalization if requested (we already have the block from mapper)
-            // Note: finalization happens inside the mapper, we'll handle this differently
+            // PROFILING: Skip everything after mapper if requested
+            if self.config.skip_after_mapper {
+                return Ok(());
+            }
 
             // Update HEAD block number
             self.current_head = block.number;
@@ -126,26 +129,29 @@ impl FirehoseTracer {
             // Update finality status with new LIB
             self.printer.update_finality(lib);
 
-            // Log block summary
-            let hash_short = if block.hash.len() >= 6 {
-                format!("{}..{}",
-                    hex::encode(&block.hash[..3]),
-                    hex::encode(&block.hash[block.hash.len()-3..]))
-            } else {
-                hex::encode(&block.hash)
-            };
+            // PROFILING: Skip logging if requested
+            if !self.config.skip_logging {
+                // Log block summary
+                let hash_short = if block.hash.len() >= 6 {
+                    format!("{}..{}",
+                        hex::encode(&block.hash[..3]),
+                        hex::encode(&block.hash[block.hash.len()-3..]))
+                } else {
+                    hex::encode(&block.hash)
+                };
 
-            let gas_used = block.header.as_ref().map(|h| h.gas_used).unwrap_or(0);
-            let gas_mgas = gas_used as f64 / 1_000_000.0;
+                let gas_used = block.header.as_ref().map(|h| h.gas_used).unwrap_or(0);
+                let gas_mgas = gas_used as f64 / 1_000_000.0;
 
-            info!(
-                "Firehose block finalized number={:>9} hash={} lib={:>9} txs={:>3} mgas={:.3}",
-                block.number,
-                hash_short,
-                lib,
-                block.transaction_traces.len(),
-                gas_mgas
-            );
+                info!(
+                    "Firehose block finalized number={:>9} hash={} lib={:>9} txs={:>3} mgas={:.3}",
+                    block.number,
+                    hash_short,
+                    lib,
+                    block.transaction_traces.len(),
+                    gas_mgas
+                );
+            }
 
             // PROFILING: Skip output if requested
             if !self.config.skip_output {
