@@ -11,6 +11,9 @@ pub struct FirehoseTracer {
     event_mapper: EventMapper,
     printer: FirehosePrinter,
     consumer: Option<MonadConsumer>,
+    /// Current HEAD block number for LIB calculation
+    current_head: u64,
+    lib_delta: u64,
 }
 
 impl FirehoseTracer {
@@ -24,6 +27,8 @@ impl FirehoseTracer {
             event_mapper,
             printer,
             consumer: None,
+            current_head: 0,
+            lib_delta: 10,
         }
     }
 
@@ -85,6 +90,19 @@ impl FirehoseTracer {
     async fn process_event(&mut self, event: ProcessedEvent) -> Result<()> {
         // Process the event through the mapper
         if let Some(block) = self.event_mapper.process_event(event).await? {
+            // Update HEAD block number
+            self.current_head = block.number;
+
+            // Calculate LIB
+            let lib = if self.current_head > self.lib_delta {
+                self.current_head - self.lib_delta
+            } else {
+                0
+            };
+
+            // Update finality status with new LIB
+            self.printer.update_finality(lib);
+
             // Print the completed block
             self.printer.print_block(block)?;
         }
