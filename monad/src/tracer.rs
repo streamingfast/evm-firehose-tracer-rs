@@ -103,6 +103,27 @@ impl FirehoseTracer {
             // Update finality status with new LIB
             self.printer.update_finality(lib);
 
+            // Log block summary
+            let hash_short = if block.hash.len() >= 6 {
+                format!("{}..{}",
+                    hex::encode(&block.hash[..3]),
+                    hex::encode(&block.hash[block.hash.len()-3..]))
+            } else {
+                hex::encode(&block.hash)
+            };
+
+            let gas_used = block.header.as_ref().map(|h| h.gas_used).unwrap_or(0);
+            let gas_mgas = gas_used as f64 / 1_000_000.0;
+
+            info!(
+                "Firehose block finalized                 number={:>9} hash={} lib={:>9} txs={:>3} mgas={:.3}",
+                block.number,
+                hash_short,
+                lib,
+                block.transaction_traces.len(),
+                gas_mgas
+            );
+
             // Print the completed block
             self.printer.print_block(block)?;
         }
