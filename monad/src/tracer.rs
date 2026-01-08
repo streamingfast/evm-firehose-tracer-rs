@@ -86,7 +86,7 @@ impl FirehoseTracer {
 
         // Finalize any pending block
         if let Some(block) = self.event_mapper.finalize_pending()? {
-            self.printer.print_block(block)?;
+            self.printer.print_block(&block)?;
         }
 
         Ok(())
@@ -163,7 +163,7 @@ impl FirehoseTracer {
             // PROFILING: Skip output if requested
             if !self.config.skip_output {
                 // Print the completed block
-                self.printer.print_block(block)?;
+                self.printer.print_block(&block)?;
             }
         }
 

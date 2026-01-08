@@ -166,7 +166,7 @@ impl EventMapper {
     }
 
     /// Process an event and potentially return a completed block
-    pub async fn process_event(&mut self, event: ProcessedEvent) -> Result<Option<Block>> {
+    pub async fn process_event(&mut self, event: ProcessedEvent) -> Result<Option<Box<Block>>> {
         debug!(
             "Processing event: block={}, type={}",
             event.block_number, event.event_type
@@ -188,7 +188,8 @@ impl EventMapper {
         if is_block_end {
             if let Some(builder) = self.blocks.remove(&block_num) {
                 let completed_block = builder.finalize(self.skip_finalization)?;
-                return Ok(Some(completed_block));
+                // Box the block to avoid expensive move - only moves a pointer instead of the whole struct
+                return Ok(Some(Box::new(completed_block)));
             }
         }
 
@@ -196,11 +197,12 @@ impl EventMapper {
     }
 
     /// Finalize any pending blocks
-    pub fn finalize_pending(&mut self) -> Result<Option<Block>> {
+    pub fn finalize_pending(&mut self) -> Result<Option<Box<Block>>> {
         // Finalize the oldest pending block if any exist
         if let Some((&block_num, _)) = self.blocks.iter().next() {
             if let Some(builder) = self.blocks.remove(&block_num) {
-                return Ok(Some(builder.finalize(self.skip_finalization)?));
+                // Box the block to avoid expensive move
+                return Ok(Some(Box::new(builder.finalize(self.skip_finalization)?)));
             }
         }
         Ok(None)
