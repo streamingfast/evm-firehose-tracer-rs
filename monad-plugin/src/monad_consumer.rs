@@ -104,7 +104,7 @@ impl MonadConsumer {
                     info!("Received SIGINT (Ctrl+C), shutting down gracefully");
                     break;
                 }
-                _ = tokio::time::sleep(tokio::time::Duration::from_micros(100)) => {
+                else => {
                     // Read events from Monad SDK
                     match event_reader.next_descriptor() {
                         EventNextResult::Gap => {
@@ -112,7 +112,8 @@ impl MonadConsumer {
                             event_reader.reset();
                         }
                         EventNextResult::NotReady => {
-                            // No event available, continue polling
+                            // No event available
+                            tokio::task::yield_now().await;
                         }
                         EventNextResult::Ready(event) => {
                             if let Err(e) =
