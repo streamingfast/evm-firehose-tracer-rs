@@ -7,14 +7,12 @@
 pub mod config;
 pub mod event_mapper;
 pub mod finality;
-pub mod ordinal;
 pub mod printer;
 pub mod tracer;
 
-pub use config::{OutputFormat, TracerConfig};
+pub use config::TracerConfig;
 pub use event_mapper::EventMapper;
 pub use finality::FinalityStatus;
-pub use ordinal::Ordinal;
 pub use printer::FirehosePrinter;
 pub use tracer::FirehoseTracer;
 

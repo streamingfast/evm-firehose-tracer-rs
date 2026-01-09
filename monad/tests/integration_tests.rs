@@ -6,8 +6,6 @@
 use eyre::Result;
 use monad_tracer as tracer;
 use monad_plugin::ProcessedEvent;
-#[cfg(target_os = "linux")]
-use monad_plugin::{initialize_plugin, PluginConfig};
 use pb::{block, Block, BlockHeader};
 use tracer::{EventMapper, FirehoseTracer, TracerConfig};
 
@@ -243,7 +241,6 @@ async fn test_tracer_configuration() -> Result<()> {
         network_name: "test-monad".to_string(),
         debug: true,
         buffer_size: 512,
-        output_format: tracer::config::OutputFormat::Json,
         no_op: false,
     };
 

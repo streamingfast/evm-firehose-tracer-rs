@@ -9,7 +9,7 @@ use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 use monad_plugin::{initialize_plugin, PluginConfig};
-use monad_tracer::{FirehoseTracer, OutputFormat, TracerConfig};
+use monad_tracer::{FirehoseTracer, TracerConfig};
 
 /// Command line arguments for the Monad Firehose tracer
 #[derive(Parser, Debug)]
@@ -45,10 +45,6 @@ struct Args {
     #[arg(long, env = "DEBUG")]
     debug: bool,
 
-    /// Output format (firehose, json, binary)
-    #[arg(long, default_value = "firehose")]
-    output_format: String,
-
     /// Enable no-op mode
     #[arg(long)]
     no_op: bool,
@@ -77,20 +73,6 @@ async fn main() -> Result<()> {
     info!("Event ring path: {}", args.monad_event_ring_path);
     info!("Debug mode: {}", args.debug);
 
-    // Parse output format
-    let output_format = match args.output_format.as_str() {
-        "firehose" => OutputFormat::Firehose,
-        "json" => OutputFormat::Json,
-        "binary" => OutputFormat::Binary,
-        _ => {
-            eprintln!(
-                "Invalid output format: {}. Valid options: firehose, json, binary",
-                args.output_format
-            );
-            std::process::exit(1);
-        }
-    };
-
     // Create plugin configuration
     let plugin_config = PluginConfig {
         event_ring_path: args.monad_event_ring_path,
@@ -105,7 +87,6 @@ async fn main() -> Result<()> {
     let tracer_config = TracerConfig::new(args.chain_id, args.network_name)
         .with_debug(args.debug)
         .with_buffer_size(args.buffer_size)
-        .with_output_format(output_format)
         .with_no_op(args.no_op);
 
     // Create and start the tracer

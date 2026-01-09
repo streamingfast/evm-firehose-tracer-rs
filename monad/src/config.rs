@@ -13,21 +13,8 @@ pub struct TracerConfig {
     pub debug: bool,
     /// Buffer size for event processing
     pub buffer_size: usize,
-    /// Output format for Firehose messages
-    pub output_format: OutputFormat,
     /// Enable no-op mode
     pub no_op: bool,
-}
-
-/// Output format for Firehose messages
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum OutputFormat {
-    /// Standard Firehose protocol format
-    Firehose,
-    /// JSON format for debugging
-    Json,
-    /// Binary protobuf format
-    Binary,
 }
 
 impl Default for TracerConfig {
@@ -37,7 +24,6 @@ impl Default for TracerConfig {
             network_name: "monad".to_string(),
             debug: false,
             buffer_size: 1024,
-            output_format: OutputFormat::Firehose,
             no_op: false,
         }
     }
@@ -62,12 +48,6 @@ impl TracerConfig {
     /// Set buffer size
     pub fn with_buffer_size(mut self, buffer_size: usize) -> Self {
         self.buffer_size = buffer_size;
-        self
-    }
-
-    /// Set output format
-    pub fn with_output_format(mut self, output_format: OutputFormat) -> Self {
-        self.output_format = output_format;
         self
     }
 

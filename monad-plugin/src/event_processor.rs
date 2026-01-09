@@ -59,7 +59,7 @@ impl EventProcessor {
 
         // Update current block tracking
         if self.current_block != Some(block_number) && block_number > 0 {
-            info!("Processing new block: {}", block_number);
+            debug!("Processing new block: {}", block_number);
             self.current_block = Some(block_number);
             // Clear pending access lists and headers when starting a new block
             self.pending_access_lists.clear();
@@ -121,7 +121,7 @@ impl EventProcessor {
         block_start: monad_exec_events::ffi::monad_exec_block_start,
         block_number: u64,
     ) -> Result<Option<ProcessedEvent>> {
-        info!(
+        debug!(
             "BlockStart: block #{}, timestamp={}",
             block_number, block_start.eth_block_input.timestamp
         );
@@ -165,7 +165,7 @@ impl EventProcessor {
         block_end: monad_exec_events::ffi::monad_exec_block_end,
         block_number: u64,
     ) -> Result<Option<ProcessedEvent>> {
-        info!(
+        debug!(
             "BlockEnd: block #{}, gas_used={}",
             block_number, block_end.exec_output.gas_used
         );
@@ -415,7 +415,7 @@ impl EventProcessor {
         qc: monad_exec_events::ffi::monad_exec_block_qc,
         block_number: u64,
     ) -> Result<Option<ProcessedEvent>> {
-        info!("BlockQC: block #{}, round={}", block_number, qc.round);
+        debug!("BlockQC: block #{}, round={}", block_number, qc.round);
         Ok(None)
     }
 
@@ -424,7 +424,7 @@ impl EventProcessor {
         finalized: monad_exec_events::ffi::monad_exec_block_finalized,
         _block_number: u64,
     ) -> Result<Option<ProcessedEvent>> {
-        info!("BlockFinalized: block #{}", finalized.block_number);
+        debug!("BlockFinalized: block #{}", finalized.block_number);
         Ok(None)
     }
 }
