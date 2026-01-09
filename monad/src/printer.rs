@@ -1,6 +1,6 @@
 //! Firehose protocol printer
 
-use crate::{Block, FinalityStatus, OutputFormat, TracerConfig, TRACER_NAME, TRACER_VERSION};
+use crate::{Block, FinalityStatus, TracerConfig, TRACER_NAME, TRACER_VERSION};
 use eyre::Result;
 use tracing::{debug, info};
 
@@ -33,15 +33,6 @@ impl FirehosePrinter {
 
     /// Print a FIRE BLOCK message
     pub fn print_block(&mut self, block: &Block) -> Result<()> {
-        match self.config.output_format {
-            OutputFormat::Firehose => self.print_firehose_block(block),
-            OutputFormat::Json => self.print_json_block(block),
-            OutputFormat::Binary => self.print_binary_block(block),
-        }
-    }
-
-    /// Print block in Firehose protocol format
-    fn print_firehose_block(&mut self, block: &Block) -> Result<()> {
         // Serialize the block to protobuf bytes
         let block_bytes = self.serialize_block(&block)?;
 
@@ -91,21 +82,6 @@ impl FirehosePrinter {
 
         debug!("Printed FIRE BLOCK for block {}", block.number);
 
-        Ok(())
-    }
-
-    /// Print block in JSON format for debugging
-    fn print_json_block(&self, block: &Block) -> Result<()> {
-        // TODO: Implement JSON serialization when serde support is added to protobuf types
-        println!("Block #{} (JSON output not yet implemented)", block.number);
-        Ok(())
-    }
-
-    /// Print block in binary format
-    fn print_binary_block(&self, block: &Block) -> Result<()> {
-        let block_bytes = self.serialize_block(&block)?;
-        use std::io::{self, Write};
-        io::stdout().write_all(&block_bytes)?;
         Ok(())
     }
 

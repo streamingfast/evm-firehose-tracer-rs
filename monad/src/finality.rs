@@ -5,8 +5,6 @@
 pub struct FinalityStatus {
     /// Last irreversible block number
     lib_num: u64,
-    /// Whether the current block is final
-    is_final: bool,
 }
 
 impl FinalityStatus {
@@ -14,7 +12,6 @@ impl FinalityStatus {
     pub fn new() -> Self {
         Self {
             lib_num: 0,
-            is_final: false,
         }
     }
 
@@ -31,16 +28,6 @@ impl FinalityStatus {
     /// Check if a block is final
     pub fn is_block_final(&self, block_num: u64) -> bool {
         block_num <= self.lib_num
-    }
-
-    /// Set finality status
-    pub fn set_final(&mut self, is_final: bool) {
-        self.is_final = is_final;
-    }
-
-    /// Get finality status
-    pub fn is_final(&self) -> bool {
-        self.is_final
     }
 }
 

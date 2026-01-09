@@ -349,7 +349,6 @@ impl BlockBuilder {
 
         // Extract access_list from tx_data
         let access_list_entries = if let Some(access_list_json) = tx_data.get("access_list") {
-            // eprintln!("DEBUG: access_list FOUND in tx_data for tx {}: {:?}", txn_index, access_list_json);
             if let Some(access_list_array) = access_list_json.as_array() {
                 access_list_array.iter().filter_map(|entry| {
                     if let (Some(address), Some(storage_keys)) = (entry.get("address"), entry.get("storage_keys")) {
@@ -622,7 +621,7 @@ impl BlockBuilder {
 
     /// Finalize the block and return it
     fn finalize(mut self) -> Result<Block> {
-        info!("Finalizing block {}", self.block_number);
+        debug!("Finalizing block {}", self.block_number);
 
         // Move transactions from map to vec, sorted by index
         let mut transactions: Vec<TransactionTrace> = self

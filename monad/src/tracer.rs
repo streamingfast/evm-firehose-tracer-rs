@@ -3,6 +3,7 @@
 use crate::{EventMapper, FirehosePrinter, MonadConsumer, ProcessedEvent, TracerConfig};
 use eyre::Result;
 use futures_util::StreamExt;
+use std::time::Instant;
 use tracing::{error, info, warn};
 
 /// Main Firehose tracer for Monad
@@ -94,8 +95,12 @@ impl FirehoseTracer {
             return Ok(());
         }
 
+        let start = Instant::now();
+
         // Process the event through the mapper
         if let Some(block) = self.event_mapper.process_event(event).await? {
+            let elapsed = start.elapsed();
+
             // Update HEAD block number
             self.current_head = block.number;
 
@@ -109,7 +114,7 @@ impl FirehoseTracer {
             // Update finality status with new LIB
             self.printer.update_finality(lib);
 
-            // Log block summary
+            // Log block summary with metrics
             let hash_short = if block.hash.len() >= 6 {
                 format!("{}..{}",
                     hex::encode(&block.hash[..3]),
@@ -118,16 +123,21 @@ impl FirehoseTracer {
                 hex::encode(&block.hash)
             };
 
-            let gas_used = block.header.as_ref().map(|h| h.gas_used).unwrap_or(0);
-            let gas_mgas = gas_used as f64 / 1_000_000.0;
+            let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
+            let timestamp = block.header.as_ref()
+                .and_then(|h| h.timestamp.as_ref())
+                .map(|ts| ts.seconds)
+                .unwrap_or(0);
 
             info!(
-                "Firehose block finalized number={:>9} hash={} lib={:>9} txs={:>3} mgas={:.3}",
+                "Processed new block number={} hash={} lib={} size={} txs={} timestamp={} elapsed={:.2}ms",
                 block.number,
                 hash_short,
                 lib,
+                block.size,
                 block.transaction_traces.len(),
-                gas_mgas
+                timestamp,
+                elapsed_ms
             );
 
             // Print the completed block
