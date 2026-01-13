@@ -900,11 +900,17 @@ impl BlockBuilder {
         transactions.sort_by_key(|tx| tx.index);
 
         // Build call trees for each transaction with call frames
+        let total_call_frames: usize = call_frames.values().map(|v| v.len()).sum();
+        if total_call_frames > 0 {
+            debug!("Building call trees for {} transactions with {} total call frames", call_frames.len(), total_call_frames);
+        }
+
         for tx in &mut transactions {
             let txn_index = tx.index as usize;
 
             if let Some(frames) = call_frames.get(&txn_index) {
                 if !frames.is_empty() {
+                    debug!("Building call tree for tx #{} with {} frames", txn_index, frames.len());
                     tx.calls = Self::build_call_tree(frames, txn_index);
                 }
             }
@@ -968,6 +974,12 @@ impl BlockBuilder {
             requests_hash: vec![],
         };
 
+        let total_calls: usize = transactions.iter().map(|tx| tx.calls.len()).sum();
+        let total_logs: usize = transactions.iter()
+            .filter_map(|tx| tx.receipt.as_ref())
+            .map(|r| r.logs.len())
+            .sum();
+
         let block = Block {
             number: self.block_number,
             hash: header.hash.clone(),
@@ -978,6 +990,11 @@ impl BlockBuilder {
             detail_level: block::DetailLevel::DetaillevelExtended as i32,
             ..Default::default()
         };
+
+        debug!(
+            "Finalized extended block #{}: {} txs, {} calls, {} logs",
+            self.block_number, block.transaction_traces.len(), total_calls, total_logs
+        );
 
         Ok(block)
     }

@@ -459,6 +459,11 @@ impl EventProcessor {
         txn_index: usize,
         block_number: u64,
     ) -> Result<Option<ProcessedEvent>> {
+        debug!(
+            "CallFrame: tx #{}, depth={}, opcode={:#x}, gas={}, status={}",
+            txn_index, call_frame.depth, call_frame.opcode, call_frame.gas, call_frame.evmc_status
+        );
+
         let event_type = EVENT_TYPE_TX_CALL_FRAME;
 
         // Serialize call frame data
@@ -495,6 +500,11 @@ impl EventProcessor {
         txn_index: Option<usize>,
         block_number: u64,
     ) -> Result<Option<ProcessedEvent>> {
+        debug!(
+            "AccountAccessListHeader: tx {:?}, entry_count={}",
+            txn_index, header.entry_count
+        );
+
         let event_type = EVENT_TYPE_ACCOUNT_ACCESS_LIST_HEADER;
 
         let header_data = serde_json::json!({
@@ -519,6 +529,14 @@ impl EventProcessor {
         txn_index: Option<usize>,
         block_number: u64,
     ) -> Result<Option<ProcessedEvent>> {
+        debug!(
+            "AccountAccess: tx {:?}, addr={}, balance_mod={}, nonce_mod={}",
+            txn_index,
+            hex::encode(&account_access.address.bytes[..8]),
+            account_access.is_balance_modified,
+            account_access.is_nonce_modified
+        );
+
         let event_type = EVENT_TYPE_ACCOUNT_ACCESS;
 
         let access_data = serde_json::json!({
@@ -557,6 +575,14 @@ impl EventProcessor {
         account_index: u64,
         block_number: u64,
     ) -> Result<Option<ProcessedEvent>> {
+        debug!(
+            "StorageAccess: tx {:?}, addr={}, modified={}, transient={}",
+            txn_index,
+            hex::encode(&storage_access.address.bytes[..8]),
+            storage_access.modified,
+            storage_access.transient
+        );
+
         let event_type = EVENT_TYPE_STORAGE_ACCESS;
 
         let storage_data = serde_json::json!({
