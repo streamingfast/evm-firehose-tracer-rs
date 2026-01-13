@@ -129,13 +129,21 @@ impl FirehoseTracer {
                 .map(|ts| ts.seconds)
                 .unwrap_or(0);
 
+            let total_calls: usize = block.transaction_traces.iter().map(|tx| tx.calls.len()).sum();
+            let total_logs: usize = block.transaction_traces.iter()
+                .filter_map(|tx| tx.receipt.as_ref())
+                .map(|r| r.logs.len())
+                .sum();
+
             info!(
-                "Processed new block number={} hash={} lib={} size={} txs={} timestamp={} elapsed={:.2}ms",
+                "Processed new block number={} hash={} lib={} size={} txs={} calls={} logs={} timestamp={} elapsed={:.2}ms",
                 block.number,
                 hash_short,
                 lib,
                 block.size,
                 block.transaction_traces.len(),
+                total_calls,
+                total_logs,
                 timestamp,
                 elapsed_ms
             );
