@@ -7,7 +7,7 @@ use crate::monad_consumer::ProcessedEvent;
 use eyre::Result;
 use monad_exec_events::ExecEvent;
 use serde_json;
-use tracing::{debug, info};
+use tracing::debug;
 
 // Event type constants to avoid repeated string allocations
 const EVENT_TYPE_BLOCK_START: &str = "BLOCK_START";
@@ -15,6 +15,10 @@ const EVENT_TYPE_BLOCK_END: &str = "BLOCK_END";
 const EVENT_TYPE_TX_HEADER: &str = "TX_HEADER";
 const EVENT_TYPE_TX_RECEIPT: &str = "TX_RECEIPT";
 const EVENT_TYPE_TX_LOG: &str = "TX_LOG";
+const EVENT_TYPE_TX_CALL_FRAME: &str = "TX_CALL_FRAME";
+const EVENT_TYPE_ACCOUNT_ACCESS_LIST_HEADER: &str = "ACCOUNT_ACCESS_LIST_HEADER";
+const EVENT_TYPE_ACCOUNT_ACCESS: &str = "ACCOUNT_ACCESS";
+const EVENT_TYPE_STORAGE_ACCESS: &str = "STORAGE_ACCESS";
 
 /// Buffered transaction header waiting for access list entries
 struct PendingTxnHeader {
@@ -107,6 +111,24 @@ impl EventProcessor {
             ExecEvent::BlockQC(qc) => self.process_block_qc(qc, block_number).await,
             ExecEvent::BlockFinalized(finalized) => {
                 self.process_block_finalized(finalized, block_number).await
+            }
+            ExecEvent::TxnCallFrame {
+                txn_index,
+                txn_call_frame,
+                input_bytes,
+                return_bytes,
+            } => {
+                self.process_txn_call_frame(txn_call_frame, input_bytes, return_bytes, txn_index, block_number)
+                    .await
+            }
+            ExecEvent::AccountAccessListHeader { txn_index, account_access_list_header } => {
+                self.process_account_access_list_header(account_access_list_header, txn_index, block_number).await
+            }
+            ExecEvent::AccountAccess { txn_index, account_access } => {
+                self.process_account_access(account_access, txn_index, block_number).await
+            }
+            ExecEvent::StorageAccess { txn_index, account_index, storage_access } => {
+                self.process_storage_access(storage_access, txn_index, account_index, block_number).await
             }
             _ => {
                 debug!("Skipping event type: {:?}", exec_event);
@@ -426,6 +448,136 @@ impl EventProcessor {
     ) -> Result<Option<ProcessedEvent>> {
         debug!("BlockFinalized: block #{}", finalized.block_number);
         Ok(None)
+    }
+
+    /// Process transaction call frame event - execution trace data
+    async fn process_txn_call_frame(
+        &self,
+        call_frame: monad_exec_events::ffi::monad_exec_txn_call_frame,
+        input_bytes: Box<[u8]>,
+        return_bytes: Box<[u8]>,
+        txn_index: usize,
+        block_number: u64,
+    ) -> Result<Option<ProcessedEvent>> {
+        let event_type = EVENT_TYPE_TX_CALL_FRAME;
+
+        // Serialize call frame data
+        let call_frame_data = serde_json::json!({
+            "txn_index": txn_index,
+            "index": call_frame.index,
+            "caller": hex::encode(call_frame.caller.bytes),
+            "call_target": hex::encode(call_frame.call_target.bytes),
+            "opcode": call_frame.opcode,
+            "value": {
+                "limbs": call_frame.value.limbs.to_vec()
+            },
+            "gas": call_frame.gas,
+            "gas_used": call_frame.gas_used,
+            "evmc_status": call_frame.evmc_status,
+            "depth": call_frame.depth,
+            "input": hex::encode(&*input_bytes),
+            "return_data": hex::encode(&*return_bytes),
+        });
+
+        let firehose_data = serde_json::to_vec(&call_frame_data)?;
+
+        Ok(Some(ProcessedEvent {
+            block_number,
+            event_type: event_type.to_string(),
+            firehose_data,
+        }))
+    }
+
+    /// Process account access list header - batch metadata for account changes
+    async fn process_account_access_list_header(
+        &self,
+        header: monad_exec_events::ffi::monad_exec_account_access_list_header,
+        txn_index: Option<usize>,
+        block_number: u64,
+    ) -> Result<Option<ProcessedEvent>> {
+        let event_type = EVENT_TYPE_ACCOUNT_ACCESS_LIST_HEADER;
+
+        let header_data = serde_json::json!({
+            "txn_index": txn_index,
+            "entry_count": header.entry_count,
+            "access_context": header.access_context,
+        });
+
+        let firehose_data = serde_json::to_vec(&header_data)?;
+
+        Ok(Some(ProcessedEvent {
+            block_number,
+            event_type: event_type.to_string(),
+            firehose_data,
+        }))
+    }
+
+    /// Process account access event - balance/nonce changes
+    async fn process_account_access(
+        &self,
+        account_access: monad_exec_events::ffi::monad_exec_account_access,
+        txn_index: Option<usize>,
+        block_number: u64,
+    ) -> Result<Option<ProcessedEvent>> {
+        let event_type = EVENT_TYPE_ACCOUNT_ACCESS;
+
+        let access_data = serde_json::json!({
+            "txn_index": txn_index,
+            "index": account_access.index,
+            "address": hex::encode(account_access.address.bytes),
+            "is_balance_modified": account_access.is_balance_modified,
+            "is_nonce_modified": account_access.is_nonce_modified,
+            "prestate": {
+                "balance": {
+                    "limbs": account_access.prestate.balance.limbs.to_vec()
+                },
+                "nonce": account_access.prestate.nonce,
+            },
+            "modified_balance": {
+                "limbs": account_access.modified_balance.limbs.to_vec()
+            },
+            "modified_nonce": account_access.modified_nonce,
+            "storage_key_count": account_access.storage_key_count,
+        });
+
+        let firehose_data = serde_json::to_vec(&access_data)?;
+
+        Ok(Some(ProcessedEvent {
+            block_number,
+            event_type: event_type.to_string(),
+            firehose_data,
+        }))
+    }
+
+    /// Process storage access event - storage slot modifications
+    async fn process_storage_access(
+        &self,
+        storage_access: monad_exec_events::ffi::monad_exec_storage_access,
+        txn_index: Option<usize>,
+        account_index: u64,
+        block_number: u64,
+    ) -> Result<Option<ProcessedEvent>> {
+        let event_type = EVENT_TYPE_STORAGE_ACCESS;
+
+        let storage_data = serde_json::json!({
+            "txn_index": txn_index,
+            "account_index": account_index,
+            "address": hex::encode(storage_access.address.bytes),
+            "index": storage_access.index,
+            "modified": storage_access.modified,
+            "transient": storage_access.transient,
+            "key": hex::encode(storage_access.key.bytes),
+            "start_value": hex::encode(storage_access.start_value.bytes),
+            "end_value": hex::encode(storage_access.end_value.bytes),
+        });
+
+        let firehose_data = serde_json::to_vec(&storage_data)?;
+
+        Ok(Some(ProcessedEvent {
+            block_number,
+            event_type: event_type.to_string(),
+            firehose_data,
+        }))
     }
 }
 

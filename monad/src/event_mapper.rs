@@ -3,7 +3,7 @@ use pb::sf::ethereum::r#type::v2::{block, BigInt, AccessTuple};
 use alloy_primitives::{Bloom, BloomInput};
 use eyre::Result;
 use serde_json;
-use tracing::{debug, info};
+use tracing::debug;
 
 // Constants for Monad-specific values
 const MONAD_BLOCK_SIZE: u64 = 783;
@@ -190,6 +190,48 @@ impl Default for EventMapper {
     }
 }
 
+/// Raw call frame data from Monad events
+#[derive(Clone, Debug)]
+struct CallFrameData {
+    index: u32,
+    caller: Vec<u8>,
+    call_target: Vec<u8>,
+    opcode: u8,
+    value: Vec<u8>,
+    gas: u64,
+    gas_used: u64,
+    evmc_status: i32,
+    depth: u64,
+    input: Vec<u8>,
+    return_data: Vec<u8>,
+}
+
+/// Raw account access data from Monad events
+#[derive(Clone, Debug)]
+struct AccountAccessData {
+    index: u32,
+    address: Vec<u8>,
+    is_balance_modified: bool,
+    is_nonce_modified: bool,
+    prestate_balance: Vec<u8>,
+    prestate_nonce: u64,
+    modified_balance: Vec<u8>,
+    modified_nonce: u64,
+    storage_key_count: u32,
+}
+
+/// Raw storage access data from Monad events
+#[derive(Clone, Debug)]
+struct StorageAccessData {
+    address: Vec<u8>,
+    index: u32,
+    modified: bool,
+    transient: bool,
+    key: Vec<u8>,
+    start_value: Vec<u8>,
+    end_value: Vec<u8>,
+}
+
 struct BlockBuilder {
     block_number: u64,
     block_hash: Vec<u8>,
@@ -214,6 +256,10 @@ struct BlockBuilder {
     cumulative_gas_used: u64,
     total_log_count: usize,
     next_ordinal: u64,
+    // Extended blocks data
+    call_frames: std::collections::HashMap<usize, Vec<CallFrameData>>,
+    account_accesses: std::collections::HashMap<usize, Vec<AccountAccessData>>,
+    storage_accesses: std::collections::HashMap<usize, Vec<StorageAccessData>>,
 }
 
 /// Builder for constructing Firehose blocks from events
@@ -243,6 +289,9 @@ impl BlockBuilder {
             cumulative_gas_used: 0,
             total_log_count: 0,
             next_ordinal: 0,
+            call_frames: std::collections::HashMap::new(),
+            account_accesses: std::collections::HashMap::new(),
+            storage_accesses: std::collections::HashMap::new(),
         }
     }
 
@@ -254,6 +303,12 @@ impl BlockBuilder {
             "TX_HEADER" => self.handle_transaction_header(event).await?,
             "TX_RECEIPT" => self.handle_transaction_receipt(event).await?,
             "TX_LOG" => self.handle_transaction_log(event).await?,
+            "TX_CALL_FRAME" => self.handle_call_frame(event).await?,
+            "ACCOUNT_ACCESS_LIST_HEADER" => {
+                // Just metadata, we don't need to store it
+            }
+            "ACCOUNT_ACCESS" => self.handle_account_access(event).await?,
+            "STORAGE_ACCESS" => self.handle_storage_access(event).await?,
             _ => {
                 debug!("Unknown event type: {}", event.event_type);
             }
@@ -582,6 +637,100 @@ impl BlockBuilder {
         Ok(())
     }
 
+    /// Handle call frame event - execution trace data
+    async fn handle_call_frame(&mut self, event: ProcessedEvent) -> Result<()> {
+        debug!("Handling call frame");
+
+        let call_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
+
+        let txn_index = call_data["txn_index"].as_u64().unwrap_or(0) as usize;
+
+        let value_limbs = call_data["value"]["limbs"]
+            .as_array()
+            .map(|arr| arr.iter().map(|v| v.as_u64().unwrap_or(0)).collect::<Vec<u64>>())
+            .unwrap_or_else(|| vec![0u64; 4]);
+
+        let call_frame = CallFrameData {
+            index: call_data["index"].as_u64().unwrap_or(0) as u32,
+            caller: hex::decode(call_data["caller"].as_str().unwrap_or("")).unwrap_or_default(),
+            call_target: hex::decode(call_data["call_target"].as_str().unwrap_or("")).unwrap_or_default(),
+            opcode: call_data["opcode"].as_u64().unwrap_or(0) as u8,
+            value: u256_limbs_to_bytes(&value_limbs),
+            gas: call_data["gas"].as_u64().unwrap_or(0),
+            gas_used: call_data["gas_used"].as_u64().unwrap_or(0),
+            evmc_status: call_data["evmc_status"].as_i64().unwrap_or(0) as i32,
+            depth: call_data["depth"].as_u64().unwrap_or(0),
+            input: hex::decode(call_data["input"].as_str().unwrap_or("")).unwrap_or_default(),
+            return_data: hex::decode(call_data["return_data"].as_str().unwrap_or("")).unwrap_or_default(),
+        };
+
+        self.call_frames.entry(txn_index).or_default().push(call_frame);
+
+        Ok(())
+    }
+
+    /// Handle account access event - balance/nonce changes
+    async fn handle_account_access(&mut self, event: ProcessedEvent) -> Result<()> {
+        debug!("Handling account access");
+
+        let access_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
+
+        // txn_index is Option<usize> from the event
+        // If None, these are block-level changes (associate with transaction 0)
+        let txn_index = access_data["txn_index"].as_u64().map(|i| i as usize).unwrap_or(0);
+
+        let prestate_balance_limbs = access_data["prestate"]["balance"]["limbs"]
+            .as_array()
+            .map(|arr| arr.iter().map(|v| v.as_u64().unwrap_or(0)).collect::<Vec<u64>>())
+            .unwrap_or_else(|| vec![0u64; 4]);
+
+        let modified_balance_limbs = access_data["modified_balance"]["limbs"]
+            .as_array()
+            .map(|arr| arr.iter().map(|v| v.as_u64().unwrap_or(0)).collect::<Vec<u64>>())
+            .unwrap_or_else(|| vec![0u64; 4]);
+
+        let account_access = AccountAccessData {
+            index: access_data["index"].as_u64().unwrap_or(0) as u32,
+            address: hex::decode(access_data["address"].as_str().unwrap_or("")).unwrap_or_default(),
+            is_balance_modified: access_data["is_balance_modified"].as_bool().unwrap_or(false),
+            is_nonce_modified: access_data["is_nonce_modified"].as_bool().unwrap_or(false),
+            prestate_balance: u256_limbs_to_bytes(&prestate_balance_limbs),
+            prestate_nonce: access_data["prestate"]["nonce"].as_u64().unwrap_or(0),
+            modified_balance: u256_limbs_to_bytes(&modified_balance_limbs),
+            modified_nonce: access_data["modified_nonce"].as_u64().unwrap_or(0),
+            storage_key_count: access_data["storage_key_count"].as_u64().unwrap_or(0) as u32,
+        };
+
+        self.account_accesses.entry(txn_index).or_default().push(account_access);
+
+        Ok(())
+    }
+
+    /// Handle storage access event - storage slot modifications
+    async fn handle_storage_access(&mut self, event: ProcessedEvent) -> Result<()> {
+        debug!("Handling storage access");
+
+        let storage_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
+
+        // txn_index is Option<usize> from the event
+        // If None, these are block-level changes (associate with transaction 0)
+        let txn_index = storage_data["txn_index"].as_u64().map(|i| i as usize).unwrap_or(0);
+
+        let storage_access = StorageAccessData {
+            address: hex::decode(storage_data["address"].as_str().unwrap_or("")).unwrap_or_default(),
+            index: storage_data["index"].as_u64().unwrap_or(0) as u32,
+            modified: storage_data["modified"].as_bool().unwrap_or(false),
+            transient: storage_data["transient"].as_bool().unwrap_or(false),
+            key: hex::decode(storage_data["key"].as_str().unwrap_or("")).unwrap_or_default(),
+            start_value: hex::decode(storage_data["start_value"].as_str().unwrap_or("")).unwrap_or_default(),
+            end_value: hex::decode(storage_data["end_value"].as_str().unwrap_or("")).unwrap_or_default(),
+        };
+
+        self.storage_accesses.entry(txn_index).or_default().push(storage_access);
+
+        Ok(())
+    }
+
     /// Calculate gas price for a transaction
     /// Standard EIP-1559 behavior:
     /// - Type 0 (Legacy): uses max_fee_per_gas as the gas price
@@ -619,9 +768,111 @@ impl BlockBuilder {
         }
     }
 
+    /// Build call tree from call frames
+    /// Converts flat list of call frames into hierarchical Call structures
+    fn build_call_tree(call_frames: &[CallFrameData], _txn_index: usize) -> Vec<pb::sf::ethereum::r#type::v2::Call> {
+        // Track parent indices based on depth changes
+        // parent_stack[depth] = index of call at that depth
+        let mut parent_stack: Vec<u32> = Vec::new();
+
+        call_frames.iter().map(|frame| {
+            let depth = frame.depth as usize;
+
+            // Determine parent_index based on depth
+            let parent_index = if depth == 0 {
+                // Root call - parent is always 0
+                0
+            } else if depth <= parent_stack.len() && depth > 0 {
+                // Child call - parent is the call at depth-1
+                parent_stack[depth - 1]
+            } else {
+                // Shouldn't happen, but fallback to previous call
+                frame.index.saturating_sub(1)
+            };
+
+            // Update parent stack for this depth level
+            if depth >= parent_stack.len() {
+                parent_stack.resize(depth + 1, frame.index);
+            } else {
+                parent_stack[depth] = frame.index;
+                // Truncate stack when returning from deeper calls
+                parent_stack.truncate(depth + 1);
+            }
+
+            // Map opcode to CallType
+            let call_type = Self::opcode_to_call_type(frame.opcode);
+
+            // Map EVMC status to Firehose status
+            // EVMC_SUCCESS = 0
+            // EVMC_FAILURE = 1
+            // EVMC_REVERT = 2
+            // EVMC_OUT_OF_GAS = 3
+            let status_reverted = frame.evmc_status == 2;
+            let status_failed = frame.evmc_status != 0 && frame.evmc_status != 2;
+
+            let failure_reason = match frame.evmc_status {
+                0 => String::new(),
+                1 => "execution failed".to_string(),
+                2 => "execution reverted".to_string(),
+                3 => "out of gas".to_string(),
+                4 => "invalid instruction".to_string(),
+                5 => "undefined instruction".to_string(),
+                6 => "stack overflow".to_string(),
+                7 => "stack underflow".to_string(),
+                8 => "bad jump destination".to_string(),
+                9 => "invalid memory access".to_string(),
+                10 => "call depth exceeded".to_string(),
+                11 => "static mode violation".to_string(),
+                12 => "precompile failure".to_string(),
+                13 => "contract validation failure".to_string(),
+                14 => "argument out of range".to_string(),
+                15 => "wasm unreachable instruction".to_string(),
+                16 => "wasm trap".to_string(),
+                17 => "insufficient balance".to_string(),
+                _ => format!("unknown error (status {})", frame.evmc_status),
+            };
+
+            pb::sf::ethereum::r#type::v2::Call {
+                index: frame.index,
+                parent_index,
+                depth: frame.depth as u32,
+                call_type: call_type as i32,
+                caller: ensure_address_bytes(frame.caller.clone()),
+                address: ensure_address_bytes(frame.call_target.clone()),
+                value: Some(BigInt { bytes: frame.value.clone() }),
+                gas_limit: frame.gas,
+                gas_consumed: frame.gas_used,
+                return_data: frame.return_data.clone(),
+                input: frame.input.clone(),
+                executed_code: !frame.input.is_empty(),
+                suicide: false,
+                status_failed,
+                status_reverted,
+                failure_reason,
+                ..Default::default()
+            }
+        }).collect()
+    }
+
+    /// Map EVM opcode to CallType enum
+    fn opcode_to_call_type(opcode: u8) -> pb::sf::ethereum::r#type::v2::CallType {
+        match opcode {
+            0xF0 => pb::sf::ethereum::r#type::v2::CallType::Create,       // CREATE
+            0xF5 => pb::sf::ethereum::r#type::v2::CallType::Create,       // CREATE2
+            0xF1 => pb::sf::ethereum::r#type::v2::CallType::Call,         // CALL
+            0xF4 => pb::sf::ethereum::r#type::v2::CallType::Delegate, // DELEGATECALL
+            0xF2 => pb::sf::ethereum::r#type::v2::CallType::Callcode,     // CALLCODE
+            0xFA => pb::sf::ethereum::r#type::v2::CallType::Static,       // STATICCALL
+            _ => pb::sf::ethereum::r#type::v2::CallType::Call,            // Default to CALL
+        }
+    }
+
     /// Finalize the block and return it
     fn finalize(mut self) -> Result<Block> {
         debug!("Finalizing block {}", self.block_number);
+
+        // Extract call_frames before consuming transactions_map
+        let call_frames = self.call_frames;
 
         // Move transactions from map to vec, sorted by index
         let mut transactions: Vec<TransactionTrace> = self
@@ -648,10 +899,32 @@ impl BlockBuilder {
             .collect();
         transactions.sort_by_key(|tx| tx.index);
 
-        // Assign ordinals to transactions and logs
+        // Build call trees for each transaction with call frames
+        for tx in &mut transactions {
+            let txn_index = tx.index as usize;
+
+            if let Some(frames) = call_frames.get(&txn_index) {
+                if !frames.is_empty() {
+                    tx.calls = Self::build_call_tree(frames, txn_index);
+                }
+            }
+        }
+
+        // Assign ordinals to transactions, calls, and logs
         for tx in &mut transactions {
             tx.begin_ordinal = self.next_ordinal;
             self.next_ordinal += 1;
+
+            // Assign ordinals to calls in execution order
+            for call in &mut tx.calls {
+                call.begin_ordinal = self.next_ordinal;
+                self.next_ordinal += 1;
+
+                // Ordinals for call's storage changes, balance changes, nonce changes, logs, etc.
+                // For now just end ordinal
+                call.end_ordinal = self.next_ordinal;
+                self.next_ordinal += 1;
+            }
 
             // Assign ordinals to logs
             if let Some(ref mut receipt) = tx.receipt {
@@ -702,7 +975,7 @@ impl BlockBuilder {
             header: Some(header),
             transaction_traces: transactions,
             ver: 3,
-            detail_level: block::DetailLevel::DetaillevelBase as i32,
+            detail_level: block::DetailLevel::DetaillevelExtended as i32,
             ..Default::default()
         };
 
