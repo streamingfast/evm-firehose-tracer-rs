@@ -1,0 +1,88 @@
+# Monad Localnet with Extended Blocks Firehose Tracer
+# This Dockerfile sets up a complete local Monad devnet (chain ID 20143) with firehose tracer
+#
+# Build: docker build -f Dockerfile.localnet -t monad-localnet-extended .
+# Run: docker-compose -f docker-compose-localnet.yml up -d
+#
+# Prerequisites on host:
+# - sudo sysctl -w vm.nr_hugepages=2048
+# - sudo sysctl -w net.core.rmem_max=62500000
+# - sudo sysctl -w net.core.rmem_default=62500000
+# - sudo sysctl -w net.core.wmem_max=62500000
+# - sudo sysctl -w net.core.wmem_default=62500000
+
+# Extract binaries from categoryxyz images
+FROM categoryxyz/monad-bft:latest AS monad-bft
+FROM categoryxyz/monad-execution:latest AS monad-execution
+FROM categoryxyz/monad-rpc:latest AS monad-rpc
+
+# Get fireeth from official firehose-ethereum image
+FROM ghcr.io/streamingfast/firehose-ethereum:latest AS fireeth-source
+
+# Build monad-firehose-tracer from source
+FROM ubuntu:24.04 AS tracer-builder
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y \
+    curl \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    cmake \
+    git \
+    libhugetlbfs-dev \
+    libzstd-dev \
+    wget \
+    gnupg \
+    software-properties-common \
+    && wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc \
+    && add-apt-repository -y "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-20 main" \
+    && apt-get update \
+    && apt-get install -y clang-20 libclang-20-dev llvm-20-dev \
+    && update-alternatives --install /usr/bin/clang clang /usr/lib/llvm-20/bin/clang 100 \
+    && update-alternatives --install /usr/bin/clang++ clang++ /usr/lib/llvm-20/bin/clang++ 100 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+COPY . .
+
+RUN cargo build --release -p monad-tracer
+
+# Final image with all binaries
+FROM ubuntu:24.04
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    libstdc++6 \
+    bash \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy monad binaries and libraries
+RUN --mount=type=bind,from=monad-bft,target=/mnt/monad-bft \
+    --mount=type=bind,from=monad-execution,target=/mnt/monad-execution \
+    --mount=type=bind,from=monad-rpc,target=/mnt/monad-rpc \
+    set -x && \
+    find /mnt/monad-bft -type f -executable -name "monad-node" | while read f; do cp "$f" /app/monad-node; done || true && \
+    find /mnt/monad-execution -type f -executable -name "monad" | while read f; do cp "$f" /app/monad; done || true && \
+    find /mnt/monad-execution -type f -executable -name "monad_mpt" | while read f; do cp "$f" /app/monad_mpt; done || true && \
+    find /mnt/monad-rpc -type f -executable -name "monad-rpc" | while read f; do cp "$f" /app/monad-rpc; done || true && \
+    find /mnt/monad-bft/usr/local/lib /mnt/monad-bft/usr/lib -name "*.so*" -type f 2>/dev/null | grep -vE "(libc\.so|libpthread\.so|libdl\.so|libm\.so|librt\.so|libresolv\.so|libutil\.so|libnss_)" | while read f; do cp "$f" /usr/local/lib/ 2>/dev/null || true; done && \
+    find /mnt/monad-execution/usr/local/lib /mnt/monad-execution/usr/lib -name "*.so*" -type f 2>/dev/null | grep -vE "(libc\.so|libpthread\.so|libdl\.so|libm\.so|librt\.so|libresolv\.so|libutil\.so|libnss_)" | while read f; do cp "$f" /usr/local/lib/ 2>/dev/null || true; done && \
+    find /mnt/monad-rpc/usr/local/lib /mnt/monad-rpc/usr/lib -name "*.so*" -type f 2>/dev/null | grep -vE "(libc\.so|libpthread\.so|libdl\.so|libm\.so|librt\.so|libresolv\.so|libutil\.so|libnss_)" | while read f; do cp "$f" /usr/local/lib/ 2>/dev/null || true; done && \
+    rm -f /usr/local/lib/libc.so* /usr/local/lib/libpthread.so* /usr/local/lib/libdl.so* /usr/local/lib/libm.so* /usr/local/lib/librt.so* /usr/local/lib/libresolv.so* /usr/local/lib/libutil.so* /usr/local/lib/libnss_*
+
+# Copy tracer and fireeth
+COPY --from=tracer-builder /build/target/release/monad-firehose-tracer /app/monad-firehose-tracer
+COPY --from=fireeth-source /app/fireeth /app/fireeth
+
+RUN ldconfig
+
+ENV LD_LIBRARY_PATH=/usr/local/lib
+ENV RUST_LOG=info
