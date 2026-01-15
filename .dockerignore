@@ -1,0 +1,20 @@
+# Exclude local data directories from Docker build context
+localnet-data/
+target/
+.git/
+.github/
+.firehose-data/
+.firehose-data-optimism/
+op-data/
+
+# Exclude backup files
+*.backup
+*.backup.*
+
+# Exclude config files (will be mounted as volumes)
+fireeth.*.yaml
+docker-compose*.yml
+
+# Exclude documentation
+*.md
+!README.md

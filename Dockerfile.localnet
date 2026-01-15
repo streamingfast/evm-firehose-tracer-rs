@@ -51,6 +51,23 @@ COPY . .
 
 RUN cargo build --release -p monad-tracer
 
+# Intermediate stage to extract monad binaries
+FROM monad-bft AS monad-bft-extractor
+RUN mkdir -p /extracted/bin /extracted/lib && \
+    find / -type f -executable -name "monad-node" 2>/dev/null | head -1 | xargs -I {} cp {} /extracted/bin/monad-node 2>/dev/null || true && \
+    find /usr/local/lib /usr/lib -name "*.so*" -type f 2>/dev/null | grep -vE "(libc\.so|libpthread\.so|libdl\.so|libm\.so|librt\.so|libresolv\.so|libutil\.so|libnss_)" | xargs -I {} cp {} /extracted/lib/ 2>/dev/null || true
+
+FROM monad-execution AS monad-execution-extractor
+RUN mkdir -p /extracted/bin /extracted/lib && \
+    find / -type f -executable -name "monad" 2>/dev/null | head -1 | xargs -I {} cp {} /extracted/bin/monad 2>/dev/null || true && \
+    find / -type f -executable -name "monad_mpt" 2>/dev/null | head -1 | xargs -I {} cp {} /extracted/bin/monad_mpt 2>/dev/null || true && \
+    find /usr/local/lib /usr/lib -name "*.so*" -type f 2>/dev/null | grep -vE "(libc\.so|libpthread\.so|libdl\.so|libm\.so|librt\.so|libresolv\.so|libutil\.so|libnss_)" | xargs -I {} cp {} /extracted/lib/ 2>/dev/null || true
+
+FROM monad-rpc AS monad-rpc-extractor
+RUN mkdir -p /extracted/bin /extracted/lib && \
+    find / -type f -executable -name "monad-rpc" 2>/dev/null | head -1 | xargs -I {} cp {} /extracted/bin/monad-rpc 2>/dev/null || true && \
+    find /usr/local/lib /usr/lib -name "*.so*" -type f 2>/dev/null | grep -vE "(libc\.so|libpthread\.so|libdl\.so|libm\.so|librt\.so|libresolv\.so|libutil\.so|libnss_)" | xargs -I {} cp {} /extracted/lib/ 2>/dev/null || true
+
 # Final image with all binaries
 FROM ubuntu:24.04
 
@@ -64,19 +81,15 @@ RUN apt-get update && apt-get install -y \
     procps \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy monad binaries and libraries
-RUN --mount=type=bind,from=monad-bft,target=/mnt/monad-bft \
-    --mount=type=bind,from=monad-execution,target=/mnt/monad-execution \
-    --mount=type=bind,from=monad-rpc,target=/mnt/monad-rpc \
-    set -x && \
-    find /mnt/monad-bft -type f -executable -name "monad-node" | while read f; do cp "$f" /app/monad-node; done || true && \
-    find /mnt/monad-execution -type f -executable -name "monad" | while read f; do cp "$f" /app/monad; done || true && \
-    find /mnt/monad-execution -type f -executable -name "monad_mpt" | while read f; do cp "$f" /app/monad_mpt; done || true && \
-    find /mnt/monad-rpc -type f -executable -name "monad-rpc" | while read f; do cp "$f" /app/monad-rpc; done || true && \
-    find /mnt/monad-bft/usr/local/lib /mnt/monad-bft/usr/lib -name "*.so*" -type f 2>/dev/null | grep -vE "(libc\.so|libpthread\.so|libdl\.so|libm\.so|librt\.so|libresolv\.so|libutil\.so|libnss_)" | while read f; do cp "$f" /usr/local/lib/ 2>/dev/null || true; done && \
-    find /mnt/monad-execution/usr/local/lib /mnt/monad-execution/usr/lib -name "*.so*" -type f 2>/dev/null | grep -vE "(libc\.so|libpthread\.so|libdl\.so|libm\.so|librt\.so|libresolv\.so|libutil\.so|libnss_)" | while read f; do cp "$f" /usr/local/lib/ 2>/dev/null || true; done && \
-    find /mnt/monad-rpc/usr/local/lib /mnt/monad-rpc/usr/lib -name "*.so*" -type f 2>/dev/null | grep -vE "(libc\.so|libpthread\.so|libdl\.so|libm\.so|librt\.so|libresolv\.so|libutil\.so|libnss_)" | while read f; do cp "$f" /usr/local/lib/ 2>/dev/null || true; done && \
-    rm -f /usr/local/lib/libc.so* /usr/local/lib/libpthread.so* /usr/local/lib/libdl.so* /usr/local/lib/libm.so* /usr/local/lib/librt.so* /usr/local/lib/libresolv.so* /usr/local/lib/libutil.so* /usr/local/lib/libnss_*
+# Copy extracted monad binaries
+COPY --from=monad-bft-extractor /extracted/bin/* /app/
+COPY --from=monad-execution-extractor /extracted/bin/* /app/
+COPY --from=monad-rpc-extractor /extracted/bin/* /app/
+
+# Copy shared libraries
+COPY --from=monad-bft-extractor /extracted/lib/* /usr/local/lib/
+COPY --from=monad-execution-extractor /extracted/lib/* /usr/local/lib/
+COPY --from=monad-rpc-extractor /extracted/lib/* /usr/local/lib/
 
 # Copy tracer and fireeth
 COPY --from=tracer-builder /build/target/release/monad-firehose-tracer /app/monad-firehose-tracer
