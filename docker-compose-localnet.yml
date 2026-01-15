@@ -37,7 +37,7 @@ services:
     environment:
       LD_LIBRARY_PATH: /usr/local/lib
     ports:
-      - "8000:8000"  # BFT P2P port
+      - "18000:8000"
     privileged: true
     networks:
       - monad-localnet
@@ -79,7 +79,7 @@ services:
     environment:
       LD_LIBRARY_PATH: /usr/local/lib
     ports:
-      - "8080:8080"  # JSON-RPC port
+      - "18080:8080"
     depends_on:
       - consensus
       - execution
