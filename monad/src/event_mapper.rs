@@ -849,6 +849,9 @@ impl BlockBuilder {
     /// Build call tree from call frames
     /// Converts flat list of call frames into hierarchical Call structures
     fn build_call_tree(call_frames: &[CallFrameData], _txn_index: usize) -> Vec<pb::sf::ethereum::r#type::v2::Call> {
+        use pb::sf::ethereum::r#type::v2::gas_change::Reason as GasReason;
+        use pb::sf::ethereum::r#type::v2::GasChange;
+
         // Track parent indices based on depth changes
         // parent_stack[depth] = index of call at that depth
         let mut parent_stack: Vec<u32> = Vec::new();
@@ -910,6 +913,56 @@ impl BlockBuilder {
                 _ => format!("unknown error (status {})", frame.evmc_status),
             };
 
+            // Add gas changes for this call
+            let mut gas_changes = Vec::new();
+
+            // For the root call (depth 0), add TX_INITIAL_BALANCE
+            if depth == 0 && frame.gas > 0 {
+                gas_changes.push(GasChange {
+                    old_value: 0,
+                    new_value: frame.gas,
+                    reason: GasReason::TxInitialBalance as i32,
+                    ordinal: 0, // Will be assigned later
+                });
+            }
+
+            // For child calls (depth > 0), add CALL_INITIAL_BALANCE
+            if depth > 0 && frame.gas > 0 {
+                gas_changes.push(GasChange {
+                    old_value: 0,
+                    new_value: frame.gas,
+                    reason: GasReason::CallInitialBalance as i32,
+                    ordinal: 0, // Will be assigned later
+                });
+            }
+
+            // Add gas consumption for all calls that consumed gas
+            if frame.gas_used > 0 {
+                let remaining_gas = frame.gas.saturating_sub(frame.gas_used);
+
+                // Determine the gas consumption reason based on call type
+                let gas_reason = if depth == 0 {
+                    GasReason::IntrinsicGas
+                } else {
+                    // For nested calls, use CALL or CALL_CODE depending on opcode
+                    match frame.opcode {
+                        0xF1 => GasReason::Call,           // CALL
+                        0xF2 => GasReason::CallCode,       // CALLCODE
+                        0xF4 => GasReason::DelegateCall,   // DELEGATECALL
+                        0xFA => GasReason::StaticCall,     // STATICCALL
+                        0xF0 | 0xF5 => GasReason::Call,    // CREATE / CREATE2 - use Call as fallback
+                        _ => GasReason::Call,              // Default
+                    }
+                };
+
+                gas_changes.push(GasChange {
+                    old_value: frame.gas,
+                    new_value: remaining_gas,
+                    reason: gas_reason as i32,
+                    ordinal: 0, // Will be assigned later
+                });
+            }
+
             pb::sf::ethereum::r#type::v2::Call {
                 index: frame.index,
                 parent_index,
@@ -927,6 +980,7 @@ impl BlockBuilder {
                 status_failed,
                 status_reverted,
                 failure_reason,
+                gas_changes,
                 ..Default::default()
             }
         }).collect()
@@ -970,6 +1024,8 @@ impl BlockBuilder {
     }
 
     /// Populate balance changes, nonce changes, and storage changes from account accesses
+    /// NOTE: Gas changes are now handled per-call in build_call_tree, so this function
+    /// only adds balance changes, nonce changes, and storage changes.
     #[allow(clippy::too_many_arguments)]
     fn populate_state_changes_from_accesses(
         call: &mut pb::sf::ethereum::r#type::v2::Call,
@@ -984,26 +1040,7 @@ impl BlockBuilder {
         coinbase: &[u8],
     ) {
         use pb::sf::ethereum::r#type::v2::balance_change::Reason as BalanceReason;
-        use pb::sf::ethereum::r#type::v2::gas_change::Reason as GasReason;
-        use pb::sf::ethereum::r#type::v2::{BalanceChange, GasChange, NonceChange, StorageChange};
-
-        // Add gas changes first
-        // TX_INITIAL_BALANCE: 0 -> gas_limit
-        call.gas_changes.push(GasChange {
-            old_value: 0,
-            new_value: gas_limit,
-            reason: GasReason::TxInitialBalance as i32,
-            ordinal: 0,
-        });
-
-        // INTRINSIC_GAS: gas_limit -> remaining
-        let intrinsic_gas = std::cmp::min(gas_used, gas_limit);
-        call.gas_changes.push(GasChange {
-            old_value: gas_limit,
-            new_value: gas_limit.saturating_sub(intrinsic_gas),
-            reason: GasReason::IntrinsicGas as i32,
-            ordinal: 0,
-        });
+        use pb::sf::ethereum::r#type::v2::{BalanceChange, NonceChange, StorageChange};
 
         // Calculate gas cost for GAS_BUY balance change
         let gas_cost = if let Some(gp) = gas_price {
