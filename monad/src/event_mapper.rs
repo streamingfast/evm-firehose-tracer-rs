@@ -91,6 +91,52 @@ fn compare_u256_bytes(a: &[u8], b: &[u8]) -> i32 {
     0
 }
 
+/// Multiply a u256 (big-endian bytes) by a u64
+fn multiply_u256_by_u64(a: &[u8], b: u64) -> Vec<u8> {
+    if a.is_empty() || b == 0 {
+        return vec![];
+    }
+
+    // Pad a to 32 bytes
+    let mut a_padded = [0u8; 32];
+    let a_start = 32 - a.len();
+    a_padded[a_start..].copy_from_slice(a);
+
+    // Result can be up to 40 bytes (32 + 8), but we'll use 40 for safety
+    let mut result = [0u128; 5]; // Use u128 for intermediate calculations
+
+    // Multiply each byte by b
+    let b_128 = b as u128;
+    for i in (0..32).rev() {
+        let product = (a_padded[i] as u128) * b_128;
+        let result_idx = 4 - (31 - i) / 8;
+        let shift = ((31 - i) % 8) * 8;
+
+        // Add the shifted product to result
+        let shifted = product << shift;
+        result[result_idx] = result[result_idx].wrapping_add(shifted & 0xFFFFFFFFFFFFFFFF);
+        if result_idx > 0 {
+            result[result_idx - 1] = result[result_idx - 1].wrapping_add(shifted >> 64);
+        }
+    }
+
+    // Handle carries
+    for i in (1..5).rev() {
+        let carry = result[i] >> 64;
+        result[i] &= 0xFFFFFFFFFFFFFFFF;
+        result[i - 1] = result[i - 1].wrapping_add(carry);
+    }
+    result[0] &= 0xFFFFFFFFFFFFFFFF;
+
+    // Convert to bytes
+    let mut bytes = Vec::with_capacity(40);
+    for val in &result {
+        bytes.extend_from_slice(&(*val as u64).to_be_bytes());
+    }
+
+    compact_bytes(bytes)
+}
+
 /// Ensure address bytes are 20 bytes (zero-pad if empty)
 fn ensure_address_bytes(bytes: Vec<u8>) -> Vec<u8> {
     if bytes.is_empty() {
@@ -867,12 +913,210 @@ impl BlockBuilder {
         }
     }
 
+    /// Add basic gas changes to a call (TX_INITIAL_BALANCE and INTRINSIC_GAS)
+    fn add_basic_gas_changes(call: &mut pb::sf::ethereum::r#type::v2::Call, gas_limit: u64, gas_used: u64) {
+        use pb::sf::ethereum::r#type::v2::gas_change::Reason as GasReason;
+        use pb::sf::ethereum::r#type::v2::GasChange;
+
+        // TX_INITIAL_BALANCE: 0 -> gas_limit
+        call.gas_changes.push(GasChange {
+            old_value: 0,
+            new_value: gas_limit,
+            reason: GasReason::TxInitialBalance as i32,
+            ordinal: 0, // Will be assigned later
+        });
+
+        // INTRINSIC_GAS: gas_limit -> (gas_limit - intrinsic_gas)
+        // For pure transfers, intrinsic gas is typically 21000
+        let intrinsic_gas = std::cmp::min(gas_used, gas_limit);
+        call.gas_changes.push(GasChange {
+            old_value: gas_limit,
+            new_value: gas_limit.saturating_sub(intrinsic_gas),
+            reason: GasReason::IntrinsicGas as i32,
+            ordinal: 0, // Will be assigned later
+        });
+    }
+
+    /// Populate balance changes, nonce changes, and storage changes from account accesses
+    #[allow(clippy::too_many_arguments)]
+    fn populate_state_changes_from_accesses(
+        call: &mut pb::sf::ethereum::r#type::v2::Call,
+        account_accesses: &[AccountAccessData],
+        storage_accesses: Option<&Vec<StorageAccessData>>,
+        from: &[u8],
+        to: &[u8],
+        value: Option<&BigInt>,
+        gas_limit: u64,
+        gas_used: u64,
+        gas_price: Option<&BigInt>,
+        coinbase: &[u8],
+    ) {
+        use pb::sf::ethereum::r#type::v2::balance_change::Reason as BalanceReason;
+        use pb::sf::ethereum::r#type::v2::gas_change::Reason as GasReason;
+        use pb::sf::ethereum::r#type::v2::{BalanceChange, GasChange, NonceChange, StorageChange};
+
+        // Add gas changes first
+        // TX_INITIAL_BALANCE: 0 -> gas_limit
+        call.gas_changes.push(GasChange {
+            old_value: 0,
+            new_value: gas_limit,
+            reason: GasReason::TxInitialBalance as i32,
+            ordinal: 0,
+        });
+
+        // INTRINSIC_GAS: gas_limit -> remaining
+        let intrinsic_gas = std::cmp::min(gas_used, gas_limit);
+        call.gas_changes.push(GasChange {
+            old_value: gas_limit,
+            new_value: gas_limit.saturating_sub(intrinsic_gas),
+            reason: GasReason::IntrinsicGas as i32,
+            ordinal: 0,
+        });
+
+        // Calculate gas cost for GAS_BUY balance change
+        let gas_cost = if let Some(gp) = gas_price {
+            // gas_cost = gas_limit * gas_price
+            multiply_u256_by_u64(&gp.bytes, gas_limit)
+        } else {
+            vec![]
+        };
+
+        // Process account accesses for balance and nonce changes
+        for access in account_accesses {
+            let address = ensure_address_bytes(access.address.clone());
+
+            // Add nonce change if modified
+            if access.is_nonce_modified {
+                call.nonce_changes.push(NonceChange {
+                    address: address.clone(),
+                    old_value: access.prestate_nonce,
+                    new_value: access.modified_nonce,
+                    ordinal: 0,
+                });
+            }
+
+            // Add balance change if modified
+            if access.is_balance_modified {
+                let old_balance = access.prestate_balance.clone();
+                let new_balance = access.modified_balance.clone();
+
+                // Determine the reason based on the address
+                let reason = if address == from {
+                    // Check if this is a gas buy (balance decreased by gas cost)
+                    // or a transfer (balance decreased by value)
+                    if !gas_cost.is_empty() && compare_u256_bytes(&old_balance, &new_balance) > 0 {
+                        // First balance change for sender is typically GAS_BUY
+                        if call.balance_changes.iter().all(|bc| bc.address != address || bc.reason != BalanceReason::GasBuy as i32) {
+                            BalanceReason::GasBuy
+                        } else {
+                            BalanceReason::Transfer
+                        }
+                    } else {
+                        BalanceReason::Transfer
+                    }
+                } else if address == to {
+                    BalanceReason::Transfer
+                } else if address == coinbase {
+                    BalanceReason::RewardTransactionFee
+                } else {
+                    BalanceReason::Unknown
+                };
+
+                call.balance_changes.push(BalanceChange {
+                    address,
+                    old_value: Some(BigInt { bytes: old_balance }),
+                    new_value: Some(BigInt { bytes: new_balance }),
+                    reason: reason as i32,
+                    ordinal: 0,
+                });
+            }
+        }
+
+        // If we have a value transfer and no transfer balance changes were added, add them
+        if let Some(val) = value {
+            if !val.bytes.is_empty() && val.bytes != vec![0u8] {
+                let has_sender_transfer = call.balance_changes.iter().any(|bc| {
+                    bc.address == from && bc.reason == BalanceReason::Transfer as i32
+                });
+                let has_receiver_transfer = call.balance_changes.iter().any(|bc| {
+                    bc.address == to && bc.reason == BalanceReason::Transfer as i32
+                });
+
+                // Add sender transfer if missing
+                if !has_sender_transfer && !from.is_empty() {
+                    call.balance_changes.push(BalanceChange {
+                        address: from.to_vec(),
+                        old_value: Some(BigInt { bytes: val.bytes.clone() }),
+                        new_value: Some(BigInt { bytes: vec![] }),
+                        reason: BalanceReason::Transfer as i32,
+                        ordinal: 0,
+                    });
+                }
+
+                // Add receiver transfer if missing
+                if !has_receiver_transfer && !to.is_empty() {
+                    call.balance_changes.push(BalanceChange {
+                        address: to.to_vec(),
+                        old_value: Some(BigInt { bytes: vec![] }),
+                        new_value: Some(BigInt { bytes: val.bytes.clone() }),
+                        reason: BalanceReason::Transfer as i32,
+                        ordinal: 0,
+                    });
+                }
+            }
+        }
+
+        // Add transaction fee reward to coinbase if not already present
+        if !coinbase.is_empty() {
+            let has_fee_reward = call.balance_changes.iter().any(|bc| {
+                bc.address == coinbase && bc.reason == BalanceReason::RewardTransactionFee as i32
+            });
+
+            if !has_fee_reward && gas_used > 0 {
+                // Calculate fee = gas_used * gas_price
+                let fee = if let Some(gp) = gas_price {
+                    multiply_u256_by_u64(&gp.bytes, gas_used)
+                } else {
+                    vec![]
+                };
+
+                if !fee.is_empty() {
+                    call.balance_changes.push(BalanceChange {
+                        address: coinbase.to_vec(),
+                        old_value: Some(BigInt { bytes: vec![] }),
+                        new_value: Some(BigInt { bytes: fee }),
+                        reason: BalanceReason::RewardTransactionFee as i32,
+                        ordinal: 0,
+                    });
+                }
+            }
+        }
+
+        // Process storage accesses
+        if let Some(storages) = storage_accesses {
+            for storage in storages {
+                if storage.modified && !storage.transient {
+                    call.storage_changes.push(StorageChange {
+                        address: ensure_address_bytes(storage.address.clone()),
+                        key: ensure_hash_bytes(storage.key.clone()),
+                        old_value: ensure_hash_bytes(storage.start_value.clone()),
+                        new_value: ensure_hash_bytes(storage.end_value.clone()),
+                        ordinal: 0,
+                    });
+                }
+            }
+        }
+    }
+
     /// Finalize the block and return it
     fn finalize(mut self) -> Result<Block> {
         debug!("Finalizing block {}", self.block_number);
 
-        // Extract call_frames before consuming transactions_map
+        // Extract data before consuming transactions_map
         let call_frames = self.call_frames;
+        let account_accesses = self.account_accesses;
+        let storage_accesses = self.storage_accesses;
+        let coinbase = self.coinbase.clone();
 
         // Move transactions from map to vec, sorted by index
         let mut transactions: Vec<TransactionTrace> = self
@@ -899,12 +1143,8 @@ impl BlockBuilder {
             .collect();
         transactions.sort_by_key(|tx| tx.index);
 
-        // Build call trees for each transaction with call frames
-        let total_call_frames: usize = call_frames.values().map(|v| v.len()).sum();
-        if total_call_frames > 0 {
-            debug!("Building call trees for {} transactions with {} total call frames", call_frames.len(), total_call_frames);
-        }
-
+        // Build call trees for each transaction
+        // If no call frames exist, create a synthetic root call
         for tx in &mut transactions {
             let txn_index = tx.index as usize;
 
@@ -914,25 +1154,107 @@ impl BlockBuilder {
                     tx.calls = Self::build_call_tree(frames, txn_index);
                 }
             }
+
+            // If no calls exist, create a synthetic root call
+            // This is needed for pure ETH transfers and other transactions without EVM execution
+            if tx.calls.is_empty() {
+                debug!("Creating synthetic root call for tx #{}", txn_index);
+                let root_call = pb::sf::ethereum::r#type::v2::Call {
+                    index: 1,
+                    parent_index: 0,
+                    depth: 0,
+                    call_type: if tx.to.is_empty() || tx.to == vec![0u8; 20] {
+                        pb::sf::ethereum::r#type::v2::CallType::Create as i32
+                    } else {
+                        pb::sf::ethereum::r#type::v2::CallType::Call as i32
+                    },
+                    caller: tx.from.clone(),
+                    address: tx.to.clone(),
+                    value: tx.value.clone(),
+                    gas_limit: 0, // Pure transfers don't consume call gas
+                    gas_consumed: 0,
+                    return_data: Vec::new(),
+                    input: tx.input.clone(),
+                    executed_code: false,
+                    suicide: false,
+                    status_failed: tx.status != 1, // 1 = success
+                    status_reverted: false,
+                    failure_reason: String::new(),
+                    state_reverted: false,
+                    ..Default::default()
+                };
+                tx.calls.push(root_call);
+            }
+
+            // Populate balance changes and nonce changes from account accesses
+            if let Some(accesses) = account_accesses.get(&txn_index) {
+                if let Some(root_call) = tx.calls.first_mut() {
+                    Self::populate_state_changes_from_accesses(
+                        root_call,
+                        accesses,
+                        storage_accesses.get(&txn_index),
+                        &tx.from,
+                        &tx.to,
+                        tx.value.as_ref(),
+                        tx.gas_limit,
+                        tx.gas_used,
+                        tx.gas_price.as_ref(),
+                        &coinbase,
+                    );
+                }
+            } else {
+                // Even without account accesses, add basic gas changes for the root call
+                if let Some(root_call) = tx.calls.first_mut() {
+                    Self::add_basic_gas_changes(root_call, tx.gas_limit, tx.gas_used);
+                }
+            }
         }
 
-        // Assign ordinals to transactions, calls, and logs
+        // Assign ordinals to transactions, calls, and all state changes
         for tx in &mut transactions {
             tx.begin_ordinal = self.next_ordinal;
             self.next_ordinal += 1;
 
-            // Assign ordinals to calls in execution order
+            // Assign ordinals to calls and their state changes
             for call in &mut tx.calls {
                 call.begin_ordinal = self.next_ordinal;
                 self.next_ordinal += 1;
 
-                // Ordinals for call's storage changes, balance changes, nonce changes, logs, etc.
-                // For now just end ordinal
+                // Assign ordinals to gas changes
+                for gas_change in &mut call.gas_changes {
+                    gas_change.ordinal = self.next_ordinal;
+                    self.next_ordinal += 1;
+                }
+
+                // Assign ordinals to nonce changes
+                for nonce_change in &mut call.nonce_changes {
+                    nonce_change.ordinal = self.next_ordinal;
+                    self.next_ordinal += 1;
+                }
+
+                // Assign ordinals to balance changes
+                for balance_change in &mut call.balance_changes {
+                    balance_change.ordinal = self.next_ordinal;
+                    self.next_ordinal += 1;
+                }
+
+                // Assign ordinals to storage changes
+                for storage_change in &mut call.storage_changes {
+                    storage_change.ordinal = self.next_ordinal;
+                    self.next_ordinal += 1;
+                }
+
+                // Assign ordinals to logs
+                for log in &mut call.logs {
+                    log.ordinal = self.next_ordinal;
+                    self.next_ordinal += 1;
+                }
+
                 call.end_ordinal = self.next_ordinal;
                 self.next_ordinal += 1;
             }
 
-            // Assign ordinals to logs
+            // Assign ordinals to receipt logs (duplicate from calls for compatibility)
             if let Some(ref mut receipt) = tx.receipt {
                 for log in &mut receipt.logs {
                     log.ordinal = self.next_ordinal;
@@ -971,7 +1293,7 @@ impl BlockBuilder {
             blob_gas_used: Some(0),
             excess_blob_gas: Some(0),
             parent_beacon_root: vec![0u8; 32],
-            requests_hash: vec![],
+            requests_hash: vec![0u8; 32],
         };
 
         let total_calls: usize = transactions.iter().map(|tx| tx.calls.len()).sum();
