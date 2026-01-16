@@ -617,8 +617,8 @@ impl BlockBuilder {
             s,
             r#type: txn_type as i32,
             access_list: access_list_entries,
-            begin_ordinal: 0,
-            end_ordinal: 0,
+            begin_ordinal: 0, // Will be properly set during finalization
+            end_ordinal: 0,   // Will be properly set during finalization
             ..Default::default()
         };
 
@@ -1098,6 +1098,32 @@ impl BlockBuilder {
             }
         }
 
+        // Add gas refund balance change if gas was not fully consumed
+        if gas_limit > gas_used && !from.is_empty() {
+            let has_gas_refund = call.balance_changes.iter().any(|bc| {
+                bc.address == from && bc.reason == BalanceReason::GasRefund as i32
+            });
+
+            if !has_gas_refund {
+                // Calculate refund = (gas_limit - gas_used) * gas_price
+                let refund_amount = if let Some(gp) = gas_price {
+                    multiply_u256_by_u64(&gp.bytes, gas_limit - gas_used)
+                } else {
+                    vec![]
+                };
+
+                if !refund_amount.is_empty() {
+                    call.balance_changes.push(BalanceChange {
+                        address: from.to_vec(),
+                        old_value: Some(BigInt { bytes: vec![] }),
+                        new_value: Some(BigInt { bytes: refund_amount }),
+                        reason: BalanceReason::GasRefund as i32,
+                        ordinal: 0,
+                    });
+                }
+            }
+        }
+
         // Add transaction fee reward to coinbase if not already present
         if !coinbase.is_empty() {
             let has_fee_reward = call.balance_changes.iter().any(|bc| {
@@ -1250,57 +1276,122 @@ impl BlockBuilder {
         }
 
         // Assign ordinals to transactions, calls, and all state changes
+        // The ordering must match EVM execution order for extended blocks
         for tx in &mut transactions {
+            // Transaction begins at current ordinal
             tx.begin_ordinal = self.next_ordinal;
             self.next_ordinal += 1;
 
-            // Assign ordinals to calls and their state changes
+            // Process calls and their state changes in execution order
             for call in &mut tx.calls {
-                call.begin_ordinal = self.next_ordinal;
-                self.next_ordinal += 1;
-
-                // Assign ordinals to gas changes
+                // Gas changes come first (TX_INITIAL_BALANCE, INTRINSIC_GAS, etc.)
                 for gas_change in &mut call.gas_changes {
                     gas_change.ordinal = self.next_ordinal;
                     self.next_ordinal += 1;
                 }
 
-                // Assign ordinals to nonce changes
+                // Balance changes must be ordered by execution sequence:
+                // 1. GAS_BUY (before call)
+                // 2. TRANSFER (during call)
+                // 3. GAS_REFUND (after call ends)
+                // 4. REWARD_TRANSACTION_FEE (at transaction end)
+                use pb::sf::ethereum::r#type::v2::balance_change::Reason;
+
+                let mut gas_buy_changes = Vec::new();
+                let mut transfer_changes = Vec::new();
+                let mut gas_refund_changes = Vec::new();
+                let mut reward_changes = Vec::new();
+                let mut other_changes = Vec::new();
+
+                for bc in call.balance_changes.drain(..) {
+                    match bc.reason {
+                        r if r == Reason::GasBuy as i32 => gas_buy_changes.push(bc),
+                        r if r == Reason::Transfer as i32 => transfer_changes.push(bc),
+                        r if r == Reason::GasRefund as i32 => gas_refund_changes.push(bc),
+                        r if r == Reason::RewardTransactionFee as i32 => reward_changes.push(bc),
+                        _ => other_changes.push(bc),
+                    }
+                }
+
+                // Assign ordinals to gas buy changes first (before call execution)
+                for mut balance_change in gas_buy_changes {
+                    balance_change.ordinal = self.next_ordinal;
+                    self.next_ordinal += 1;
+                    call.balance_changes.push(balance_change);
+                }
+
+                // Nonce changes happen at transaction start
                 for nonce_change in &mut call.nonce_changes {
                     nonce_change.ordinal = self.next_ordinal;
                     self.next_ordinal += 1;
                 }
 
-                // Assign ordinals to balance changes
-                for balance_change in &mut call.balance_changes {
+                // Call begins after transaction initialization
+                call.begin_ordinal = self.next_ordinal;
+                self.next_ordinal += 1;
+
+                // Transfer balance changes happen during call execution
+                for mut balance_change in transfer_changes {
                     balance_change.ordinal = self.next_ordinal;
                     self.next_ordinal += 1;
+                    call.balance_changes.push(balance_change);
                 }
 
-                // Assign ordinals to storage changes
+                // Other balance changes
+                for mut balance_change in other_changes {
+                    balance_change.ordinal = self.next_ordinal;
+                    self.next_ordinal += 1;
+                    call.balance_changes.push(balance_change);
+                }
+
+                // Storage changes happen during execution
                 for storage_change in &mut call.storage_changes {
                     storage_change.ordinal = self.next_ordinal;
                     self.next_ordinal += 1;
                 }
 
-                // Assign ordinals to logs
+                // Logs happen during execution
                 for log in &mut call.logs {
                     log.ordinal = self.next_ordinal;
                     self.next_ordinal += 1;
                 }
 
+                // Call ends
                 call.end_ordinal = self.next_ordinal;
                 self.next_ordinal += 1;
-            }
 
-            // Assign ordinals to receipt logs (duplicate from calls for compatibility)
-            if let Some(ref mut receipt) = tx.receipt {
-                for log in &mut receipt.logs {
-                    log.ordinal = self.next_ordinal;
-                    self.next_ordinal += 1;
+                // Gas refund happens after call ends (for root call only)
+                if call.depth == 0 {
+                    for mut balance_change in gas_refund_changes {
+                        balance_change.ordinal = self.next_ordinal;
+                        self.next_ordinal += 1;
+                        call.balance_changes.push(balance_change);
+                    }
+
+                    // Transaction fee reward is the last balance change
+                    for mut balance_change in reward_changes {
+                        balance_change.ordinal = self.next_ordinal;
+                        self.next_ordinal += 1;
+                        call.balance_changes.push(balance_change);
+                    }
                 }
             }
 
+            // Assign ordinals to receipt logs (these should match call logs, so reuse ordinals)
+            // Find matching ordinals from call logs
+            let call_log_ordinals: Vec<u64> = tx.calls.iter()
+                .flat_map(|call| call.logs.iter().map(|log| log.ordinal))
+                .collect();
+
+            if let Some(ref mut receipt) = tx.receipt {
+                for (i, log) in receipt.logs.iter_mut().enumerate() {
+                    if i < call_log_ordinals.len() {
+                        log.ordinal = call_log_ordinals[i];
+                    }
+                }
+            }
+
+            // Transaction ends
             tx.end_ordinal = self.next_ordinal;
             self.next_ordinal += 1;
         }
