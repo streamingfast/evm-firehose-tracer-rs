@@ -601,6 +601,16 @@ impl BlockBuilder {
             gas_limit,
             value: Some(BigInt { bytes: value }),
             gas_price: Some(BigInt { bytes: gas_price }),
+            max_fee_per_gas: if txn_type == 2 {
+                Some(BigInt { bytes: u256_limbs_to_bytes(&max_fee_limbs) })
+            } else {
+                None
+            },
+            max_priority_fee_per_gas: if txn_type == 2 {
+                Some(BigInt { bytes: u256_limbs_to_bytes(&max_priority_fee_limbs) })
+            } else {
+                None
+            },
             input,
             v,
             r,
@@ -721,6 +731,9 @@ impl BlockBuilder {
 
         let access_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
 
+        // DEBUG: Log raw account access data
+        debug!("Raw account access data: {}", serde_json::to_string_pretty(&access_data).unwrap_or_default());
+
         // txn_index is Option<usize> from the event
         // If None, these are block-level changes (associate with transaction 0)
         let txn_index = access_data["txn_index"].as_u64().map(|i| i as usize).unwrap_or(0);
@@ -735,17 +748,36 @@ impl BlockBuilder {
             .map(|arr| arr.iter().map(|v| v.as_u64().unwrap_or(0)).collect::<Vec<u64>>())
             .unwrap_or_else(|| vec![0u64; 4]);
 
+        debug!("Parsed balance limbs - prestate: {:?}, modified: {:?}", prestate_balance_limbs, modified_balance_limbs);
+
+        let prestate_balance_bytes = u256_limbs_to_bytes(&prestate_balance_limbs);
+        let modified_balance_bytes = u256_limbs_to_bytes(&modified_balance_limbs);
+
+        debug!("Balance bytes - prestate: {} bytes, modified: {} bytes",
+               prestate_balance_bytes.len(), modified_balance_bytes.len());
+        if !prestate_balance_bytes.is_empty() {
+            debug!("  prestate hex: {}", hex::encode(&prestate_balance_bytes));
+        }
+        if !modified_balance_bytes.is_empty() {
+            debug!("  modified hex: {}", hex::encode(&modified_balance_bytes));
+        }
+
         let account_access = AccountAccessData {
             index: access_data["index"].as_u64().unwrap_or(0) as u32,
             address: hex::decode(access_data["address"].as_str().unwrap_or("")).unwrap_or_default(),
             is_balance_modified: access_data["is_balance_modified"].as_bool().unwrap_or(false),
             is_nonce_modified: access_data["is_nonce_modified"].as_bool().unwrap_or(false),
-            prestate_balance: u256_limbs_to_bytes(&prestate_balance_limbs),
+            prestate_balance: prestate_balance_bytes,
             prestate_nonce: access_data["prestate"]["nonce"].as_u64().unwrap_or(0),
-            modified_balance: u256_limbs_to_bytes(&modified_balance_limbs),
+            modified_balance: modified_balance_bytes,
             modified_nonce: access_data["modified_nonce"].as_u64().unwrap_or(0),
             storage_key_count: access_data["storage_key_count"].as_u64().unwrap_or(0) as u32,
         };
+
+        debug!("Created AccountAccessData - address: {}, balance_modified: {}, nonce_modified: {}",
+               hex::encode(&account_access.address),
+               account_access.is_balance_modified,
+               account_access.is_nonce_modified);
 
         self.account_accesses.entry(txn_index).or_default().push(account_access);
 
@@ -1188,6 +1220,7 @@ impl BlockBuilder {
 
             // Populate balance changes and nonce changes from account accesses
             if let Some(accesses) = account_accesses.get(&txn_index) {
+                debug!("Tx #{}: Found {} account accesses", txn_index, accesses.len());
                 if let Some(root_call) = tx.calls.first_mut() {
                     Self::populate_state_changes_from_accesses(
                         root_call,
@@ -1201,8 +1234,14 @@ impl BlockBuilder {
                         tx.gas_price.as_ref(),
                         &coinbase,
                     );
+                    debug!("Tx #{}: After populate - {} balance changes, {} nonce changes, {} gas changes",
+                           txn_index,
+                           root_call.balance_changes.len(),
+                           root_call.nonce_changes.len(),
+                           root_call.gas_changes.len());
                 }
             } else {
+                debug!("Tx #{}: No account accesses found", txn_index);
                 // Even without account accesses, add basic gas changes for the root call
                 if let Some(root_call) = tx.calls.first_mut() {
                     Self::add_basic_gas_changes(root_call, tx.gas_limit, tx.gas_used);
