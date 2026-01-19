@@ -1291,68 +1291,36 @@ impl BlockBuilder {
             tx.begin_ordinal = self.next_ordinal;
             self.next_ordinal += 1;
 
-            // First, assign ordinals to the root call's state changes (transaction-level changes)
-            // These come before any call ordinals
-            if let Some(root_call) = tx.calls.first_mut() {
-                // Assign ordinals to gas changes
-                for gas_change in &mut root_call.gas_changes {
-                    gas_change.ordinal = self.next_ordinal;
-                    self.next_ordinal += 1;
-                }
-
-                // Assign ordinals to balance changes
-                for balance_change in &mut root_call.balance_changes {
-                    balance_change.ordinal = self.next_ordinal;
-                    self.next_ordinal += 1;
-                }
-
-                // Assign ordinals to nonce changes
-                for nonce_change in &mut root_call.nonce_changes {
-                    nonce_change.ordinal = self.next_ordinal;
-                    self.next_ordinal += 1;
-                }
-
-                // Assign ordinals to storage changes
-                for storage_change in &mut root_call.storage_changes {
-                    storage_change.ordinal = self.next_ordinal;
-                    self.next_ordinal += 1;
-                }
-            }
-
-            // Now assign ordinals to calls and their state changes
+            // Assign ordinals to calls and their state changes
             for call in &mut tx.calls {
                 call.begin_ordinal = self.next_ordinal;
                 self.next_ordinal += 1;
 
-                // For non-root calls (depth > 0), assign ordinals to their state changes
-                // Root call state changes were already assigned above
-                if call.depth > 0 {
-                    // Assign ordinals to gas changes
-                    for gas_change in &mut call.gas_changes {
-                        gas_change.ordinal = self.next_ordinal;
-                        self.next_ordinal += 1;
-                    }
-
-                    // Assign ordinals to nonce changes
-                    for nonce_change in &mut call.nonce_changes {
-                        nonce_change.ordinal = self.next_ordinal;
-                        self.next_ordinal += 1;
-                    }
-
-                    // Assign ordinals to balance changes
-                    for balance_change in &mut call.balance_changes {
-                        balance_change.ordinal = self.next_ordinal;
-                        self.next_ordinal += 1;
-                    }
-
-                    // Assign ordinals to storage changes
-                    for storage_change in &mut call.storage_changes {
-                        storage_change.ordinal = self.next_ordinal;
-                        self.next_ordinal += 1;
-                    }
+                // Assign ordinals to gas changes
+                for gas_change in &mut call.gas_changes {
+                    gas_change.ordinal = self.next_ordinal;
+                    self.next_ordinal += 1;
                 }
 
-                // Assign ordinals to logs (for all calls)
+                // Assign ordinals to nonce changes
+                for nonce_change in &mut call.nonce_changes {
+                    nonce_change.ordinal = self.next_ordinal;
+                    self.next_ordinal += 1;
+                }
+
+                // Assign ordinals to balance changes
+                for balance_change in &mut call.balance_changes {
+                    balance_change.ordinal = self.next_ordinal;
+                    self.next_ordinal += 1;
+                }
+
+                // Assign ordinals to storage changes
+                for storage_change in &mut call.storage_changes {
+                    storage_change.ordinal = self.next_ordinal;
+                    self.next_ordinal += 1;
+                }
+
+                // Assign ordinals to logs
                 for log in &mut call.logs {
                     log.ordinal = self.next_ordinal;
                     self.next_ordinal += 1;
