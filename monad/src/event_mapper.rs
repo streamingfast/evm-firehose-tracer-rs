@@ -1026,6 +1026,7 @@ impl BlockBuilder {
     /// Populate balance changes, nonce changes, and storage changes from account accesses
     /// NOTE: Gas changes are now handled per-call in build_call_tree, so this function
     /// only adds balance changes, nonce changes, and storage changes.
+    /// Returns true if a suicide (SELFDESTRUCT) was detected.
     #[allow(clippy::too_many_arguments)]
     fn populate_state_changes_from_accesses(
         call: &mut pb::sf::ethereum::r#type::v2::Call,
@@ -1038,9 +1039,11 @@ impl BlockBuilder {
         gas_used: u64,
         gas_price: Option<&BigInt>,
         coinbase: &[u8],
-    ) {
+    ) -> bool {
         use pb::sf::ethereum::r#type::v2::balance_change::Reason as BalanceReason;
         use pb::sf::ethereum::r#type::v2::{BalanceChange, NonceChange, StorageChange};
+
+        let mut has_suicide = false;
 
         // Calculate gas cost for GAS_BUY balance change
         let gas_cost = if let Some(gp) = gas_price {
@@ -1069,8 +1072,16 @@ impl BlockBuilder {
                 let old_balance = access.prestate_balance.clone();
                 let new_balance = access.modified_balance.clone();
 
-                // Determine the reason based on the address
-                let reason = if address == from {
+                // Check if this is a SELFDESTRUCT (suicide): balance goes to exactly 0 from non-zero
+                let is_balance_zero = new_balance.is_empty() || new_balance.iter().all(|&b| b == 0);
+                let was_balance_nonzero = !old_balance.is_empty() && old_balance.iter().any(|&b| b != 0);
+                let is_suicide_withdraw = is_balance_zero && was_balance_nonzero && address == to;
+
+                // Determine the reason based on the address and suicide detection
+                let reason = if is_suicide_withdraw {
+                    has_suicide = true;
+                    BalanceReason::SuicideWithdraw
+                } else if address == from {
                     // Check if this is a gas buy (balance decreased by gas cost)
                     // or a transfer (balance decreased by value)
                     if !gas_cost.is_empty() && compare_u256_bytes(&old_balance, &new_balance) > 0 {
@@ -1087,6 +1098,9 @@ impl BlockBuilder {
                     BalanceReason::Transfer
                 } else if address == coinbase {
                     BalanceReason::RewardTransactionFee
+                } else if address == from && has_suicide {
+                    // If we already detected suicide, this is likely the beneficiary receiving funds
+                    BalanceReason::SuicideRefund
                 } else {
                     BalanceReason::Unknown
                 };
@@ -1175,6 +1189,8 @@ impl BlockBuilder {
                 }
             }
         }
+
+        has_suicide
     }
 
     /// Finalize the block and return it
@@ -1259,7 +1275,7 @@ impl BlockBuilder {
             if let Some(accesses) = account_accesses.get(&txn_index) {
                 debug!("Tx #{}: Found {} account accesses", txn_index, accesses.len());
                 if let Some(root_call) = tx.calls.first_mut() {
-                    Self::populate_state_changes_from_accesses(
+                    let has_suicide = Self::populate_state_changes_from_accesses(
                         root_call,
                         accesses,
                         storage_accesses.get(&txn_index),
@@ -1271,11 +1287,14 @@ impl BlockBuilder {
                         tx.gas_price.as_ref(),
                         &coinbase,
                     );
-                    debug!("Tx #{}: After populate - {} balance changes, {} nonce changes, {} gas changes",
+                    // Set suicide flag if detected
+                    root_call.suicide = has_suicide;
+                    debug!("Tx #{}: After populate - {} balance changes, {} nonce changes, {} gas changes, suicide={}",
                            txn_index,
                            root_call.balance_changes.len(),
                            root_call.nonce_changes.len(),
-                           root_call.gas_changes.len());
+                           root_call.gas_changes.len(),
+                           has_suicide);
                 }
             } else {
                 debug!("Tx #{}: No account accesses found", txn_index);
