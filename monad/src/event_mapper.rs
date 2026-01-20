@@ -808,7 +808,8 @@ impl BlockBuilder {
         // txn_index is Option<usize> from the event
         // If None, these are block-level changes (associate with transaction 0)
         let txn_index = storage_data["txn_index"].as_u64().map(|i| i as usize).unwrap_or(0);
-        let account_index = storage_data["account_index"].as_u64().unwrap_or(0) as u32;
+        // access_context: 0=BLOCK_PROLOGUE, 1=TRANSACTION, 2=BLOCK_EPILOGUE
+        let access_context = storage_data["access_context"].as_u64().unwrap_or(1) as u8;
 
         let storage_access = StorageAccessData {
             address: hex::decode(storage_data["address"].as_str().unwrap_or("")).unwrap_or_default(),
@@ -820,12 +821,8 @@ impl BlockBuilder {
             end_value: hex::decode(storage_data["end_value"].as_str().unwrap_or("")).unwrap_or_default(),
         };
 
-        // Check if this storage access belongs to a BLOCK_PROLOGUE account access
-        let is_system_call_storage = self.system_calls_account_accesses
-            .iter()
-            .any(|acc| acc.index == account_index && acc.address == storage_access.address);
-
-        if is_system_call_storage {
+        // BLOCK_PROLOGUE (context = 0) storage accesses are system call related
+        if access_context == 0 {
             debug!("BLOCK_PROLOGUE storage access detected for address: {}", hex::encode(&storage_access.address));
             self.system_calls_storage_accesses.push(storage_access);
         } else {
@@ -1224,7 +1221,6 @@ impl BlockBuilder {
     fn create_system_call(
         &self,
         to_address: Vec<u8>,
-        input_data: Vec<u8>,
         account_accesses: Vec<&AccountAccessData>,
         all_storage_accesses: &[StorageAccessData],
         index: u32,
@@ -1250,7 +1246,7 @@ impl BlockBuilder {
             gas_limit: 30_000_000,
             gas_consumed: 0,
             return_data: Vec::new(),
-            input: input_data,
+            input: Vec::new(),
             executed_code: true,
             suicide: false,
             status_failed: false,
@@ -1334,16 +1330,8 @@ impl BlockBuilder {
 
             // Create a system call for each unique system contract address
             for (address, accesses) in system_calls_by_address {
-                // For system calls, the input is the data passed to the contract
-                // For beacon root (EIP-4788): input is the parent_beacon_block_root
-                // For history storage (EIP-2935): input is the parent_hash
-                // We don't have this data from Monad events, so we leave input empty for now
-                // TODO: Monad needs to emit parent_beacon_block_root and parent_hash in events
-                let input_data = vec![];
-
                 let call = self.create_system_call(
                     address,
-                    input_data,
                     accesses,
                     &self.system_calls_storage_accesses,
                     system_calls.len() as u32,

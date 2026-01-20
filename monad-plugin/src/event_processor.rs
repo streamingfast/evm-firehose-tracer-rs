@@ -590,6 +590,7 @@ impl EventProcessor {
             "txn_index": txn_index,
             "account_index": account_index,
             "address": hex::encode(storage_access.address.bytes),
+            "access_context": storage_access.access_context,
             "index": storage_access.index,
             "modified": storage_access.modified,
             "transient": storage_access.transient,
