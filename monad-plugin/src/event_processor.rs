@@ -543,6 +543,7 @@ impl EventProcessor {
             "txn_index": txn_index,
             "index": account_access.index,
             "address": hex::encode(account_access.address.bytes),
+            "access_context": account_access.access_context,
             "is_balance_modified": account_access.is_balance_modified,
             "is_nonce_modified": account_access.is_nonce_modified,
             "prestate": {

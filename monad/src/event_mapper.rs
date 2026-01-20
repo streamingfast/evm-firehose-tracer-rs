@@ -257,6 +257,7 @@ struct CallFrameData {
 struct AccountAccessData {
     index: u32,
     address: Vec<u8>,
+    access_context: u8,
     is_balance_modified: bool,
     is_nonce_modified: bool,
     prestate_balance: Vec<u8>,
@@ -306,6 +307,9 @@ struct BlockBuilder {
     call_frames: std::collections::HashMap<usize, Vec<CallFrameData>>,
     account_accesses: std::collections::HashMap<usize, Vec<AccountAccessData>>,
     storage_accesses: std::collections::HashMap<usize, Vec<StorageAccessData>>,
+    // System transactions from BLOCK_PROLOGUE
+    system_calls_account_accesses: Vec<AccountAccessData>,
+    system_calls_storage_accesses: Vec<StorageAccessData>,
 }
 
 /// Builder for constructing Firehose blocks from events
@@ -338,6 +342,8 @@ impl BlockBuilder {
             call_frames: std::collections::HashMap::new(),
             account_accesses: std::collections::HashMap::new(),
             storage_accesses: std::collections::HashMap::new(),
+            system_calls_account_accesses: Vec::new(),
+            system_calls_storage_accesses: Vec::new(),
         }
     }
 
@@ -765,6 +771,7 @@ impl BlockBuilder {
         let account_access = AccountAccessData {
             index: access_data["index"].as_u64().unwrap_or(0) as u32,
             address: hex::decode(access_data["address"].as_str().unwrap_or("")).unwrap_or_default(),
+            access_context: access_data["access_context"].as_u64().unwrap_or(1) as u8,
             is_balance_modified: access_data["is_balance_modified"].as_bool().unwrap_or(false),
             is_nonce_modified: access_data["is_nonce_modified"].as_bool().unwrap_or(false),
             prestate_balance: prestate_balance_bytes,
@@ -774,12 +781,20 @@ impl BlockBuilder {
             storage_key_count: access_data["storage_key_count"].as_u64().unwrap_or(0) as u32,
         };
 
-        debug!("Created AccountAccessData - address: {}, balance_modified: {}, nonce_modified: {}",
+        debug!("Created AccountAccessData - address: {}, access_context: {}, balance_modified: {}, nonce_modified: {}",
                hex::encode(&account_access.address),
+               account_access.access_context,
                account_access.is_balance_modified,
                account_access.is_nonce_modified);
 
-        self.account_accesses.entry(txn_index).or_default().push(account_access);
+        // BLOCK_PROLOGUE (context = 0) are system calls that should be separate from transactions
+        if account_access.access_context == 0 {
+            debug!("BLOCK_PROLOGUE account access detected for address: {}", hex::encode(&account_access.address));
+            self.system_calls_account_accesses.push(account_access);
+        } else {
+            // Regular transaction account accesses
+            self.account_accesses.entry(txn_index).or_default().push(account_access);
+        }
 
         Ok(())
     }
@@ -793,6 +808,7 @@ impl BlockBuilder {
         // txn_index is Option<usize> from the event
         // If None, these are block-level changes (associate with transaction 0)
         let txn_index = storage_data["txn_index"].as_u64().map(|i| i as usize).unwrap_or(0);
+        let account_index = storage_data["account_index"].as_u64().unwrap_or(0) as u32;
 
         let storage_access = StorageAccessData {
             address: hex::decode(storage_data["address"].as_str().unwrap_or("")).unwrap_or_default(),
@@ -804,7 +820,17 @@ impl BlockBuilder {
             end_value: hex::decode(storage_data["end_value"].as_str().unwrap_or("")).unwrap_or_default(),
         };
 
-        self.storage_accesses.entry(txn_index).or_default().push(storage_access);
+        // Check if this storage access belongs to a BLOCK_PROLOGUE account access
+        let is_system_call_storage = self.system_calls_account_accesses
+            .iter()
+            .any(|acc| acc.index == account_index && acc.address == storage_access.address);
+
+        if is_system_call_storage {
+            debug!("BLOCK_PROLOGUE storage access detected for address: {}", hex::encode(&storage_access.address));
+            self.system_calls_storage_accesses.push(storage_access);
+        } else {
+            self.storage_accesses.entry(txn_index).or_default().push(storage_access);
+        }
 
         Ok(())
     }
@@ -1193,18 +1219,152 @@ impl BlockBuilder {
         has_suicide
     }
 
+    /// Create a system transaction from BLOCK_PROLOGUE account/storage accesses
+    fn create_system_transaction(
+        &self,
+        to_address: Vec<u8>,
+        account_accesses: Vec<&AccountAccessData>,
+        all_storage_accesses: &[StorageAccessData],
+        index: u32,
+    ) -> TransactionTrace {
+        use pb::sf::ethereum::r#type::v2::{BalanceChange, NonceChange, StorageChange};
+        use pb::sf::ethereum::r#type::v2::balance_change::Reason as BalanceReason;
+
+        debug!("Creating system transaction for address: {}", hex::encode(&to_address));
+
+        // System transactions are synthetic - they represent block-level state changes
+        // from system contract execution during block header processing
+        let mut tx = TransactionTrace {
+            index,
+            hash: vec![],  // System calls don't have transaction hashes
+            from: vec![0u8; 20],  // System caller (address zero)
+            to: to_address.clone(),
+            nonce: 0,
+            gas_limit: 0,
+            gas_used: 0,
+            value: Some(BigInt { bytes: vec![] }),
+            gas_price: Some(BigInt { bytes: vec![] }),
+            input: vec![],
+            v: vec![],
+            r: vec![],
+            s: vec![],
+            status: 1,  // Success
+            r#type: 0,  // Legacy type
+            begin_ordinal: 0,
+            end_ordinal: 0,
+            ..Default::default()
+        };
+
+        // Create a synthetic root call for the system transaction
+        let mut root_call = pb::sf::ethereum::r#type::v2::Call {
+            index: 1,
+            parent_index: 0,
+            depth: 0,
+            call_type: pb::sf::ethereum::r#type::v2::CallType::Call as i32,
+            caller: vec![0u8; 20],
+            address: to_address.clone(),
+            value: Some(BigInt { bytes: vec![] }),
+            gas_limit: 0,
+            gas_consumed: 0,
+            return_data: Vec::new(),
+            input: vec![],
+            executed_code: true,
+            suicide: false,
+            status_failed: false,
+            status_reverted: false,
+            failure_reason: String::new(),
+            state_reverted: false,
+            ..Default::default()
+        };
+
+        // Add balance and nonce changes from account accesses
+        for access in account_accesses {
+            if access.is_balance_modified {
+                root_call.balance_changes.push(BalanceChange {
+                    address: access.address.clone(),
+                    old_value: Some(BigInt { bytes: access.prestate_balance.clone() }),
+                    new_value: Some(BigInt { bytes: access.modified_balance.clone() }),
+                    reason: BalanceReason::Unknown as i32,
+                    ordinal: 0,
+                });
+            }
+
+            if access.is_nonce_modified {
+                root_call.nonce_changes.push(NonceChange {
+                    address: access.address.clone(),
+                    old_value: access.prestate_nonce,
+                    new_value: access.modified_nonce,
+                    ordinal: 0,
+                });
+            }
+        }
+
+        // Add storage changes that belong to this address
+        for storage in all_storage_accesses {
+            if storage.address == to_address && storage.modified && !storage.transient {
+                root_call.storage_changes.push(StorageChange {
+                    address: ensure_address_bytes(storage.address.clone()),
+                    key: ensure_hash_bytes(storage.key.clone()),
+                    old_value: ensure_hash_bytes(storage.start_value.clone()),
+                    new_value: ensure_hash_bytes(storage.end_value.clone()),
+                    ordinal: 0,
+                });
+            }
+        }
+
+        tx.calls.push(root_call);
+
+        // Create a synthetic receipt
+        tx.receipt = Some(pb::sf::ethereum::r#type::v2::TransactionReceipt {
+            cumulative_gas_used: 0,
+            logs_bloom: vec![0u8; 256],
+            logs: Vec::new(),
+            ..Default::default()
+        });
+
+        tx
+    }
+
     /// Finalize the block and return it
     fn finalize(mut self) -> Result<Block> {
         debug!("Finalizing block {}", self.block_number);
 
-        // Extract data before consuming transactions_map
+        // Create system transactions from BLOCK_PROLOGUE account/storage accesses FIRST
+        // (before extracting other data)
+        let mut system_transactions = Vec::new();
+
+        if !self.system_calls_account_accesses.is_empty() {
+            debug!("Creating system transactions for {} BLOCK_PROLOGUE account accesses",
+                   self.system_calls_account_accesses.len());
+
+            // Group account accesses by address to create one transaction per system contract
+            let mut system_calls_by_address: std::collections::HashMap<Vec<u8>, Vec<&AccountAccessData>> =
+                std::collections::HashMap::new();
+
+            for acc in &self.system_calls_account_accesses {
+                system_calls_by_address.entry(acc.address.clone()).or_default().push(acc);
+            }
+
+            // Create a transaction for each unique system contract address
+            for (address, accesses) in system_calls_by_address {
+                let tx = self.create_system_transaction(
+                    address,
+                    accesses,
+                    &self.system_calls_storage_accesses,
+                    system_transactions.len() as u32,
+                );
+                system_transactions.push(tx);
+            }
+        }
+
+        // Extract data after creating system transactions
         let call_frames = self.call_frames;
         let account_accesses = self.account_accesses;
         let storage_accesses = self.storage_accesses;
         let coinbase = self.coinbase.clone();
 
         // Move transactions from map to vec, sorted by index
-        let mut transactions: Vec<TransactionTrace> = self
+        let mut regular_transactions: Vec<TransactionTrace> = self
             .transactions_map.into_values().map(|tx| {
                 let mut tx = tx;
 
@@ -1226,14 +1386,32 @@ impl BlockBuilder {
                 tx
             })
             .collect();
-        transactions.sort_by_key(|tx| tx.index);
+        regular_transactions.sort_by_key(|tx| tx.index);
+
+        // Prepend system transactions and re-index all transactions
+        let num_system_txs = system_transactions.len() as u32;
+        let mut transactions = system_transactions;
+
+        // Re-index regular transactions to account for system transactions
+        for tx in &mut regular_transactions {
+            tx.index += num_system_txs;
+        }
+        transactions.extend(regular_transactions);
 
         // Build call trees for each transaction
         // If no call frames exist, create a synthetic root call
         for tx in &mut transactions {
             let txn_index = tx.index as usize;
 
-            if let Some(frames) = call_frames.get(&txn_index) {
+            // System transactions already have calls created, skip call tree building for them
+            if txn_index < num_system_txs as usize {
+                continue;
+            }
+
+            // For regular transactions, adjust the index to look up in the original map
+            let original_txn_index = txn_index - num_system_txs as usize;
+
+            if let Some(frames) = call_frames.get(&original_txn_index) {
                 if !frames.is_empty() {
                     debug!("Building call tree for tx #{} with {} frames", txn_index, frames.len());
                     tx.calls = Self::build_call_tree(frames, txn_index);
@@ -1272,35 +1450,38 @@ impl BlockBuilder {
             }
 
             // Populate balance changes and nonce changes from account accesses
-            if let Some(accesses) = account_accesses.get(&txn_index) {
-                debug!("Tx #{}: Found {} account accesses", txn_index, accesses.len());
-                if let Some(root_call) = tx.calls.first_mut() {
-                    let has_suicide = Self::populate_state_changes_from_accesses(
-                        root_call,
-                        accesses,
-                        storage_accesses.get(&txn_index),
-                        &tx.from,
-                        &tx.to,
-                        tx.value.as_ref(),
-                        tx.gas_limit,
-                        tx.gas_used,
-                        tx.gas_price.as_ref(),
-                        &coinbase,
-                    );
-                    // Set suicide flag if detected
-                    root_call.suicide = has_suicide;
-                    debug!("Tx #{}: After populate - {} balance changes, {} nonce changes, {} gas changes, suicide={}",
-                           txn_index,
-                           root_call.balance_changes.len(),
-                           root_call.nonce_changes.len(),
-                           root_call.gas_changes.len(),
-                           has_suicide);
-                }
-            } else {
-                debug!("Tx #{}: No account accesses found", txn_index);
-                // Even without account accesses, add basic gas changes for the root call
-                if let Some(root_call) = tx.calls.first_mut() {
-                    Self::add_basic_gas_changes(root_call, tx.gas_limit, tx.gas_used);
+            // Skip for system transactions (they already have state changes populated)
+            if txn_index >= num_system_txs as usize {
+                if let Some(accesses) = account_accesses.get(&original_txn_index) {
+                    debug!("Tx #{}: Found {} account accesses", txn_index, accesses.len());
+                    if let Some(root_call) = tx.calls.first_mut() {
+                        let has_suicide = Self::populate_state_changes_from_accesses(
+                            root_call,
+                            accesses,
+                            storage_accesses.get(&original_txn_index),
+                            &tx.from,
+                            &tx.to,
+                            tx.value.as_ref(),
+                            tx.gas_limit,
+                            tx.gas_used,
+                            tx.gas_price.as_ref(),
+                            &coinbase,
+                        );
+                        // Set suicide flag if detected
+                        root_call.suicide = has_suicide;
+                        debug!("Tx #{}: After populate - {} balance changes, {} nonce changes, {} gas changes, suicide={}",
+                               txn_index,
+                               root_call.balance_changes.len(),
+                               root_call.nonce_changes.len(),
+                               root_call.gas_changes.len(),
+                               has_suicide);
+                    }
+                } else {
+                    debug!("Tx #{}: No account accesses found", txn_index);
+                    // Even without account accesses, add basic gas changes for the root call
+                    if let Some(root_call) = tx.calls.first_mut() {
+                        Self::add_basic_gas_changes(root_call, tx.gas_limit, tx.gas_used);
+                    }
                 }
             }
         }
