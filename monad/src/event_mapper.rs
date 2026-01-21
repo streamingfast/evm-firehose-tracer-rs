@@ -1528,8 +1528,8 @@ impl BlockBuilder {
             base_fee_per_gas: Some(BigInt { bytes: u256_limbs_to_bytes(&self.base_fee_per_gas) }),
             withdrawals_root: self.withdrawals_root,
             tx_dependency: None,
-            blob_gas_used: Some(0),
-            excess_blob_gas: Some(0),
+            blob_gas_used: None,  // Monad doesn't support EIP-4844 blob transactions
+            excess_blob_gas: None,  // Monad doesn't support EIP-4844 blob transactions
             parent_beacon_root: vec![0u8; 32],
             requests_hash: vec![0u8; 32],
         };
