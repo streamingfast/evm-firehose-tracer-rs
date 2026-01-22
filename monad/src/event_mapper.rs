@@ -310,6 +310,7 @@ struct BlockBuilder {
     // System transactions from BLOCK_PROLOGUE
     system_calls_account_accesses: Vec<AccountAccessData>,
     system_calls_storage_accesses: Vec<StorageAccessData>,
+    system_calls_call_frames: Vec<CallFrameData>,
 }
 
 /// Builder for constructing Firehose blocks from events
@@ -344,6 +345,7 @@ impl BlockBuilder {
             storage_accesses: std::collections::HashMap::new(),
             system_calls_account_accesses: Vec::new(),
             system_calls_storage_accesses: Vec::new(),
+            system_calls_call_frames: Vec::new(),
         }
     }
 
@@ -705,8 +707,6 @@ impl BlockBuilder {
 
         let call_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
 
-        let txn_index = call_data["txn_index"].as_u64().unwrap_or(0) as usize;
-
         let value_limbs = call_data["value"]["limbs"]
             .as_array()
             .map(|arr| arr.iter().map(|v| v.as_u64().unwrap_or(0)).collect::<Vec<u64>>())
@@ -726,7 +726,16 @@ impl BlockBuilder {
             return_data: hex::decode(call_data["return_data"].as_str().unwrap_or("")).unwrap_or_default(),
         };
 
-        self.call_frames.entry(txn_index).or_default().push(call_frame);
+        // Check if this is a system call (BLOCK_PROLOGUE) by checking if txn_index is present
+        // System calls from our C++ changes are block-level events without a txn_index
+        if let Some(txn_index) = call_data["txn_index"].as_u64() {
+            // Regular transaction call frame
+            self.call_frames.entry(txn_index as usize).or_default().push(call_frame);
+        } else {
+            // System call frame (BLOCK_PROLOGUE) - store separately
+            debug!("BLOCK_PROLOGUE call frame detected for address: {}", hex::encode(&call_frame.call_target));
+            self.system_calls_call_frames.push(call_frame);
+        }
 
         Ok(())
     }
@@ -1216,13 +1225,14 @@ impl BlockBuilder {
         has_suicide
     }
 
-    /// Create a system call from BLOCK_PROLOGUE account/storage accesses
+    /// Create a system call from BLOCK_PROLOGUE account/storage accesses and call frames
     /// System calls go into block.system_calls, not as transactions
     fn create_system_call(
         &self,
         to_address: Vec<u8>,
         account_accesses: Vec<&AccountAccessData>,
         all_storage_accesses: &[StorageAccessData],
+        all_call_frames: &[CallFrameData],
         index: u32,
     ) -> pb::sf::ethereum::r#type::v2::Call {
         use pb::sf::ethereum::r#type::v2::{BalanceChange, NonceChange, StorageChange};
@@ -1235,6 +1245,17 @@ impl BlockBuilder {
         // System address is 0xfffffffffffffffffffffffffffffffffffffffe
         let system_caller = hex::decode("fffffffffffffffffffffffffffffffffffffffe").unwrap();
 
+        // Find the call frame for this system call by matching the call_target address
+        let call_frame = all_call_frames.iter().find(|frame| frame.call_target == to_address);
+
+        // Extract input data from call frame if available
+        let input = call_frame.map(|frame| frame.input.clone()).unwrap_or_default();
+
+        debug!("System call input data: {} bytes", input.len());
+        if !input.is_empty() {
+            debug!("System call input hex: {}", hex::encode(&input));
+        }
+
         let mut call = pb::sf::ethereum::r#type::v2::Call {
             index,
             parent_index: 0,
@@ -1246,7 +1267,7 @@ impl BlockBuilder {
             gas_limit: 30_000_000,
             gas_consumed: 0,
             return_data: Vec::new(),
-            input: Vec::new(),
+            input,
             executed_code: true,
             suicide: false,
             status_failed: false,
@@ -1334,6 +1355,7 @@ impl BlockBuilder {
                     address,
                     accesses,
                     &self.system_calls_storage_accesses,
+                    &self.system_calls_call_frames,
                     system_calls.len() as u32,
                 );
                 system_calls.push(call);
