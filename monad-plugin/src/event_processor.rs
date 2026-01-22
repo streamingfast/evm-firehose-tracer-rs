@@ -118,8 +118,14 @@ impl EventProcessor {
                 input_bytes,
                 return_bytes,
             } => {
-                self.process_txn_call_frame(txn_call_frame, input_bytes, return_bytes, txn_index, block_number)
-                    .await
+                // System calls (block prologue) have no txn_index, skip them for now
+                match txn_index {
+                    Some(idx) => {
+                        self.process_txn_call_frame(txn_call_frame, input_bytes, return_bytes, idx, block_number)
+                            .await
+                    }
+                    None => Ok(None),
+                }
             }
             ExecEvent::AccountAccessListHeader { txn_index, account_access_list_header } => {
                 self.process_account_access_list_header(account_access_list_header, txn_index, block_number).await
