@@ -118,14 +118,8 @@ impl EventProcessor {
                 input_bytes,
                 return_bytes,
             } => {
-                // System calls (block prologue) have no txn_index, skip them for now
-                match txn_index {
-                    Some(idx) => {
-                        self.process_txn_call_frame(txn_call_frame, input_bytes, return_bytes, idx, block_number)
-                            .await
-                    }
-                    None => Ok(None),
-                }
+                self.process_txn_call_frame(txn_call_frame, input_bytes, return_bytes, txn_index, block_number)
+                    .await
             }
             ExecEvent::AccountAccessListHeader { txn_index, account_access_list_header } => {
                 self.process_account_access_list_header(account_access_list_header, txn_index, block_number).await
@@ -462,13 +456,20 @@ impl EventProcessor {
         call_frame: monad_exec_events::ffi::monad_exec_txn_call_frame,
         input_bytes: Box<[u8]>,
         return_bytes: Box<[u8]>,
-        txn_index: usize,
+        txn_index: Option<usize>,
         block_number: u64,
     ) -> Result<Option<ProcessedEvent>> {
-        debug!(
-            "CallFrame: tx #{}, depth={}, opcode={:#x}, gas={}, status={}",
-            txn_index, call_frame.depth, call_frame.opcode, call_frame.gas, call_frame.evmc_status
-        );
+        if let Some(idx) = txn_index {
+            debug!(
+                "CallFrame: tx #{}, depth={}, opcode={:#x}, gas={}, status={}",
+                idx, call_frame.depth, call_frame.opcode, call_frame.gas, call_frame.evmc_status
+            );
+        } else {
+            debug!(
+                "CallFrame (system call): depth={}, opcode={:#x}, gas={}, status={}",
+                call_frame.depth, call_frame.opcode, call_frame.gas, call_frame.evmc_status
+            );
+        }
 
         let event_type = EVENT_TYPE_TX_CALL_FRAME;
 
