@@ -379,7 +379,10 @@ impl BlockBuilder {
 
         // Extract all header fields
         if let Some(parent_hash) = block_data["parent_hash"].as_str() {
+            debug!("BLOCK_START parent_hash for block {}: {}", event.block_number, parent_hash);
             self.parent_hash = ensure_hash_bytes(hex::decode(parent_hash).unwrap_or_default());
+        } else {
+            debug!("BLOCK_START has no parent_hash field for block {}", event.block_number);
         }
         if let Some(uncle_hash) = block_data["uncle_hash"].as_str() {
             self.uncle_hash = ensure_hash_bytes(hex::decode(uncle_hash).unwrap_or_default());
@@ -427,7 +430,10 @@ impl BlockBuilder {
         let block_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
 
         if let Some(hash) = block_data["hash"].as_str() {
+            debug!("BLOCK_END hash for block {}: {}", event.block_number, hash);
             self.block_hash = ensure_hash_bytes(hex::decode(hash).unwrap_or_default());
+        } else {
+            debug!("BLOCK_END has no hash field for block {}", event.block_number);
         }
         if let Some(state_root) = block_data["state_root"].as_str() {
             self.state_root = ensure_hash_bytes(hex::decode(state_root).unwrap_or_default());
@@ -1695,6 +1701,29 @@ impl BlockBuilder {
             "Finalized extended block #{}: {} txs, {} calls, {} logs, {} system_calls",
             self.block_number, block.transaction_traces.len(), total_calls, total_logs, block.system_calls.len()
         );
+
+        // Debug: Log final block hash and parent hash
+        debug!(
+            "Block #{} final hashes: block_hash={}, parent_hash={}",
+            self.block_number,
+            hex::encode(&block.hash),
+            if let Some(ref header) = block.header {
+                hex::encode(&header.parent_hash)
+            } else {
+                "NO_HEADER".to_string()
+            }
+        );
+
+        // Debug: Log all system calls with their inputs
+        for (i, syscall) in block.system_calls.iter().enumerate() {
+            debug!(
+                "Block #{} SystemCall {}: address={}, input={}",
+                self.block_number,
+                i,
+                hex::encode(&syscall.address),
+                hex::encode(&syscall.input)
+            );
+        }
 
         Ok(block)
     }

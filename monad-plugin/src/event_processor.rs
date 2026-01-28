@@ -143,9 +143,10 @@ impl EventProcessor {
         block_start: monad_exec_events::ffi::monad_exec_block_start,
         block_number: u64,
     ) -> Result<Option<ProcessedEvent>> {
+        let parent_hash_hex = hex::encode(block_start.parent_eth_hash.bytes);
         debug!(
-            "BlockStart: block #{}, timestamp={}",
-            block_number, block_start.eth_block_input.timestamp
+            "BlockStart: block #{}, timestamp={}, parent_hash={}",
+            block_number, block_start.eth_block_input.timestamp, parent_hash_hex
         );
 
         let event_type = EVENT_TYPE_BLOCK_START;
@@ -155,7 +156,7 @@ impl EventProcessor {
         let nonce = u64::from_le_bytes(block_start.eth_block_input.nonce.bytes);
 
         let block_data = serde_json::json!({
-            "parent_hash": hex::encode(block_start.parent_eth_hash.bytes),
+            "parent_hash": parent_hash_hex,
             "uncle_hash": hex::encode(block_start.eth_block_input.ommers_hash.bytes),
             "coinbase": hex::encode(block_start.eth_block_input.beneficiary.bytes),
             "transactions_root": hex::encode(block_start.eth_block_input.transactions_root.bytes),
@@ -187,16 +188,17 @@ impl EventProcessor {
         block_end: monad_exec_events::ffi::monad_exec_block_end,
         block_number: u64,
     ) -> Result<Option<ProcessedEvent>> {
+        let block_hash_hex = hex::encode(block_end.eth_block_hash.bytes);
         debug!(
-            "BlockEnd: block #{}, gas_used={}",
-            block_number, block_end.exec_output.gas_used
+            "BlockEnd: block #{}, gas_used={}, block_hash={}",
+            block_number, block_end.exec_output.gas_used, block_hash_hex
         );
 
         let event_type = EVENT_TYPE_BLOCK_END;
 
         // Extract all execution output fields
         let block_data = serde_json::json!({
-            "hash": hex::encode(block_end.eth_block_hash.bytes),
+            "hash": block_hash_hex,
             "state_root": hex::encode(block_end.exec_output.state_root.bytes),
             "receipts_root": hex::encode(block_end.exec_output.receipts_root.bytes),
             "logs_bloom": hex::encode(block_end.exec_output.logs_bloom.bytes),
@@ -465,9 +467,11 @@ impl EventProcessor {
                 idx, call_frame.depth, call_frame.opcode, call_frame.gas, call_frame.evmc_status
             );
         } else {
+            let input_hex = hex::encode(&*input_bytes);
+            let target_hex = hex::encode(call_frame.call_target.bytes);
             debug!(
-                "CallFrame (system call): depth={}, opcode={:#x}, gas={}, status={}",
-                call_frame.depth, call_frame.opcode, call_frame.gas, call_frame.evmc_status
+                "CallFrame (system call): depth={}, opcode={:#x}, gas={}, status={}, target={}, input={}",
+                call_frame.depth, call_frame.opcode, call_frame.gas, call_frame.evmc_status, target_hex, input_hex
             );
         }
 
