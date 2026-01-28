@@ -82,6 +82,18 @@ impl FirehosePrinter {
 
         debug!("Printed FIRE BLOCK for block {}", block.number);
 
+        // Debug: Log system calls
+        if !block.system_calls.is_empty() {
+            debug!("Block {} has {} system calls:", block.number, block.system_calls.len());
+            for (i, call) in block.system_calls.iter().enumerate() {
+                debug!("  SystemCall {}: caller={}, address={}, input={}",
+                       i,
+                       hex::encode(&call.caller),
+                       hex::encode(&call.address),
+                       hex::encode(&call.input));
+            }
+        }
+
         Ok(())
     }
 
