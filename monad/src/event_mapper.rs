@@ -1451,6 +1451,11 @@ impl BlockBuilder {
             debug!("Creating system calls from {} call frames (no account accesses available)",
                    self.system_calls_call_frames.len());
 
+            for (i, frame) in self.system_calls_call_frames.iter().enumerate() {
+                debug!("Frame {}: address={}, input={} bytes, input_hex={}",
+                       i, hex::encode(&frame.call_target), frame.input.len(), hex::encode(&frame.input));
+            }
+
             // Create system calls from call frames alone
             // Group by call target address
             let mut frames_by_address: std::collections::HashMap<Vec<u8>, Vec<&CallFrameData>> =
