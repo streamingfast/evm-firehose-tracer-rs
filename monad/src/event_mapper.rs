@@ -712,6 +712,12 @@ impl BlockBuilder {
             .map(|arr| arr.iter().map(|v| v.as_u64().unwrap_or(0)).collect::<Vec<u64>>())
             .unwrap_or_else(|| vec![0u64; 4]);
 
+        // Debug log for system calls
+        if call_data["txn_index"].is_null() {
+            debug!("System call frame raw data - input field: {:?}", call_data["input"]);
+            debug!("System call frame raw data - call_target: {:?}", call_data["call_target"]);
+        }
+
         let call_frame = CallFrameData {
             index: call_data["index"].as_u64().unwrap_or(0) as u32,
             caller: hex::decode(call_data["caller"].as_str().unwrap_or("")).unwrap_or_default(),
