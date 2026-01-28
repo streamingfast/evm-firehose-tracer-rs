@@ -1458,8 +1458,8 @@ impl BlockBuilder {
 
             // Create system calls from call frames alone
             // Group by call target address
-            let mut frames_by_address: std::collections::HashMap<Vec<u8>, Vec<&CallFrameData>> =
-                std::collections::HashMap::new();
+            let mut frames_by_address: std::collections::BTreeMap<Vec<u8>, Vec<&CallFrameData>> =
+                std::collections::BTreeMap::new();
 
             for frame in &self.system_calls_call_frames {
                 frames_by_address.entry(frame.call_target.clone()).or_default().push(frame);
