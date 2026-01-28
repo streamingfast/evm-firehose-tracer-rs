@@ -1674,15 +1674,15 @@ impl BlockBuilder {
             size: self.size,
             header: Some(header),
             transaction_traces: transactions,
-            system_calls,
+            system_calls: system_calls.clone(),
             ver: 3,
             detail_level: block::DetailLevel::DetaillevelExtended as i32,
             ..Default::default()
         };
 
         debug!(
-            "Finalized extended block #{}: {} txs, {} calls, {} logs",
-            self.block_number, block.transaction_traces.len(), total_calls, total_logs
+            "Finalized extended block #{}: {} txs, {} calls, {} logs, {} system_calls",
+            self.block_number, block.transaction_traces.len(), total_calls, total_logs, block.system_calls.len()
         );
 
         Ok(block)
