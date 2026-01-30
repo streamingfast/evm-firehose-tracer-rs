@@ -1485,35 +1485,6 @@ impl BlockBuilder {
             }
         }
 
-        // Assign ordinals to system calls before processing transactions
-        for sys_call in &mut system_calls {
-            sys_call.begin_ordinal = self.next_ordinal;
-            self.next_ordinal += 1;
-
-            for gas_change in &mut sys_call.gas_changes {
-                gas_change.ordinal = self.next_ordinal;
-                self.next_ordinal += 1;
-            }
-
-            for storage_change in &mut sys_call.storage_changes {
-                storage_change.ordinal = self.next_ordinal;
-                self.next_ordinal += 1;
-            }
-
-            for balance_change in &mut sys_call.balance_changes {
-                balance_change.ordinal = self.next_ordinal;
-                self.next_ordinal += 1;
-            }
-
-            for nonce_change in &mut sys_call.nonce_changes {
-                nonce_change.ordinal = self.next_ordinal;
-                self.next_ordinal += 1;
-            }
-
-            sys_call.end_ordinal = self.next_ordinal;
-            self.next_ordinal += 1;
-        }
-
         // Extract data after creating system calls
         let call_frames = self.call_frames;
         let account_accesses = self.account_accesses;
