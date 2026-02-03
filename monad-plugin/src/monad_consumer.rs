@@ -115,7 +115,7 @@ impl MonadConsumer {
                     let block_number = if let monad_exec_events::ExecEvent::BlockStart(ref bs) = exec_event {
                         bs.block_tag.block_number
                     } else {
-                        0 // Will be tracked by event_processor
+                        event_processor.current_block().unwrap_or(0)
                     };
 
                     // Process and send asynchronously

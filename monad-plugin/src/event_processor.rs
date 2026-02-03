@@ -53,6 +53,11 @@ impl EventProcessor {
         }
     }
 
+    /// Get the current block number being processed
+    pub fn current_block(&self) -> Option<u64> {
+        self.current_block
+    }
+
     /// Process a Monad ExecEvent into a Firehose-compatible format
     pub async fn process_monad_event(
         &mut self,
