@@ -118,7 +118,7 @@ impl EventProcessor {
                 input_bytes,
                 return_bytes,
             } => {
-                self.process_txn_call_frame(txn_call_frame, input_bytes, return_bytes, Some(txn_index), block_number)
+                self.process_txn_call_frame(txn_call_frame, input_bytes, return_bytes, txn_index, block_number)
                     .await
             }
             ExecEvent::AccountAccessListHeader(_) => {
