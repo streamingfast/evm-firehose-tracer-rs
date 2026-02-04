@@ -1287,7 +1287,7 @@ dependencies = [
 [[package]]
 name = "monad-event-ring"
 version = "0.1.0"
-source = "git+https://github.com/streamingfast/monad-bft?branch=feature%2Fadd-sys-calls#d5b711a49a33f159190cf7737023d841e83eda16"
+source = "git+https://github.com/streamingfast/monad-bft?branch=feature%2Fadd-sys-calls#46b9229d64e915674dc9068d0e2dc8690668719d"
 dependencies = [
  "bindgen",
  "cc",
@@ -1299,7 +1299,7 @@ dependencies = [
 [[package]]
 name = "monad-exec-events"
 version = "0.1.0"
-source = "git+https://github.com/streamingfast/monad-bft?branch=feature%2Fadd-sys-calls#d5b711a49a33f159190cf7737023d841e83eda16"
+source = "git+https://github.com/streamingfast/monad-bft?branch=feature%2Fadd-sys-calls#46b9229d64e915674dc9068d0e2dc8690668719d"
 dependencies = [
  "bindgen",
  "itertools 0.10.5",
