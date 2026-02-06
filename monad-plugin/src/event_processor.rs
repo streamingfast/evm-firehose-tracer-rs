@@ -40,6 +40,10 @@ pub struct EventProcessor {
     pending_access_lists: std::collections::HashMap<usize, Vec<serde_json::Value>>,
     /// Buffered transaction headers waiting for access list entries
     pending_txn_headers: std::collections::HashMap<usize, PendingTxnHeader>,
+    /// Current transaction index being processed (None for system calls/block events)
+    current_txn_index: Option<usize>,
+    /// Current account index being processed (for associating storage accesses)
+    current_account_index: u64,
 }
 
 impl EventProcessor {
@@ -50,6 +54,8 @@ impl EventProcessor {
             event_count: 0,
             pending_access_lists: std::collections::HashMap::new(),
             pending_txn_headers: std::collections::HashMap::new(),
+            current_txn_index: None,
+            current_account_index: 0,
         }
     }
 
@@ -89,6 +95,8 @@ impl EventProcessor {
                 data_bytes,
                 blob_bytes,
             } => {
+                // Set current transaction context
+                self.current_txn_index = Some(txn_index);
                 self.process_txn_header(txn_header_start, data_bytes, blob_bytes, txn_index, block_number)
                     .await
             }
@@ -103,7 +111,11 @@ impl EventProcessor {
             ExecEvent::TxnEvmOutput { txn_index, output } => {
                 self.process_txn_evm_output(output, txn_index, block_number).await
             }
-            ExecEvent::TxnEnd => self.process_txn_end(block_number).await,
+            ExecEvent::TxnEnd => {
+                // Clear current transaction context
+                self.current_txn_index = None;
+                self.process_txn_end(block_number).await
+            }
             ExecEvent::TxnLog {
                 txn_index,
                 txn_log,
@@ -127,13 +139,16 @@ impl EventProcessor {
                     .await
             }
             ExecEvent::AccountAccessListHeader(header) => {
-                self.process_account_access_list_header(header, None, block_number).await
+                self.process_account_access_list_header(header, self.current_txn_index, block_number).await
             }
             ExecEvent::AccountAccess(account_access) => {
-                self.process_account_access(account_access, None, block_number).await
+                // Update current account index for subsequent storage accesses
+                self.current_account_index = account_access.index as u64;
+                self.process_account_access(account_access, self.current_txn_index, block_number).await
             }
             ExecEvent::StorageAccess(storage_access) => {
-                self.process_storage_access(storage_access, None, 0, block_number).await
+                // Use the current account index set by the preceding AccountAccess event
+                self.process_storage_access(storage_access, self.current_txn_index, self.current_account_index, block_number).await
             }
             _ => {
                 debug!("Skipping event type: {:?}", exec_event);
