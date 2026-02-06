@@ -139,16 +139,34 @@ impl EventProcessor {
                     .await
             }
             ExecEvent::AccountAccessListHeader(header) => {
-                self.process_account_access_list_header(header, self.current_txn_index, block_number).await
+                // Check access_context: 0=BLOCK_PROLOGUE, 1=TRANSACTION, 2=BLOCK_EPILOGUE
+                // Only TRANSACTION (1) uses current_txn_index, others use None
+                let txn_index = if header.access_context == 1 {
+                    self.current_txn_index
+                } else {
+                    None
+                };
+                self.process_account_access_list_header(header, txn_index, block_number).await
             }
             ExecEvent::AccountAccess(account_access) => {
                 // Update current account index for subsequent storage accesses
                 self.current_account_index = account_access.index as u64;
-                self.process_account_access(account_access, self.current_txn_index, block_number).await
+                // Check access_context: 0=BLOCK_PROLOGUE, 1=TRANSACTION, 2=BLOCK_EPILOGUE
+                let txn_index = if account_access.access_context == 1 {
+                    self.current_txn_index
+                } else {
+                    None
+                };
+                self.process_account_access(account_access, txn_index, block_number).await
             }
             ExecEvent::StorageAccess(storage_access) => {
-                // Use the current account index set by the preceding AccountAccess event
-                self.process_storage_access(storage_access, self.current_txn_index, self.current_account_index, block_number).await
+                // Check access_context to determine if this is for a transaction or system call
+                let txn_index = if storage_access.access_context == 1 {
+                    self.current_txn_index
+                } else {
+                    None
+                };
+                self.process_storage_access(storage_access, txn_index, self.current_account_index, block_number).await
             }
             _ => {
                 debug!("Skipping event type: {:?}", exec_event);
