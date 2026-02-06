@@ -59,7 +59,7 @@ async fn test_event_mapper_block_lifecycle() -> Result<()> {
     let block = result.unwrap();
     assert_eq!(block.number, 100);
     assert!(block.header.is_some());
-    assert_eq!(block.detail_level, block::DetailLevel::DetaillevelBase as i32);
+    assert_eq!(block.detail_level, block::DetailLevel::DetaillevelExtended as i32);
 
     Ok(())
 }
@@ -297,4 +297,301 @@ fn test_block_creation() {
     assert!(block.header.is_some());
     assert_eq!(block.header.as_ref().unwrap().number, 54321);
     assert_eq!(block.ver, 1);
+}
+
+#[tokio::test]
+async fn test_transaction_with_access_list() -> Result<()> {
+    let mut mapper = EventMapper::new();
+
+    let block_start_data = r#"{
+        "parent_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "uncle_hash": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+        "coinbase": "0x0000000000000000000000000000000000000000",
+        "transactions_root": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+        "difficulty": 0,
+        "number": 400,
+        "gas_limit": 30000000,
+        "timestamp": 1234567890,
+        "extra_data": "0x",
+        "mix_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "nonce": 0,
+        "base_fee_per_gas": {"limbs": [1000, 0, 0, 0]},
+        "withdrawals_root": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
+    }"#;
+
+    mapper.process_event(ProcessedEvent {
+        block_number: 400,
+        event_type: "BLOCK_START".to_string(),
+        firehose_data: block_start_data.as_bytes().to_vec(),
+    }).await?;
+
+    let tx_header_data = r#"{
+        "txn_index": 0,
+        "hash": "0xabcdef0000000000000000000000000000000000000000000000000000000000",
+        "from": "0x1111111111111111111111111111111111111111",
+        "to": "0x2222222222222222222222222222222222222222",
+        "nonce": 5,
+        "gas_limit": 100000,
+        "value": {"limbs": [1000000000, 0, 0, 0]},
+        "max_fee_per_gas": {"limbs": [2000, 0, 0, 0]},
+        "max_priority_fee_per_gas": {"limbs": [100, 0, 0, 0]},
+        "r": {"limbs": [12345, 0, 0, 0]},
+        "s": {"limbs": [67890, 0, 0, 0]},
+        "y_parity": true,
+        "txn_type": 2,
+        "chain_id": {"limbs": [1, 0, 0, 0]},
+        "input": "0x1234",
+        "access_list_count": 2,
+        "access_list": [
+            {
+                "address": "0x3333333333333333333333333333333333333333",
+                "storage_keys": ["0x0000000000000000000000000000000000000000000000000000000000000001"]
+            },
+            {
+                "address": "0x4444444444444444444444444444444444444444",
+                "storage_keys": [
+                    "0x0000000000000000000000000000000000000000000000000000000000000002",
+                    "0x0000000000000000000000000000000000000000000000000000000000000003"
+                ]
+            }
+        ],
+        "blob_versioned_hash_length": 0,
+        "blob_hashes": "",
+        "max_fee_per_blob_gas": {"limbs": [0, 0, 0, 0]}
+    }"#;
+
+    mapper.process_event(ProcessedEvent {
+        block_number: 400,
+        event_type: "TX_HEADER".to_string(),
+        firehose_data: tx_header_data.as_bytes().to_vec(),
+    }).await?;
+
+    mapper.process_event(ProcessedEvent {
+        block_number: 400,
+        event_type: "TX_RECEIPT".to_string(),
+        firehose_data: r#"{"txn_index": 0, "status": true, "gas_used": 50000, "log_count": 0, "call_frame_count": 0}"#.as_bytes().to_vec(),
+    }).await?;
+
+    let block_end_data = r#"{
+        "hash": "0xfedcba0000000000000000000000000000000000000000000000000000000000",
+        "state_root": "0xc1e12619ef31a9b85683cdbfa5be401aa8aa591b7527ba9aaacf7efaaa0eb67b",
+        "receipts_root": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+        "logs_bloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "gas_used": 50000
+    }"#;
+
+    let result = mapper.process_event(ProcessedEvent {
+        block_number: 400,
+        event_type: "BLOCK_END".to_string(),
+        firehose_data: block_end_data.as_bytes().to_vec(),
+    }).await?;
+
+    assert!(result.is_some());
+    let block = result.unwrap();
+    assert_eq!(block.transaction_traces.len(), 1);
+
+    let tx = &block.transaction_traces[0];
+    assert_eq!(tx.index, 0);
+    assert_eq!(tx.gas_used, 50000);
+    assert_eq!(tx.access_list.len(), 2);
+    assert_eq!(tx.access_list[0].storage_keys.len(), 1);
+    assert_eq!(tx.access_list[1].storage_keys.len(), 2);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_multiple_transactions_ordering() -> Result<()> {
+    let mut mapper = EventMapper::new();
+
+    let block_start_data = r#"{
+        "parent_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "uncle_hash": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+        "coinbase": "0x0000000000000000000000000000000000000000",
+        "transactions_root": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+        "difficulty": 0,
+        "number": 500,
+        "gas_limit": 30000000,
+        "timestamp": 1234567890,
+        "extra_data": "0x",
+        "mix_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "nonce": 0,
+        "base_fee_per_gas": {"limbs": [0, 0, 0, 0]},
+        "withdrawals_root": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
+    }"#;
+
+    mapper.process_event(ProcessedEvent {
+        block_number: 500,
+        event_type: "BLOCK_START".to_string(),
+        firehose_data: block_start_data.as_bytes().to_vec(),
+    }).await?;
+
+    for i in 0..3 {
+        let tx_header_data = format!(r#"{{
+            "txn_index": {},
+            "hash": "0x{}000000000000000000000000000000000000000000000000000000000000",
+            "from": "0x0000000000000000000000000000000000000000",
+            "to": "0x0000000000000000000000000000000000000000",
+            "nonce": {},
+            "gas_limit": 21000,
+            "value": {{"limbs": [0, 0, 0, 0]}},
+            "max_fee_per_gas": {{"limbs": [0, 0, 0, 0]}},
+            "max_priority_fee_per_gas": {{"limbs": [0, 0, 0, 0]}},
+            "r": {{"limbs": [0, 0, 0, 0]}},
+            "s": {{"limbs": [0, 0, 0, 0]}},
+            "y_parity": false,
+            "txn_type": 2,
+            "chain_id": {{"limbs": [0, 0, 0, 0]}},
+            "input": "0x",
+            "access_list_count": 0,
+            "access_list": [],
+            "blob_versioned_hash_length": 0,
+            "blob_hashes": "",
+            "max_fee_per_blob_gas": {{"limbs": [0, 0, 0, 0]}}
+        }}"#, i, i + 1, i);
+
+        mapper.process_event(ProcessedEvent {
+            block_number: 500,
+            event_type: "TX_HEADER".to_string(),
+            firehose_data: tx_header_data.as_bytes().to_vec(),
+        }).await?;
+
+        let tx_receipt_data = format!(r#"{{"txn_index": {}, "status": true, "gas_used": 21000, "log_count": 0, "call_frame_count": 0}}"#, i);
+        mapper.process_event(ProcessedEvent {
+            block_number: 500,
+            event_type: "TX_RECEIPT".to_string(),
+            firehose_data: tx_receipt_data.as_bytes().to_vec(),
+        }).await?;
+    }
+
+    let block_end_data = r#"{
+        "hash": "0x0c108fee8a6f4f12e321ac99ba9477e0431d7fa326cf16c3a51d1d6490fef23f",
+        "state_root": "0xc1e12619ef31a9b85683cdbfa5be401aa8aa591b7527ba9aaacf7efaaa0eb67b",
+        "receipts_root": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+        "logs_bloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "gas_used": 63000
+    }"#;
+
+    let result = mapper.process_event(ProcessedEvent {
+        block_number: 500,
+        event_type: "BLOCK_END".to_string(),
+        firehose_data: block_end_data.as_bytes().to_vec(),
+    }).await?;
+
+    assert!(result.is_some());
+    let block = result.unwrap();
+    assert_eq!(block.transaction_traces.len(), 3);
+
+    for i in 0..3 {
+        assert_eq!(block.transaction_traces[i].index, i as u32);
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_transaction_logs() -> Result<()> {
+    let mut mapper = EventMapper::new();
+
+    let block_start_data = r#"{
+        "parent_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "uncle_hash": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+        "coinbase": "0x0000000000000000000000000000000000000000",
+        "transactions_root": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+        "difficulty": 0,
+        "number": 600,
+        "gas_limit": 30000000,
+        "timestamp": 1234567890,
+        "extra_data": "0x",
+        "mix_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "nonce": 0,
+        "base_fee_per_gas": {"limbs": [0, 0, 0, 0]},
+        "withdrawals_root": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
+    }"#;
+
+    mapper.process_event(ProcessedEvent {
+        block_number: 600,
+        event_type: "BLOCK_START".to_string(),
+        firehose_data: block_start_data.as_bytes().to_vec(),
+    }).await?;
+
+    let tx_header_data = r#"{
+        "txn_index": 0,
+        "hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "from": "0x0000000000000000000000000000000000000000",
+        "to": "0x0000000000000000000000000000000000000000",
+        "nonce": 0,
+        "gas_limit": 100000,
+        "value": {"limbs": [0, 0, 0, 0]},
+        "max_fee_per_gas": {"limbs": [0, 0, 0, 0]},
+        "max_priority_fee_per_gas": {"limbs": [0, 0, 0, 0]},
+        "r": {"limbs": [0, 0, 0, 0]},
+        "s": {"limbs": [0, 0, 0, 0]},
+        "y_parity": false,
+        "txn_type": 2,
+        "chain_id": {"limbs": [0, 0, 0, 0]},
+        "input": "0x",
+        "access_list_count": 0,
+        "access_list": [],
+        "blob_versioned_hash_length": 0,
+        "blob_hashes": "",
+        "max_fee_per_blob_gas": {"limbs": [0, 0, 0, 0]}
+    }"#;
+
+    mapper.process_event(ProcessedEvent {
+        block_number: 600,
+        event_type: "TX_HEADER".to_string(),
+        firehose_data: tx_header_data.as_bytes().to_vec(),
+    }).await?;
+
+    mapper.process_event(ProcessedEvent {
+        block_number: 600,
+        event_type: "TX_RECEIPT".to_string(),
+        firehose_data: r#"{"txn_index": 0, "status": true, "gas_used": 50000, "log_count": 1, "call_frame_count": 0}"#.as_bytes().to_vec(),
+    }).await?;
+
+    let log_data = r#"{
+        "txn_index": 0,
+        "log_index": 0,
+        "address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+        "topics": [
+            "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+            "0000000000000000000000001234567890123456789012345678901234567890",
+            "0000000000000000000000000987654321098765432109876543210987654321"
+        ],
+        "data": "00000000000000000000000000000000000000000000000000000000000186a0"
+    }"#;
+
+    mapper.process_event(ProcessedEvent {
+        block_number: 600,
+        event_type: "TX_LOG".to_string(),
+        firehose_data: log_data.as_bytes().to_vec(),
+    }).await?;
+
+    let block_end_data = r#"{
+        "hash": "0x0c108fee8a6f4f12e321ac99ba9477e0431d7fa326cf16c3a51d1d6490fef23f",
+        "state_root": "0xc1e12619ef31a9b85683cdbfa5be401aa8aa591b7527ba9aaacf7efaaa0eb67b",
+        "receipts_root": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+        "logs_bloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "gas_used": 50000
+    }"#;
+
+    let result = mapper.process_event(ProcessedEvent {
+        block_number: 600,
+        event_type: "BLOCK_END".to_string(),
+        firehose_data: block_end_data.as_bytes().to_vec(),
+    }).await?;
+
+    assert!(result.is_some());
+    let block = result.unwrap();
+    assert_eq!(block.transaction_traces.len(), 1);
+
+    let tx = &block.transaction_traces[0];
+    assert_eq!(tx.receipt.as_ref().unwrap().logs.len(), 1);
+
+    let log = &tx.receipt.as_ref().unwrap().logs[0];
+    assert_eq!(log.index, 0);
+    assert_eq!(log.topics.len(), 3);
+
+    Ok(())
 }
