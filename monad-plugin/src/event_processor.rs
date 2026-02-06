@@ -126,14 +126,14 @@ impl EventProcessor {
                 self.process_txn_call_frame(txn_call_frame, input_bytes, return_bytes, txn_index, block_number)
                     .await
             }
-            ExecEvent::AccountAccessListHeader { txn_index, account_access_list_header } => {
-                self.process_account_access_list_header(account_access_list_header, txn_index, block_number).await
+            ExecEvent::AccountAccessListHeader(header) => {
+                self.process_account_access_list_header(header, None, block_number).await
             }
-            ExecEvent::AccountAccess { txn_index, account_access } => {
-                self.process_account_access(account_access, txn_index, block_number).await
+            ExecEvent::AccountAccess(account_access) => {
+                self.process_account_access(account_access, None, block_number).await
             }
-            ExecEvent::StorageAccess { txn_index, account_index, storage_access } => {
-                self.process_storage_access(storage_access, txn_index, account_index, block_number).await
+            ExecEvent::StorageAccess(storage_access) => {
+                self.process_storage_access(storage_access, None, 0, block_number).await
             }
             _ => {
                 debug!("Skipping event type: {:?}", exec_event);
