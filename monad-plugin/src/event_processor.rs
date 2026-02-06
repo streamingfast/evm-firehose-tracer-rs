@@ -75,8 +75,6 @@ impl EventProcessor {
                 data_bytes,
                 blob_bytes,
             } => {
-                // Set current transaction context
-                self.current_txn_index = Some(txn_index);
                 self.process_txn_header(txn_header_start, data_bytes, blob_bytes, txn_index, block_number)
                     .await
             }
@@ -188,7 +186,7 @@ impl EventProcessor {
 
         Ok(Some(ProcessedEvent {
             block_number,
-            event_type: event_type.to_string(),
+            event_type: EVENT_TYPE_BLOCK_END.to_string(),
             firehose_data,
         }))
     }
