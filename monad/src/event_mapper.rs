@@ -9,7 +9,6 @@ use tracing::debug;
 const MONAD_BLOCK_SIZE: u64 = 783;
 const DEFAULT_GAS_LIMIT: u64 = 30_000_000;
 
-/// Encode v value as big-endian bytes with leading zero trimming
 fn encode_v_bytes(v_value: u64) -> Vec<u8> {
     let mut bytes = v_value.to_be_bytes().to_vec();
     // Remove leading zeros but keep at least one byte
@@ -17,6 +16,43 @@ fn encode_v_bytes(v_value: u64) -> Vec<u8> {
         bytes.remove(0);
     }
     bytes
+}
+
+fn parse_u256_limbs_raw(json: &serde_json::Value, field: &str) -> Vec<u64> {
+    json[field]["limbs"]
+        .as_array()
+        .map(|arr| arr.iter().map(|v| v.as_u64().unwrap_or(0)).collect())
+        .unwrap_or_else(|| vec![0u64; 4])
+}
+
+fn parse_u256_limbs(json: &serde_json::Value, field: &str) -> Vec<u8> {
+    u256_limbs_to_bytes(&parse_u256_limbs_raw(json, field))
+}
+
+fn parse_hex_field(json: &serde_json::Value, field: &str) -> Vec<u8> {
+    hex::decode(json[field].as_str().unwrap_or("")).unwrap_or_default()
+}
+
+fn parse_access_list(tx_data: &serde_json::Value) -> Vec<AccessTuple> {
+    tx_data.get("access_list")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter().filter_map(|entry| {
+                let address = entry.get("address")?.as_str()?;
+                let storage_keys = entry.get("storage_keys")?.as_array()?;
+
+                let address_bytes = hex::decode(address.trim_start_matches("0x")).ok()?;
+                let storage_keys_bytes = storage_keys.iter()
+                    .filter_map(|k| k.as_str().and_then(|s| hex::decode(s.trim_start_matches("0x")).ok()))
+                    .collect();
+
+                Some(AccessTuple {
+                    address: address_bytes,
+                    storage_keys: storage_keys_bytes,
+                })
+            }).collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Convert U256 limbs (4x u64 in little-endian) to big-endian bytes with leading zero compaction
@@ -60,7 +96,7 @@ fn add_u256_bytes(a: &[u8], b: &[u8]) -> Vec<u8> {
     let mut result = vec![0u8; 32];
     let mut carry = 0u16;
 
-    // Add from least significant byte (end of array)
+    // Add from least significant byte
     for i in (0..32).rev() {
         let sum = a_padded[i] as u16 + b_padded[i] as u16 + carry;
         result[i] = (sum & 0xff) as u8;
@@ -71,7 +107,6 @@ fn add_u256_bytes(a: &[u8], b: &[u8]) -> Vec<u8> {
 }
 
 /// Compare two u256 values represented as big-endian byte arrays
-/// Returns: -1 if a < b, 0 if a == b, 1 if a > b
 fn compare_u256_bytes(a: &[u8], b: &[u8]) -> i32 {
     let a_len = a.len();
     let b_len = b.len();
@@ -462,120 +497,27 @@ impl BlockBuilder {
 
         let txn_index = tx_data["txn_index"].as_u64().unwrap_or(0) as usize;
 
-        // Extract access_list from tx_data
-        let access_list_entries = if let Some(access_list_json) = tx_data.get("access_list") {
-            if let Some(access_list_array) = access_list_json.as_array() {
-                access_list_array.iter().filter_map(|entry| {
-                    if let (Some(address), Some(storage_keys)) = (entry.get("address"), entry.get("storage_keys")) {
-                        if let (Some(address_str), Some(storage_keys_array)) = (address.as_str(), storage_keys.as_array()) {
-                            if let Ok(address_bytes) = hex::decode(address_str.trim_start_matches("0x")) {
-                                let storage_keys_bytes = storage_keys_array.iter().filter_map(|key| {
-                                    key.as_str().and_then(|k| hex::decode(k.trim_start_matches("0x")).ok())
-                                }).collect::<Vec<Vec<u8>>>();
-                                Some(AccessTuple {
-                                    address: address_bytes,
-                                    storage_keys: storage_keys_bytes,
-                                })
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                }).collect::<Vec<AccessTuple>>()
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        };
-        let hash = ensure_hash_bytes(hex::decode(tx_data["hash"].as_str().unwrap_or("")).unwrap_or_default());
-        let from = ensure_address_bytes(hex::decode(tx_data["from"].as_str().unwrap_or("")).unwrap_or_default());
-        // For contract creation, 'to' is empty, not zero address
-        let to = if let Some(to_str) = tx_data["to"].as_str() {
-            if to_str.is_empty() {
-                vec![]
-            } else {
-                ensure_address_bytes(hex::decode(to_str).unwrap_or_default())
-            }
-        } else {
-            vec![]
+        let access_list_entries = parse_access_list(&tx_data);
+        let hash = ensure_hash_bytes(parse_hex_field(&tx_data, "hash"));
+        let from = ensure_address_bytes(parse_hex_field(&tx_data, "from"));
+        let to = match tx_data["to"].as_str() {
+            Some(s) if !s.is_empty() => ensure_address_bytes(hex::decode(s).unwrap_or_default()),
+            _ => vec![],
         };
         let nonce = tx_data["nonce"].as_u64().unwrap_or(0);
         let gas_limit = tx_data["gas_limit"].as_u64().unwrap_or(0);
-        let input = hex::decode(tx_data["input"].as_str().unwrap_or("")).unwrap_or_default();
+        let input = parse_hex_field(&tx_data, "input");
         let txn_type = tx_data["txn_type"].as_u64().unwrap_or(2) as u32;
 
-        // Parse U256 values from limbs
-        let value_limbs = tx_data["value"]["limbs"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .map(|v| v.as_u64().unwrap_or(0))
-                    .collect::<Vec<u64>>()
-            })
-            .unwrap_or_else(|| vec![0u64; 4]);
-        let value = u256_limbs_to_bytes(&value_limbs);
+        let value = parse_u256_limbs(&tx_data, "value");
+        let max_fee_limbs = parse_u256_limbs_raw(&tx_data, "max_fee_per_gas");
+        let max_priority_fee_limbs = parse_u256_limbs_raw(&tx_data, "max_priority_fee_per_gas");
 
-        let max_fee_limbs = tx_data["max_fee_per_gas"]["limbs"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .map(|v| v.as_u64().unwrap_or(0))
-                    .collect::<Vec<u64>>()
-            })
-            .unwrap_or_else(|| vec![0u64; 4]);
-
-        let max_priority_fee_limbs = tx_data["max_priority_fee_per_gas"]["limbs"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .map(|v| v.as_u64().unwrap_or(0))
-                    .collect::<Vec<u64>>()
-            })
-            .unwrap_or_else(|| vec![0u64; 4]);
-
-        // Calculate effective gas price based on EIP-1559
-        // For Type 2 (Dynamic Fee) transactions:
-        // effective_gas_price = base_fee_per_gas + min(max_priority_fee_per_gas, max_fee_per_gas - base_fee_per_gas)
         let gas_price = self.calculate_effective_gas_price(&max_fee_limbs, &max_priority_fee_limbs, txn_type);
 
-        // Parse signature
-        let r_limbs = tx_data["r"]["limbs"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .map(|v| v.as_u64().unwrap_or(0))
-                    .collect::<Vec<u64>>()
-            })
-            .unwrap_or_else(|| vec![0u64; 4]);
-        let r = u256_limbs_to_bytes(&r_limbs);
-
-        let s_limbs = tx_data["s"]["limbs"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .map(|v| v.as_u64().unwrap_or(0))
-                    .collect::<Vec<u64>>()
-            })
-            .unwrap_or_else(|| vec![0u64; 4]);
-        let s = u256_limbs_to_bytes(&s_limbs);
-
-        // Parse chain_id for v calculation
-        let chain_id_limbs = tx_data["chain_id"]["limbs"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .map(|v| v.as_u64().unwrap_or(0))
-                    .collect::<Vec<u64>>()
-            })
-            .unwrap_or_else(|| vec![0u64; 4]);
-
-        // Chain ID fits in u64
-        let chain_id = chain_id_limbs[0];
+        let r = parse_u256_limbs(&tx_data, "r");
+        let s = parse_u256_limbs(&tx_data, "s");
+        let chain_id = parse_u256_limbs_raw(&tx_data, "chain_id")[0];
 
         let y_parity = tx_data["y_parity"].as_bool().unwrap_or(false);
 

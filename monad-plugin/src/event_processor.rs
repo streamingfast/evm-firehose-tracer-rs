@@ -1,15 +1,9 @@
-//! Event Processor
-//!
-//! Processes raw Monad execution events and transforms them into
-//! a format suitable for the Firehose tracer.
-
 use crate::monad_consumer::ProcessedEvent;
 use eyre::Result;
 use monad_exec_events::ExecEvent;
 use serde_json;
 use tracing::debug;
 
-// Event type constants to avoid repeated string allocations
 const EVENT_TYPE_BLOCK_START: &str = "BLOCK_START";
 const EVENT_TYPE_BLOCK_END: &str = "BLOCK_END";
 const EVENT_TYPE_TX_HEADER: &str = "TX_HEADER";
@@ -36,35 +30,24 @@ struct PendingTxnHeader {
 pub struct EventProcessor {
     current_block: Option<u64>,
     event_count: u64,
-    /// Pending access list entries for transactions (txn_index -> access_list)
     pending_access_lists: std::collections::HashMap<usize, Vec<serde_json::Value>>,
-    /// Buffered transaction headers waiting for access list entries
     pending_txn_headers: std::collections::HashMap<usize, PendingTxnHeader>,
-    /// Current transaction index being processed (None for system calls/block events)
-    current_txn_index: Option<usize>,
-    /// Current account index being processed (for associating storage accesses)
-    current_account_index: u64,
 }
 
 impl EventProcessor {
-    /// Create a new event processor
     pub fn new() -> Self {
         Self {
             current_block: None,
             event_count: 0,
             pending_access_lists: std::collections::HashMap::new(),
             pending_txn_headers: std::collections::HashMap::new(),
-            current_txn_index: None,
-            current_account_index: 0,
         }
     }
 
-    /// Get the current block number being processed
     pub fn current_block(&self) -> Option<u64> {
         self.current_block
     }
 
-    /// Process a Monad ExecEvent into a Firehose-compatible format
     pub async fn process_monad_event(
         &mut self,
         exec_event: ExecEvent,
@@ -72,16 +55,13 @@ impl EventProcessor {
     ) -> Result<Option<ProcessedEvent>> {
         self.event_count += 1;
 
-        // Update current block tracking
         if self.current_block != Some(block_number) && block_number > 0 {
             debug!("Processing new block: {}", block_number);
             self.current_block = Some(block_number);
-            // Clear pending access lists and headers when starting a new block
             self.pending_access_lists.clear();
             self.pending_txn_headers.clear();
         }
 
-        // Match on the actual Monad event type
         match exec_event {
             ExecEvent::BlockStart(block_start) => {
                 self.process_block_start(block_start, block_number).await
@@ -111,62 +91,30 @@ impl EventProcessor {
             ExecEvent::TxnEvmOutput { txn_index, output } => {
                 self.process_txn_evm_output(output, txn_index, block_number).await
             }
-            ExecEvent::TxnEnd => {
-                // Clear current transaction context
-                self.current_txn_index = None;
-                self.process_txn_end(block_number).await
-            }
+            ExecEvent::TxnEnd => self.process_txn_end(block_number).await,
             ExecEvent::TxnLog {
                 txn_index,
                 txn_log,
                 topic_bytes,
                 data_bytes,
-            } => {
-                self.process_txn_log(txn_log, topic_bytes, data_bytes, txn_index, block_number)
-                    .await
-            }
+            } => self.process_txn_log(txn_log, topic_bytes, data_bytes, txn_index, block_number).await,
             ExecEvent::BlockQC(qc) => self.process_block_qc(qc, block_number).await,
-            ExecEvent::BlockFinalized(finalized) => {
-                self.process_block_finalized(finalized, block_number).await
-            }
+            ExecEvent::BlockFinalized(finalized) => self.process_block_finalized(finalized, block_number).await,
             ExecEvent::TxnCallFrame {
                 txn_index,
                 txn_call_frame,
                 input_bytes,
                 return_bytes,
-            } => {
-                self.process_txn_call_frame(txn_call_frame, input_bytes, return_bytes, txn_index, block_number)
-                    .await
-            }
+            } => self.process_txn_call_frame(txn_call_frame, input_bytes, return_bytes, txn_index, block_number).await,
+            // System call events only
             ExecEvent::AccountAccessListHeader(header) => {
-                // Check access_context: 0=BLOCK_PROLOGUE, 1=TRANSACTION, 2=BLOCK_EPILOGUE
-                // Only TRANSACTION (1) uses current_txn_index, others use None
-                let txn_index = if header.access_context == 1 {
-                    self.current_txn_index
-                } else {
-                    None
-                };
-                self.process_account_access_list_header(header, txn_index, block_number).await
+                self.process_account_access_list_header(header, None, block_number).await
             }
             ExecEvent::AccountAccess(account_access) => {
-                // Update current account index for subsequent storage accesses
-                self.current_account_index = account_access.index as u64;
-                // Check access_context: 0=BLOCK_PROLOGUE, 1=TRANSACTION, 2=BLOCK_EPILOGUE
-                let txn_index = if account_access.access_context == 1 {
-                    self.current_txn_index
-                } else {
-                    None
-                };
-                self.process_account_access(account_access, txn_index, block_number).await
+                self.process_account_access(account_access, None, block_number).await
             }
             ExecEvent::StorageAccess(storage_access) => {
-                // Check access_context to determine if this is for a transaction or system call
-                let txn_index = if storage_access.access_context == 1 {
-                    self.current_txn_index
-                } else {
-                    None
-                };
-                self.process_storage_access(storage_access, txn_index, self.current_account_index, block_number).await
+                self.process_storage_access(storage_access, None, 0, block_number).await
             }
             _ => {
                 debug!("Skipping event type: {:?}", exec_event);
@@ -175,7 +123,7 @@ impl EventProcessor {
         }
     }
 
-    /// Process BlockStart event - contains block header information
+    /// Process BlockStart event, contains block header information
     async fn process_block_start(
         &self,
         block_start: monad_exec_events::ffi::monad_exec_block_start,
@@ -187,10 +135,6 @@ impl EventProcessor {
             block_number, block_start.eth_block_input.timestamp, parent_hash_hex
         );
 
-        let event_type = EVENT_TYPE_BLOCK_START;
-
-        // Extract all header fields from eth_block_input
-        // Convert nonce from 8-byte array to u64 (little-endian)
         let nonce = u64::from_le_bytes(block_start.eth_block_input.nonce.bytes);
 
         let block_data = serde_json::json!({
@@ -215,12 +159,12 @@ impl EventProcessor {
 
         Ok(Some(ProcessedEvent {
             block_number,
-            event_type: event_type.to_string(),
+            event_type: EVENT_TYPE_BLOCK_START.to_string(),
             firehose_data,
         }))
     }
 
-    /// Process BlockEnd event - contains execution results
+    /// Process BlockEnd event, contains execution results
     async fn process_block_end(
         &self,
         block_end: monad_exec_events::ffi::monad_exec_block_end,
@@ -232,9 +176,6 @@ impl EventProcessor {
             block_number, block_end.exec_output.gas_used, block_hash_hex
         );
 
-        let event_type = EVENT_TYPE_BLOCK_END;
-
-        // Extract all execution output fields
         let block_data = serde_json::json!({
             "hash": block_hash_hex,
             "state_root": hex::encode(block_end.exec_output.state_root.bytes),
