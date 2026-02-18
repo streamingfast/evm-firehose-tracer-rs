@@ -437,9 +437,9 @@ dependencies = [
 
 [[package]]
 name = "bumpalo"
-version = "3.20.0"
+version = "3.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c81d250916401487680ed13b8b675660281dcfc3ab0121fe44c94bcab9eae2fb"
+checksum = "5c6f81257d10a0f602a294ae4182251151ff97dbb504ef9afcdda4a64b24d9b4"
 
 [[package]]
 name = "byte-slice-cast"
@@ -1328,7 +1328,7 @@ dependencies = [
 [[package]]
 name = "monad-event-ring"
 version = "0.1.0"
-source = "git+https://github.com/streamingfast/monad-bft?branch=feature%2Fadd-sys-calls-v0.12.7#8e0adf0c9255cf7f52265620ce22c0fd348f5a75"
+source = "git+https://github.com/streamingfast/monad-bft?branch=feature%2Fadd-sys-calls-v0.12.7#eede85a6e4cd88de7a8e7d0b60406480c945a684"
 dependencies = [
  "bindgen",
  "cc",
@@ -1340,7 +1340,7 @@ dependencies = [
 [[package]]
 name = "monad-exec-events"
 version = "0.1.0"
-source = "git+https://github.com/streamingfast/monad-bft?branch=feature%2Fadd-sys-calls-v0.12.7#8e0adf0c9255cf7f52265620ce22c0fd348f5a75"
+source = "git+https://github.com/streamingfast/monad-bft?branch=feature%2Fadd-sys-calls-v0.12.7#eede85a6e4cd88de7a8e7d0b60406480c945a684"
 dependencies = [
  "bindgen",
  "itertools 0.10.5",
