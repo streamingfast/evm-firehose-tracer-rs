@@ -62,5 +62,5 @@ chrono = { version = "0.4", features = ["serde"] }
 color-eyre = "0.6"
 
 # Monad-specific dependencies
-monad-exec-events = { git = "https://github.com/streamingfast/monad-bft", branch = "feature/add-sys-calls-v0.12.7" }
-monad-event-ring = { git = "https://github.com/streamingfast/monad-bft", branch = "feature/add-sys-calls-v0.12.7" }
+monad-exec-events = { git = "https://github.com/streamingfast/monad-bft", branch = "feature/add-sys-calls-fh" }
+monad-event-ring = { git = "https://github.com/streamingfast/monad-bft", branch = "feature/add-sys-calls-fh" }

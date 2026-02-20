@@ -899,56 +899,6 @@ impl BlockBuilder {
                 _ => format!("unknown error (status {})", frame.evmc_status),
             };
 
-            // Add gas changes for this call
-            let mut gas_changes = Vec::new();
-
-            // For the root call (depth 0), add TX_INITIAL_BALANCE
-            if depth == 0 && frame.gas > 0 {
-                gas_changes.push(GasChange {
-                    old_value: 0,
-                    new_value: frame.gas,
-                    reason: GasReason::TxInitialBalance as i32,
-                    ordinal: 0, // Will be assigned later
-                });
-            }
-
-            // For child calls (depth > 0), add CALL_INITIAL_BALANCE
-            if depth > 0 && frame.gas > 0 {
-                gas_changes.push(GasChange {
-                    old_value: 0,
-                    new_value: frame.gas,
-                    reason: GasReason::CallInitialBalance as i32,
-                    ordinal: 0, // Will be assigned later
-                });
-            }
-
-            // Add gas consumption for all calls that consumed gas
-            if frame.gas_used > 0 {
-                let remaining_gas = frame.gas.saturating_sub(frame.gas_used);
-
-                // Determine the gas consumption reason based on call type
-                let gas_reason = if depth == 0 {
-                    GasReason::IntrinsicGas
-                } else {
-                    // For nested calls, use CALL or CALL_CODE depending on opcode
-                    match frame.opcode {
-                        0xF1 => GasReason::Call,           // CALL
-                        0xF2 => GasReason::CallCode,       // CALLCODE
-                        0xF4 => GasReason::DelegateCall,   // DELEGATECALL
-                        0xFA => GasReason::StaticCall,     // STATICCALL
-                        0xF0 | 0xF5 => GasReason::Call,    // CREATE / CREATE2 - use Call as fallback
-                        _ => GasReason::Call,              // Default
-                    }
-                };
-
-                gas_changes.push(GasChange {
-                    old_value: frame.gas,
-                    new_value: remaining_gas,
-                    reason: gas_reason as i32,
-                    ordinal: 0, // Will be assigned later
-                });
-            }
-
             pb::sf::ethereum::r#type::v2::Call {
                 index: frame.index,
                 parent_index,
@@ -966,7 +916,6 @@ impl BlockBuilder {
                 status_failed,
                 status_reverted,
                 failure_reason,
-                gas_changes,
                 ..Default::default()
             }
         }).collect()
@@ -985,28 +934,7 @@ impl BlockBuilder {
         }
     }
 
-    /// Add basic gas changes to a call (TX_INITIAL_BALANCE and INTRINSIC_GAS)
-    fn add_basic_gas_changes(call: &mut pb::sf::ethereum::r#type::v2::Call, gas_limit: u64, gas_used: u64) {
-        use pb::sf::ethereum::r#type::v2::gas_change::Reason as GasReason;
-        use pb::sf::ethereum::r#type::v2::GasChange;
-
-        // TX_INITIAL_BALANCE: 0 -> gas_limit
-        call.gas_changes.push(GasChange {
-            old_value: 0,
-            new_value: gas_limit,
-            reason: GasReason::TxInitialBalance as i32,
-            ordinal: 0, // Will be assigned later
-        });
-
-        // INTRINSIC_GAS: gas_limit -> (gas_limit - intrinsic_gas)
-        // For pure transfers, intrinsic gas is typically 21000
-        let intrinsic_gas = std::cmp::min(gas_used, gas_limit);
-        call.gas_changes.push(GasChange {
-            old_value: gas_limit,
-            new_value: gas_limit.saturating_sub(intrinsic_gas),
-            reason: GasReason::IntrinsicGas as i32,
-            ordinal: 0, // Will be assigned later
-        });
+    fn add_basic_gas_changes(_call: &mut pb::sf::ethereum::r#type::v2::Call, _gas_limit: u64, _gas_used: u64) {
     }
 
     /// Populate balance changes, nonce changes, and storage changes from account accesses
@@ -1227,20 +1155,6 @@ impl BlockBuilder {
             ..Default::default()
         };
 
-        // Add gas changes for system calls (2 gas changes as expected by test)
-        call.gas_changes.push(GasChange {
-            old_value: 0,
-            new_value: 30_000_000,
-            reason: GasReason::TxInitialBalance as i32,
-            ordinal: 0,
-        });
-        call.gas_changes.push(GasChange {
-            old_value: 30_000_000,
-            new_value: 30_000_000,
-            reason: GasReason::TxLeftOverReturned as i32,
-            ordinal: 0,
-        });
-
         // Add storage changes that belong to this address
         for storage in all_storage_accesses {
             if storage.address == to_address && storage.modified && !storage.transient {
@@ -1306,20 +1220,6 @@ impl BlockBuilder {
             state_reverted: false,
             ..Default::default()
         };
-
-        // Add gas changes for system calls (2 gas changes as expected by test)
-        call.gas_changes.push(GasChange {
-            old_value: 0,
-            new_value: 30_000_000,
-            reason: GasReason::TxInitialBalance as i32,
-            ordinal: 0,
-        });
-        call.gas_changes.push(GasChange {
-            old_value: 30_000_000,
-            new_value: 30_000_000,
-            reason: GasReason::TxLeftOverReturned as i32,
-            ordinal: 0,
-        });
 
         // Add balance and nonce changes from account accesses
         for access in account_accesses {
