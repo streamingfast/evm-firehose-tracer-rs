@@ -1,3 +1,5 @@
+.envrc
+.DS_Store
 /.claude
 /.firehose-data
 /.firehose-data-optimism
