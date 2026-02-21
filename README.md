@@ -15,6 +15,33 @@ This repository currently focuses on **Monad** blockchain integration with a 3-c
 - [Rust](https://rust-lang.org/tools/install) & Cargo
 - Docker (for containerized deployment)
 
+### Mac OS X
+
+Monad requires a recent LLVM version, the one that comes from stock OSX is often outdated so it's better to have a version from Brew directly. However `brew` will not hook it automatically to the system, you need to manually activate it. Ensure you have a recent version enough of LLVM:
+
+```bash
+brew install llvm
+```
+
+Then you can use this `.envrc` file to auto-load LLVM first:
+
+```bash
+llvm_path="$(brew --prefix llvm)"
+
+path_add PATH "$llvm_path"/bin
+path_add DYLD_LIBRARY_PATH "$llvm_path"/lib
+
+export CC="${llvm_path}/bin/clang"
+export CXX="${llvm_path}/bin/clang++"
+export LLVM_CONFIG_PATH="${llvm_path}/bin/llvm-config"
+```
+
+#### Rust Analyzer
+
+In VSCode, it's possible to easily get the rust analyzer to work by installing https://github.com/direnv/direnv-vscode which will forces plugins to load with those environment so that Rust Analyzer sees the same as from `cargo build` on the terminal.
+
+For others, the goal is simply to have the environment variables defined above when the `rust-analyzer` lsp server needs to start.
+
 ## Build
 
 Build the Monad tracer from source:
