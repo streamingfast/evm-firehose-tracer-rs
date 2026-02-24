@@ -1,162 +1,68 @@
-use crate::{BLOCK_VERSION, RecoveredBlock, ChainSpec};
-use pb::sf::ethereum::r#type::v2::block::DetailLevel;
-use pb::sf::ethereum::r#type::v2::{BigInt, Block, BlockHeader, Log, TransactionReceipt};
-use reth::api::FullNodeComponents;
-use reth::chainspec::EthChainSpec;
-use reth::core::primitives::AlloyBlockHeader;
-use alloy_consensus::BlockHeader as ConsensusBlockHeader;
-use alloy_primitives::{FixedBytes, Sealable, U256};
-use alloy_rlp::Encodable;
-use prost_types::Timestamp;
-use reth::api::BlockBody;
-use reth::core::primitives::Receipt;
+//! Mapper functions for converting between Rust types and protobuf types
 
-/// Maps a RecoveredBlock to a Protobuf Block following the Go implementation behavior
-pub(super) fn recovered_block_to_protobuf<Node: FullNodeComponents>(
-    recovered_block: &RecoveredBlock<Node>,
-) -> Block {
-    let hash = recovered_block.hash();
-    let header = recovered_block.header();
-    let size = recovered_block.sealed_block().length() as u64;
-    let uncles = map_uncles::<Node>(recovered_block);
+use alloy_primitives::U256;
+use pb::sf::ethereum::r#type::v2::BigInt;
 
-    block_header_to_protobuf(hash, header, size, uncles)
-}
+/// Converts a U256 to a trimmed big-endian byte array
+/// Removes leading zeros for more efficient protobuf encoding
+pub fn u256_trimmed_be_bytes(value: U256) -> Vec<u8> {
+    let bytes = value.to_be_bytes::<32>();
 
-/// Maps a RecoveredBlock to a Protobuf Block following the Go implementation behavior
-pub(super) fn block_header_to_protobuf<H: ConsensusBlockHeader>(
-    hash: FixedBytes<32>,
-    block_header: &H,
-    size: u64,
-    uncles: Vec<BlockHeader>,
-) -> Block {
-    let pb_header = create_block_header_protobuf(hash.to_vec(), block_header);
+    // Find the first non-zero byte
+    let first_non_zero = bytes.iter().position(|&b| b != 0).unwrap_or(32);
 
-    Block {
-        hash: hash.to_vec(),
-        number: block_header.number(),
-        size: size,
-        header: Some(pb_header),
-        uncles: uncles,
-        transaction_traces: Vec::new(),
-        balance_changes: Vec::new(),
-        code_changes: Vec::new(),
-        system_calls: Vec::new(),
-        ver: BLOCK_VERSION,
-        detail_level: DetailLevel::DetaillevelExtended as i32,
+    // If all zeros, return a single zero byte
+    if first_non_zero == 32 {
+        return vec![0];
     }
-}
 
-/// Maps uncle headers to protobuf format
-fn map_uncles<Node: FullNodeComponents>(
-    recovered_block: &RecoveredBlock<Node>,
-) -> Vec<BlockHeader> {
-    if let Some(ommers) = recovered_block.body().ommers() {
-        ommers
-            .iter()
-            .map(|ommer_header| {
-                // For ommer headers, we need to compute the hash using hash_slow()
-                // FIXME: Ask in Reth community if there is not a way to retrieve the hash without recomputing it
-                create_block_header_protobuf(ommer_header.hash_slow().to_vec(), ommer_header)
-            })
-            .collect()
-    } else {
-        Vec::new()
-    }
-}
-
-/// Creates a protobuf BlockHeader from any header implementing ConsensusBlockHeader trait
-/// This helper function eliminates duplication between main block header and uncle headers
-fn create_block_header_protobuf<H: ConsensusBlockHeader>(hash: Vec<u8>, header: &H) -> BlockHeader {
-    BlockHeader {
-        hash,
-        number: header.number(),
-        parent_hash: header.parent_hash().to_vec(),
-        uncle_hash: header.ommers_hash().to_vec(),
-        coinbase: header.beneficiary().to_vec(),
-        state_root: header.state_root().to_vec(),
-        transactions_root: header.transactions_root().to_vec(),
-        receipt_root: header.receipts_root().to_vec(),
-        logs_bloom: header.logs_bloom().to_vec(),
-        difficulty: Some(BigInt {
-            bytes: if header.difficulty().is_zero() {
-                vec![0x0]
-            } else {
-                u256_trimmed_be_bytes(header.difficulty())
-            },
-        }),
-        gas_limit: header.gas_limit(),
-        gas_used: header.gas_used(),
-        timestamp: Some(Timestamp {
-            seconds: header.timestamp() as i64,
-            nanos: 0,
-        }),
-        extra_data: header.extra_data().to_vec(),
-        mix_hash: header.mix_hash().map(|h| h.to_vec()).unwrap_or_default(),
-        nonce: header
-            .nonce()
-            .map(|n| u64::from_be_bytes(n.into()))
-            .unwrap_or_default(),
-        base_fee_per_gas: header
-            .base_fee_per_gas()
-            .and_then(|fee| BigInt::from_optional_u64(fee)),
-        withdrawals_root: header
-            .withdrawals_root()
-            .map(|root| root.to_vec())
-            .unwrap_or_default(),
-        blob_gas_used: header.blob_gas_used(),
-        excess_blob_gas: header.excess_blob_gas(),
-        parent_beacon_root: header
-            .parent_beacon_block_root()
-            .map(|root| root.to_vec())
-            .unwrap_or_default(),
-        requests_hash: header
-            .requests_hash()
-            .map(|h| h.to_vec())
-            .unwrap_or_default(),
-
-        #[allow(deprecated)]
-        total_difficulty: Some(BigInt { bytes: Vec::new() }),
-
-        tx_dependency: None,
-    }
-}
-
-/// Maps a Reth Receipt to a Protobuf TransactionReceipt
-pub(super) fn receipt_to_protobuf<R>(receipt: &R) -> TransactionReceipt
-where
-    R: Receipt,
-{
-    TransactionReceipt {
-        state_root: Vec::new(),
-        cumulative_gas_used: receipt.cumulative_gas_used(),
-        logs_bloom: receipt.bloom().to_vec(),
-        logs: Vec::new(),
-        blob_gas_used: None,
-        blob_gas_price: None,
-    }
+    bytes[first_non_zero..].to_vec()
 }
 
 /// Converts a U256 to a protobuf BigInt
-pub(super) fn big_int_from_u256(value: U256) -> BigInt {
+pub fn big_int_from_u256(value: U256) -> BigInt {
     BigInt {
         bytes: u256_trimmed_be_bytes(value),
     }
 }
 
-pub fn u256_trimmed_be_bytes(v: U256) -> Vec<u8> {
-    if v.is_zero() {
-        return Vec::new();
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_u256_trimmed_be_bytes_zero() {
+        let value = U256::ZERO;
+        let bytes = u256_trimmed_be_bytes(value);
+        assert_eq!(bytes, vec![0]);
     }
 
-    // Use to_be_bytes_vec which is simpler and avoids any slicing issues
-    let bytes_vec = v.to_be_bytes_vec();
+    #[test]
+    fn test_u256_trimmed_be_bytes_small() {
+        let value = U256::from(255u64);
+        let bytes = u256_trimmed_be_bytes(value);
+        assert_eq!(bytes, vec![255]);
+    }
 
-    // Find first non-zero byte and return trimmed vec
-    if let Some(first_non_zero) = bytes_vec.iter().position(|&b| b != 0) {
-        bytes_vec[first_non_zero..].to_vec()
-    } else {
-        // All zeros - shouldn't happen since we check is_zero above, but return empty as safety
-        Vec::new()
+    #[test]
+    fn test_u256_trimmed_be_bytes_large() {
+        let value = U256::from(0x1234_5678_u64);
+        let bytes = u256_trimmed_be_bytes(value);
+        assert_eq!(bytes, vec![0x12, 0x34, 0x56, 0x78]);
+    }
+
+    #[test]
+    fn test_u256_trimmed_be_bytes_max() {
+        let value = U256::MAX;
+        let bytes = u256_trimmed_be_bytes(value);
+        assert_eq!(bytes.len(), 32);
+        assert!(bytes.iter().all(|&b| b == 255));
+    }
+
+    #[test]
+    fn test_big_int_from_u256() {
+        let value = U256::from(1000u64);
+        let big_int = big_int_from_u256(value);
+        assert_eq!(big_int.bytes, vec![0x03, 0xe8]);
     }
 }

@@ -1,25 +1,19 @@
-use alloy_consensus::transaction::SignerRecoverable;
-use alloy_consensus::{Transaction, TxLegacy, TxType};
-use alloy_genesis::{Genesis, GenesisAccount};
-use alloy_primitives::{Address, B256, Bytes, Log as AlloyLog, Signature, U256};
-use reth::primitives::TransactionSigned;
-use reth::primitives::transaction::SignedTransaction;
-use reth::revm::revm::inspector::JournalExt;
-use reth::revm::revm::interpreter::interpreter_types::{Jumps, MemoryTr};
+use alloy_consensus::{Transaction, TxType};
+use alloy_primitives::U256;
+// REVM imports removed - tracer is now independent of REVM
+// Integration layer should handle REVM inspector trait implementation
 
-use super::{Config, HexView, finality::FinalityStatus, mapper, ordinal::Ordinal, printer};
-use crate::{PROTOCOL_VERSION, SignedTx, ChainSpec, RecoveredBlock};
-use pb::sf::ethereum::r#type::v2::{Block, Call, TransactionTrace, transaction_trace};
-use crate::{firehose_debug, firehose_info};
-use reth::api::FullNodeComponents;
-use reth::chainspec::EthChainSpec;
-use reth_tracing::tracing::{debug, info};
-use reth::core::primitives::Receipt;
+use super::{finality::FinalityStatus, mapper, ordinal::Ordinal, printer, Config, HexView};
+use crate::types::{BlockEvent, ReceiptData, TxEvent};
+use crate::{firehose_debug, ChainConfig, Rules, PROTOCOL_VERSION};
+use pb::sf::ethereum::r#type::v2::{transaction_trace, Block, Call, TransactionTrace};
 use std::sync::Arc;
+use tracing::{debug, info};
 
-pub struct Tracer<Node: FullNodeComponents> {
+pub struct Tracer {
     pub config: Config,
-    pub(super) chain_spec: Option<Arc<ChainSpec<Node>>>,
+    pub(super) chain_config: Arc<ChainConfig>,
+    pub(super) block_rules: Option<Rules>,
 
     // Block state
     pub(super) current_block: Option<Block>,
@@ -48,15 +42,14 @@ pub struct Tracer<Node: FullNodeComponents> {
     // Keccak preimage tracking, stores potential preimages temporarily
     // Map of hash -> preimage, only saved to call if hash appears in event topics
     pending_keccak_preimages: std::collections::HashMap<String, Vec<u8>>,
-
-    _phantom: std::marker::PhantomData<Node>,
 }
 
-impl<Node: FullNodeComponents> Tracer<Node> {
-    pub fn new(config: Config) -> Self {
+impl Tracer {
+    pub fn new(config: Config, chain_config: Arc<ChainConfig>) -> Self {
         Self {
             config,
-            chain_spec: None,
+            chain_config,
+            block_rules: None,
             current_block: None,
             block_ordinal: Ordinal::default(),
             finality_status: FinalityStatus::default(),
@@ -72,132 +65,60 @@ impl<Node: FullNodeComponents> Tracer<Node> {
             last_gas_before_opcode: None,
             pending_log_gas_change: None,
             pending_keccak_preimages: std::collections::HashMap::new(),
-            _phantom: std::marker::PhantomData,
         }
     }
 
-    /// on_init initializes the tracer with chain configuration
-    pub fn on_init(&mut self, spec: Arc<ChainSpec<Node>>) {
-        self.chain_spec = Some(spec.clone());
-
+    /// on_blockchain_init initializes the tracer and prints the INIT message
+    pub fn on_blockchain_init(&mut self) {
         // Print Firehose init message to stdout
-        printer::firehose_init_to_stdout(PROTOCOL_VERSION, "reth-firehose-tracer");
+        printer::firehose_init_to_stdout(PROTOCOL_VERSION, "firehose-tracer");
 
         info!(
             "Firehose tracer initialized: chain_id={}, protocol_version={}",
-            spec.chain().id(),
-            PROTOCOL_VERSION,
+            self.chain_config.chain_id, PROTOCOL_VERSION,
         );
     }
 
-    /// on_genesis_block processes the genesis block and its state allocation
-    pub fn on_genesis_block(&mut self, genesis: &Genesis) {
-        self.ensure_not_in_block();
-        self.ensure_init();
+    // NOTE: Genesis block handling is commented out because it depends on Reth types.
+    // The integration layer should handle genesis block processing by:
+    // 1. Creating a BlockEvent from the genesis block
+    // 2. Calling on_block_start() with that event
+    // 3. Manually adding genesis state changes if needed
+    //
+    // /// on_genesis_block processes the genesis block and its state allocation
+    // pub fn on_genesis_block(&mut self, genesis: &Genesis) {
+    //     self.ensure_not_in_block();
+    //     self.ensure_init();
+    //     // ... implementation commented out ...
+    // }
 
-        // Set flag to indicate this is a genesis block, to be reset at block end
-        self.block_is_genesis = true;
-
-        // Get genesis hash from chain spec
-        let chain_spec = self
-            .chain_spec
-            .as_ref()
-            .expect("chain_spec is set after ensure_init");
-        let genesis_hash = chain_spec.genesis_hash();
-
-        firehose_info!(
-            "genesis block (number={} hash={}, accounts={})",
-            genesis.number.unwrap_or(0),
-            HexView(genesis_hash),
-            genesis.alloc.len()
-        );
-
-        let pb_block =
-            mapper::block_header_to_protobuf(genesis_hash, chain_spec.genesis_header(), 0, vec![]);
-        self.on_block_start_inner(pb_block);
-
-        // Create a dummy legacy transaction to wrap genesis state allocation
-        let genesis_tx = TransactionSigned::new_unhashed(
-            TxLegacy::default().into(),
-            Signature::test_signature(),
-        );
-
-        self.on_tx_start_inner(&genesis_tx, B256::ZERO, Address::ZERO, Address::ZERO);
-
-        for (address, account) in &genesis.alloc {
-            self.on_genesis_account_allocation(address, account);
-        }
-
-        // End the genesis transaction with a dummy receipt
-        // Genesis transactions don't have real receipts, so we create a successful one
-        let dummy_receipt = reth::primitives::Receipt {
-            tx_type: alloy_consensus::TxType::Legacy,
-            success: true,
-            cumulative_gas_used: 0,
-            logs: Vec::new(),
-        };
-        self.on_tx_end(&dummy_receipt);
-
-        firehose_info!(
-            "completed processing genesis allocation with {} accounts",
-            genesis.alloc.len()
-        );
-    }
-
-    /// on_genesis_account_allocation processes a single account allocation in genesis
-    /// This ports the behavior from Go's OnGenesisBlock where it processes each account
-    fn on_genesis_account_allocation(&mut self, address: &Address, account: &GenesisAccount) {
-        // TODO: Port from Go - need to add account balance change, nonce change, and code deployment
-        // Go code does:
-        // - Add balance change if balance > 0
-        // - Add nonce change if nonce > 0
-        // - Add code change if code is present
-        // - Add storage changes if storage is present
-
-        // Log account allocation for debugging
-        firehose_debug!(
-            "genesis account allocation: address={} balance={} nonce={} has_code={} storage_entries={}",
-            HexView(address.as_slice()),
-            account.balance,
-            account.nonce.unwrap_or(0),
-            account.code.is_some(),
-            account.storage.as_ref().map(|s| s.len()).unwrap_or(0)
-        );
-
-        // Balance allocation
-        if account.balance > U256::ZERO {
-            // TODO: Add balance change tracking
-        }
-
-        // Nonce allocation
-        if let Some(nonce) = account.nonce {
-            if nonce > 0 {
-                // TODO: Add nonce change tracking
-            }
-        }
-
-        // Code allocation
-        if let Some(code) = &account.code {
-            if !code.is_empty() {
-                // TODO: Add code change tracking
-            }
-        }
-
-        // Storage allocation
-        if let Some(storage) = &account.storage {
-            for (_key, value) in storage {
-                if value != &B256::ZERO {
-                    // TODO: Add storage change tracking
-                }
-            }
-        }
-    }
+    // NOTE: Genesis account allocation is commented out - handled by integration layer
+    // /// on_genesis_account_allocation processes a single account allocation in genesis
+    // fn on_genesis_account_allocation(&mut self, address: &Address, account: &GenesisAccount) {
+    //     // ... implementation commented out ...
+    // }
 
     /// on_block_start prepares for block processing a new block altogether
-    pub fn on_block_start(&mut self, block: &RecoveredBlock<Node>) {
+    pub fn on_block_start(&mut self, event: &BlockEvent) {
         self.ensure_init();
 
-        let pb_block = mapper::recovered_block_to_protobuf::<Node>(block);
+        // Compute rules for this block
+        self.block_rules = Some(self.chain_config.rules(
+            event.block.number,
+            event.block.is_merge,
+            event.block.time,
+        ));
+
+        // TODO: Convert BlockEvent to protobuf Block
+        // let pb_block = mapper::block_event_to_protobuf(event);
+        // self.on_block_start_inner(pb_block);
+
+        // Temporary: create an empty block for now
+        let pb_block = Block {
+            number: event.block.number,
+            hash: event.block.hash.to_vec(),
+            ..Default::default()
+        };
         self.on_block_start_inner(pb_block);
     }
 
@@ -272,24 +193,22 @@ impl<Node: FullNodeComponents> Tracer<Node> {
     }
 
     /// on_tx_end finalizes the current transaction and adds it to the block
-    pub fn on_tx_end<R>(&mut self, receipt: &R)
-    where
-        R: Receipt,
-    {
+    pub fn on_tx_end(&mut self, receipt: &ReceiptData) {
         self.ensure_in_block();
         self.ensure_in_transaction();
 
         firehose_debug!("ending transaction");
 
         if let Some(mut trx) = self.current_transaction.take() {
-            // Map receipt to protobuf
-            trx.receipt = Some(mapper::receipt_to_protobuf(receipt));
+            // TODO: Map receipt to protobuf
+            // trx.receipt = Some(mapper::receipt_data_to_protobuf(receipt));
 
             // Set transaction status 1: success, 0: failure
-            trx.status = if receipt.status() { 1 } else { 0 };
+            let is_success = receipt.status == 1;
+            trx.status = if is_success { 1 } else { 0 };
 
             // Calculate gas used by transaction
-            let cumulative_gas_used = receipt.cumulative_gas_used();
+            let cumulative_gas_used = receipt.cumulative_gas_used;
             trx.gas_used = cumulative_gas_used - self.previous_cumulative_gas_used;
 
             // Update gas for next transaction
@@ -298,16 +217,20 @@ impl<Node: FullNodeComponents> Tracer<Node> {
             trx.calls = std::mem::take(&mut self.call_stack);
 
             // Check if root call reverted or failed to set transaction status
-            let root_call_reverted = trx.calls.first()
+            let root_call_reverted = trx
+                .calls
+                .first()
                 .map(|call| call.status_reverted)
                 .unwrap_or(false);
-            let root_call_failed = trx.calls.first()
+            let _root_call_failed = trx
+                .calls
+                .first()
                 .map(|call| call.status_failed)
                 .unwrap_or(false);
 
             // Set proper transaction status
             use crate::pb::sf::ethereum::r#type::v2::TransactionTraceStatus;
-            if !receipt.status() {
+            if !is_success {
                 trx.status = if root_call_reverted {
                     TransactionTraceStatus::Reverted as i32
                 } else {
@@ -323,11 +246,15 @@ impl<Node: FullNodeComponents> Tracer<Node> {
             // If a sub-call reverted/failed, only that sub-call's logs (and descendants) are excluded
             if let Some(receipt_obj) = &mut trx.receipt {
                 // If transaction failed, exclude ALL logs
-                if !receipt.status() {
+                if !is_success {
                     receipt_obj.logs = Vec::new();
                 } else {
                     // Transaction succeeded - collect logs, excluding reverted/failed sub-calls
-                    fn collect_logs_recursive(call: &Call, calls: &[Call], logs: &mut Vec<crate::pb::sf::ethereum::r#type::v2::Log>) {
+                    fn collect_logs_recursive(
+                        call: &Call,
+                        calls: &[Call],
+                        logs: &mut Vec<crate::pb::sf::ethereum::r#type::v2::Log>,
+                    ) {
                         // If this call reverted or failed, skip its logs and all child logs
                         if call.status_reverted || call.status_failed {
                             return;
@@ -353,8 +280,12 @@ impl<Node: FullNodeComponents> Tracer<Node> {
                 }
             }
 
-            self.add_post_execution_state_changes(&mut trx);
-            self.add_miner_reward(&mut trx);
+            // NOTE: These methods were in the commented-out inspector section
+            // The integration layer should handle:
+            // - add_post_execution_state_changes: Adding state changes after transaction
+            // - add_miner_reward: Adding miner reward tracking
+            // self.add_post_execution_state_changes(&mut trx);
+            // self.add_miner_reward(&mut trx);
 
             if let Some(root_call) = trx.calls.first() {
                 trx.return_data = root_call.return_data.clone();
@@ -384,22 +315,9 @@ impl<Node: FullNodeComponents> Tracer<Node> {
         firehose_debug!("transaction ended");
     }
 
-    /// on_tx_start starts tracing a transaction from a signed transaction
-    ///
-    /// TODO Not sure what we should do here for other chains
-    pub fn on_tx_start(&mut self, tx: &SignedTx<Node>)
-    where
-        SignedTx<Node>: SignedTransaction + Transaction + SignerRecoverable,
-    {
-        let hash = *tx.tx_hash();
-        let from = tx.recover_signer().unwrap_or_default();
-        let to = tx.to().unwrap_or_default();
-
-        // UNSAFE: This assumes SignedTx<Node> has the same memory layout as TransactionSigned
-        // This works for Ethereum but may break for other chains
-        // TODO: Find a safe way to do this
-        let tx_ref = unsafe { &*(tx as *const SignedTx<Node> as *const TransactionSigned) };
-        self.on_tx_start_inner(tx_ref, hash, from, to);
+    /// on_tx_start starts tracing a transaction from a TxEvent
+    pub fn on_tx_start(&mut self, event: &TxEvent) {
+        self.on_tx_start_inner(event);
     }
 
     /// Starts capturing a system call
@@ -435,236 +353,86 @@ impl<Node: FullNodeComponents> Tracer<Node> {
         info!(target: "firehose:tracer", "on_system_call_end() about to return");
     }
 
-    /// Manually create a system call entry from execution result
-    /// This is needed because transact_system_call() doesn't trigger inspector hooks
-    pub fn on_system_call_enter<H>(
-        &mut self,
-        caller: Address,
-        address: Address,
-        input: &[u8],
-        result: &reth::revm::context::result::ResultAndState<H>,
-    ) {
-        use crate::pb::sf::ethereum::r#type::v2::{
-            CallType, BigInt, GasChange, StorageChange, gas_change,
-        };
-        use reth::revm::context::result::ExecutionResult;
+    // NOTE: on_system_call_enter is commented out because it depends on REVM types.
+    // The integration layer should handle system calls by constructing Call objects
+    // and calling methods to add them to the tracer.
+    //
+    // /// Manually create a system call entry from execution result
+    // pub fn on_system_call_enter<H>(...) {
+    //     // ... implementation commented out ...
+    // }
 
-        // Extract gas + output + success from REVM result
-        let (gas_used, output, is_success) = match &result.result {
-            ExecutionResult::Success { gas_used, output, .. } => (*gas_used, output.data().to_vec(), true),
-            ExecutionResult::Revert  { gas_used, output }     => (*gas_used, output.to_vec(), false),
-            ExecutionResult::Halt    { gas_used, .. }         => (*gas_used, Vec::new(), false),
-        };
-
-        // We model system calls with a fixed 30M gas allowance
-        let gas_limit: u64 = 30_000_000;
-        let gas_left = gas_limit.saturating_sub(gas_used);
-
-        // Build the Call, explicitly initialize ALL fields to avoid any Default issues (might change)
-        let mut call = Call {
-            index: 0,
-            parent_index: 0,
-            depth: 0,
-            call_type: CallType::Call as i32,
-            caller: caller.to_vec(),
-            address: address.to_vec(),
-            // Explicit
-            address_delegates_to: None,
-            value: Some(BigInt { bytes: Vec::new() }),
-            gas_limit,
-            gas_consumed: gas_used,
-            return_data: output,
-            input: input.to_vec(),
-            executed_code: false,
-            suicide: false,
-            // Explicitl
-            keccak_preimages: std::collections::HashMap::new(),
-            // Explicit
-            storage_changes: Vec::new(),
-            // Explicitl
-            balance_changes: Vec::new(),
-            // Explicit
-            nonce_changes: Vec::new(),
-            // Explicit
-            logs: Vec::new(),
-            // Explicit
-            code_changes: Vec::new(),
-            // Explicit
-            gas_changes: Vec::new(),
-            status_failed: !is_success,
-            status_reverted: matches!(result.result, ExecutionResult::Revert { .. }),
-            failure_reason: String::new(),
-            state_reverted: !is_success,
-            begin_ordinal: self.block_ordinal.next(),
-            end_ordinal: 0,
-            // Explicit
-            account_creations: Vec::new(),
-        };
-
-        call.gas_changes.push(GasChange {
-            old_value: 0,
-            new_value: gas_limit,
-            ordinal: self.block_ordinal.next(),
-            reason: gas_change::Reason::CallInitialBalance as i32,
-        });
-
-        if gas_left > 0 {
-            call.gas_changes.push(GasChange {
-                old_value: gas_left,
-                new_value: 0,
-                ordinal: self.block_ordinal.next(),
-                reason: gas_change::Reason::CallLeftOverReturned as i32,
-            });
-        } else {
-            call.gas_changes.push(GasChange {
-                old_value: 0,
-                new_value: 0,
-                ordinal: self.block_ordinal.next(),
-                reason: gas_change::Reason::CallLeftOverReturned as i32,
-            });
-        }
-
-        // Extract real storage changes from result.state
-        // result.state is a HashMap<Address, Account>, where Account.storage is HashMap<U256, EvmStorageSlot>
-        // TODO: Fix U256 conversion - temporarily disabled to debug memory allocation bug
-        // if let Some(account) = result.state.get(&address) {
-        //     for (storage_key, storage_slot) in &account.storage {
-        //         // Only record changes where original_value != present_value
-        //         if storage_slot.is_changed() {
-        //             call.storage_changes.push(StorageChange {
-        //                 address: address.to_vec(),
-        //                 key: Vec::new(),  // TODO
-        //                 old_value: Vec::new(),  // TODO
-        //                 new_value: Vec::new(),  // TODO
-        //                 ordinal: self.block_ordinal.next(),
-        //             });
-        //         }
-        //     }
-        // }
-
-        // close the call
-        call.end_ordinal = self.block_ordinal.next();
-
-        // push to the temporary stack; on_system_call_end() will flush to block.system_calls
-        self.call_stack.push(call);
-    }
-
-
-    /// on_tx_start_inner is used internally in two places, in the normal "tracer" and in the "OnGenesisBlock",
-    /// we manually pass some override to the `tx` because genesis block has a different way of creating
-    /// the transaction that wraps the genesis block.
+    /// on_tx_start_inner is used internally to start transaction tracing
     /// Ported from Go onTxStart() method
-    pub fn on_tx_start_inner(
-        &mut self,
-        tx: &TransactionSigned,
-        hash: B256,
-        from: Address,
-        to: Address,
-    ) {
+    pub fn on_tx_start_inner(&mut self, event: &TxEvent) {
         info!(target: "firehose:tracer", "on_tx_start_inner: START");
 
         firehose_debug!(
             "tx start inner (hash={} from={} to={})",
-            HexView(hash.as_slice()),
-            HexView(from.as_slice()),
-            HexView(to.as_slice())
+            HexView(event.hash.as_slice()),
+            HexView(event.from.as_slice()),
+            event.to.map(|addr| hex::encode(addr)).unwrap_or_else(|| "None".to_string())
         );
 
-        let signature = tx.signature();
+        info!(target: "firehose:tracer", "on_tx_start_inner: Creating transaction trace");
 
-        info!(target: "firehose:tracer", "on_tx_start_inner: Creating public_key vec");
-        // Public key recovery is not needed for Firehose 3.0
-        let public_key = Vec::new();
-
-        info!(target: "firehose:tracer", "on_tx_start_inner: Converting r to bytes, r={:?}", signature.r());
-        let r_bytes = signature.r().to_be_bytes::<32>().to_vec();
-        info!(target: "firehose:tracer", "on_tx_start_inner: r_bytes created with len={}", r_bytes.len());
-
-        info!(target: "firehose:tracer", "on_tx_start_inner: Converting s to bytes, s={:?}", signature.s());
-        let s_bytes = signature.s().to_be_bytes::<32>().to_vec();
-        info!(target: "firehose:tracer", "on_tx_start_inner: s_bytes created with len={}", s_bytes.len());
-
-        info!(target: "firehose:tracer", "on_tx_start_inner: Creating access_list");
-        let access_list = self.create_access_list(tx);
-        info!(target: "firehose:tracer", "on_tx_start_inner: Creating max_fee_per_gas");
-        let max_fee_per_gas = self.create_max_fee_per_gas(tx);
-        info!(target: "firehose:tracer", "on_tx_start_inner: Creating max_priority_fee_per_gas");
-        let max_priority_fee_per_gas = self.create_max_priority_fee_per_gas(tx);
-
-        info!(target: "firehose:tracer", "on_tx_start_inner: About to create TransactionTrace struct");
-
-        // Pre-compute all fields to isolate which one causes the crash
-        info!(target: "firehose:tracer", "Computing begin_ordinal");
         let begin_ordinal = self.block_ordinal.next();
-        info!(target: "firehose:tracer", "Computing gas_price");
-        let gas_price = self.create_gas_price_big_int(tx);
-        info!(target: "firehose:tracer", "Computing value");
-        let value = if tx.value() > U256::ZERO { self.create_big_int_from_u256(tx.value()) } else { None };
-        info!(target: "firehose:tracer", "Computing blob_gas");
-        let blob_gas = self.create_blob_gas(tx);
-        info!(target: "firehose:tracer", "Computing blob_gas_fee_cap");
-        let blob_gas_fee_cap = self.create_blob_gas_fee_cap(tx);
-        info!(target: "firehose:tracer", "Computing blob_hashes");
-        let blob_hashes = self.create_blob_hashes(tx);
-        info!(target: "firehose:tracer", "Computing set_code_authorizations");
-        let set_code_authorizations = self.create_set_code_authorizations(tx);
 
-        info!(target: "firehose:tracer", "All fields computed, checking vector lengths");
-        info!(target: "firehose:tracer", "r_bytes.len()={}, s_bytes.len()={}", r_bytes.len(), s_bytes.len());
-        info!(target: "firehose:tracer", "access_list.len()={}", access_list.len());
-        info!(target: "firehose:tracer", "blob_hashes.len()={}", blob_hashes.len());
-        info!(target: "firehose:tracer", "set_code_authorizations.len()={}", set_code_authorizations.len());
+        // Convert gas_price to BigInt
+        let gas_price = if event.gas_price > U256::ZERO {
+            self.create_big_int_from_u256(event.gas_price)
+        } else {
+            None
+        };
 
-        // Pre-compute all .to_vec() calls to isolate which one causes the crash
-        info!(target: "firehose:tracer", "Converting hash to vec");
-        let hash_vec = hash.to_vec();
-        info!(target: "firehose:tracer", "Converting from to vec");
-        let from_vec = from.to_vec();
-        info!(target: "firehose:tracer", "Converting to to vec");
-        let to_vec = to.to_vec();
-        info!(target: "firehose:tracer", "Converting input to vec");
-        let input_vec = tx.input().to_vec();
-        info!(target: "firehose:tracer", "Creating v vec");
-        let v_byte = 27 + signature.v() as u8;
-        let v_vec = vec![v_byte];
+        // Convert value to BigInt
+        let value = if event.value > U256::ZERO {
+            self.create_big_int_from_u256(event.value)
+        } else {
+            None
+        };
 
-        info!(target: "firehose:tracer", "Testing Default::default()");
-        let _test = TransactionTrace::default();
-        info!(target: "firehose:tracer", "Default worked, now creating actual struct");
+        info!(target: "firehose:tracer", "on_tx_start_inner: Converting fields to vectors");
+        let hash_vec = event.hash.to_vec();
+        let from_vec = event.from.to_vec();
+        let to_vec = event.to.map(|addr| addr.to_vec()).unwrap_or_default();
+        let input_vec = event.input.to_vec();
+
+        info!(target: "firehose:tracer", "on_tx_start_inner: Creating TransactionTrace");
 
         let trx = TransactionTrace {
             begin_ordinal,
             hash: hash_vec,
             from: from_vec,
             to: to_vec,
-            nonce: tx.nonce(),
-            gas_limit: tx.gas_limit(),
+            nonce: event.nonce as u64,
+            gas_limit: event.gas,
             gas_price,
             value,
             input: input_vec,
-            v: v_vec,
-            r: r_bytes,
-            s: s_bytes,
-            r#type: self.transaction_type_from_tx_type(tx.tx_type()) as i32,
-            access_list,
-            max_fee_per_gas,
-            max_priority_fee_per_gas,
+            v: Vec::new(), // Signature not included in minimal TxEvent
+            r: Vec::new(),
+            s: Vec::new(),
+            r#type: event.tx_type as i32,
+            access_list: Vec::new(),        // TODO: Add to TxEvent if needed
+            max_fee_per_gas: None,          // TODO: Add to TxEvent if needed
+            max_priority_fee_per_gas: None, // TODO: Add to TxEvent if needed
 
             // Initialize with defaults - these will be set by other methods
-            index: 0,
+            index: event.index,
             gas_used: 0,
             status: 0,
             receipt: None,
             calls: Vec::new(),
             return_data: Vec::new(),
-            public_key,
+            public_key: Vec::new(),
             end_ordinal: 0,
 
             // Optional fields that depend on transaction type
-            blob_gas,
-            blob_gas_fee_cap,
-            blob_hashes,
-            set_code_authorizations,
+            blob_gas: None,
+            blob_gas_fee_cap: None,
+            blob_hashes: Vec::new(),
+            set_code_authorizations: Vec::new(),
         };
 
         info!(target: "firehose:tracer", "on_tx_start_inner: TransactionTrace created, setting current_transaction");
@@ -674,35 +442,13 @@ impl<Node: FullNodeComponents> Tracer<Node> {
 }
 
 // Helper functions for transaction creation
-impl<Node: FullNodeComponents> Tracer<Node> {
-    /// Recover public key from transaction signature (unused in Firehose 3.0)
-    #[allow(dead_code)]
-    fn recover_public_key(
-        &self,
-        tx: &TransactionSigned,
-        signature: &Signature,
-        hash: B256,
-    ) -> Vec<u8> {
-        use alloy_consensus::transaction::SignableTransaction;
-
-        // Get the signature hash for this transaction
-        let sig_hash = tx.signature_hash();
-
-        // Try to recover the public key
-        match signature.recover_from_prehash(&sig_hash) {
-            Ok(public_key) => {
-                // Return the 64-byte uncompressed public key (without the 0x04 prefix)
-                public_key.to_sec1_bytes()[1..].to_vec()
-            }
-            Err(_) => {
-                firehose_debug!(
-                    "failed to recover public key for transaction {}",
-                    HexView(hash.as_slice())
-                );
-                Vec::new()
-            }
-        }
-    }
+impl Tracer {
+    // NOTE: recover_public_key is commented out because it depends on Reth types.
+    // Public key recovery is no longer needed in Firehose 3.0
+    // /// Recover public key from transaction signature (unused in Firehose 3.0)
+    // fn recover_public_key(...) {
+    //     // ... implementation commented out ...
+    // }
 
     fn create_gas_price_big_int<T>(
         &self,
@@ -812,18 +558,42 @@ impl<Node: FullNodeComponents> Tracer<Node> {
     }
 }
 
+
+// ============================================================================
+// NOTE: All REVM inspector callback handlers have been commented out.
+// ============================================================================
+//
+// The following section contains REVM-specific inspector hooks (on_step, 
+// on_step_end, extract_journal_changes, etc.) that are implementation-specific
+// to REVM and should be handled by the integration layer.
+//
+// The integration layer is responsible for:
+// 1. Implementing the REVM Inspector trait
+// 2. Converting REVM types to tracer minimal types (BlockEvent, TxEvent, etc.)
+// 3. Calling the appropriate tracer methods with those minimal types
+// 4. Extracting state changes from REVM journal and calling tracer methods
+//    to record them (balance changes, storage changes, nonce changes, etc.)
+//
+// For examples of how to implement the integration layer, see:
+// - monad/src/tracer.rs (Monad-specific REVM integration)
+// - Future integrations for other EVM implementations
+//
+// The commented out code below is kept for reference:
+// ============================================================================
+/*
+
 // Inspector callback handlers
-impl<Node: FullNodeComponents> Tracer<Node> {
+impl Tracer {
     /// EVM step, called BEFORE each opcode execution
     pub fn on_step<CTX>(
         &mut self,
-        interp: &mut reth::revm::revm::interpreter::Interpreter<
-            reth::revm::revm::interpreter::interpreter::EthInterpreter,
+        interp: &mut revm::revm::interpreter::Interpreter<
+            revm::revm::interpreter::interpreter::EthInterpreter,
         >,
         context: &mut CTX,
     ) where
-        CTX: reth::revm::revm::context_interface::ContextTr,
-        CTX::Journal: reth::revm::revm::inspector::JournalExt,
+        CTX: revm::revm::context_interface::ContextTr,
+        CTX::Journal: revm::revm::inspector::JournalExt,
     {
         // Track journal for future state changes
         self.last_journal_len = context.journal_ref().journal().len();
@@ -831,7 +601,7 @@ impl<Node: FullNodeComponents> Tracer<Node> {
         // Save gas BEFORE opcode executes (for gas tracking)
         if !self.call_stack.is_empty() {
             let opcode = interp.bytecode.opcode();
-            use reth::revm::revm::bytecode::opcode;
+            use revm::revm::bytecode::opcode;
 
             // Track opcodes that cause gas changes we need to record
             if opcode == opcode::CALLDATACOPY
@@ -868,7 +638,8 @@ impl<Node: FullNodeComponents> Tracer<Node> {
                                 let hash = keccak256(&*data);
                                 let hash_hex = hex::encode(hash.as_slice());
 
-                                self.pending_keccak_preimages.insert(hash_hex, (*data).to_vec());
+                                self.pending_keccak_preimages
+                                    .insert(hash_hex, (*data).to_vec());
                             }
                         }
                     }
@@ -880,13 +651,13 @@ impl<Node: FullNodeComponents> Tracer<Node> {
     /// EVM step end, called AFTER each opcode execution
     pub fn on_step_end<CTX>(
         &mut self,
-        interp: &mut reth::revm::revm::interpreter::Interpreter<
-            reth::revm::revm::interpreter::interpreter::EthInterpreter,
+        interp: &mut revm::revm::interpreter::Interpreter<
+            revm::revm::interpreter::interpreter::EthInterpreter,
         >,
         context: &mut CTX,
     ) where
-        CTX: reth::revm::revm::context_interface::ContextTr,
-        CTX::Journal: reth::revm::revm::inspector::JournalExt,
+        CTX: revm::revm::context_interface::ContextTr,
+        CTX::Journal: revm::revm::inspector::JournalExt,
     {
         // Record gas change if we tracked an opcode
         if let (Some(last_opcode), Some(old_gas)) = (self.last_opcode, self.last_gas_before_opcode)
@@ -895,8 +666,8 @@ impl<Node: FullNodeComponents> Tracer<Node> {
             let cost = old_gas.saturating_sub(new_gas);
 
             if cost > 0 {
-                use crate::pb::sf::ethereum::r#type::v2::{GasChange, gas_change};
-                use reth::revm::revm::bytecode::opcode;
+                use crate::pb::sf::ethereum::r#type::v2::{gas_change, GasChange};
+                use revm::revm::bytecode::opcode;
 
                 let is_log_opcode = last_opcode == opcode::LOG0
                     || last_opcode == opcode::LOG1
@@ -1011,7 +782,7 @@ impl<Node: FullNodeComponents> Tracer<Node> {
 
         // Add CALL_INITIAL_BALANCE for all calls (not just root)
         if gas_limit > 0 {
-            use crate::pb::sf::ethereum::r#type::v2::{GasChange, gas_change};
+            use crate::pb::sf::ethereum::r#type::v2::{gas_change, GasChange};
             call.gas_changes.push(GasChange {
                 old_value: 0,
                 new_value: gas_limit,
@@ -1040,7 +811,7 @@ impl<Node: FullNodeComponents> Tracer<Node> {
         gas
     }
 
-        // temporary
+    // temporary
     fn calculate_tx_data_floor_gas(&self, input: &[u8]) -> Option<u64> {
         const TX_GAS: u64 = 21_000;
         const TOKENS_PER_NON_ZERO: u64 = 4;
@@ -1056,7 +827,7 @@ impl<Node: FullNodeComponents> Tracer<Node> {
         TX_GAS.checked_add(extra_cost)
     }
 
-    // temporary  
+    // temporary
     fn is_prague_active(&self) -> bool {
         true
     }
@@ -1069,7 +840,7 @@ impl<Node: FullNodeComponents> Tracer<Node> {
         _value: U256,
     ) {
         use crate::pb::sf::ethereum::r#type::v2::{
-            BalanceChange, GasChange, NonceChange, balance_change, gas_change,
+            balance_change, gas_change, BalanceChange, GasChange, NonceChange,
         };
 
         let trx = self
@@ -1125,7 +896,7 @@ impl<Node: FullNodeComponents> Tracer<Node> {
 
     fn add_post_execution_state_changes(&mut self, trx: &mut TransactionTrace) {
         use crate::pb::sf::ethereum::r#type::v2::{
-            BalanceChange, GasChange, balance_change, gas_change,
+            balance_change, gas_change, BalanceChange, GasChange,
         };
 
         if let Some(root_call) = trx.calls.first_mut() {
@@ -1216,7 +987,8 @@ impl<Node: FullNodeComponents> Tracer<Node> {
                 if self.is_prague_active() {
                     if let Some(floor_data_gas) = self.calculate_tx_data_floor_gas(&trx.input) {
                         if floor_data_gas <= trx.gas_limit {
-                            let gas_used_before_floor = trx.gas_limit.saturating_sub(call_gas_returned);
+                            let gas_used_before_floor =
+                                trx.gas_limit.saturating_sub(call_gas_returned);
                             if gas_used_before_floor < floor_data_gas {
                                 let new_gas_remaining = trx.gas_limit - floor_data_gas;
                                 if new_gas_remaining < final_gas_refund {
@@ -1257,7 +1029,7 @@ impl<Node: FullNodeComponents> Tracer<Node> {
     }
 
     fn add_miner_reward(&mut self, trx: &mut TransactionTrace) {
-        use crate::pb::sf::ethereum::r#type::v2::{BalanceChange, balance_change};
+        use crate::pb::sf::ethereum::r#type::v2::{balance_change, BalanceChange};
 
         if let Some(root_call) = trx.calls.first_mut() {
             let trx_gas_used = trx.gas_used;
@@ -1293,7 +1065,14 @@ impl<Node: FullNodeComponents> Tracer<Node> {
     }
 
     /// CALL* operation completes
-    pub fn on_call_exit(&mut self, output: Bytes, gas_used: u64, success: bool, is_revert: bool, failure_reason: String) {
+    pub fn on_call_exit(
+        &mut self,
+        output: Bytes,
+        gas_used: u64,
+        success: bool,
+        is_revert: bool,
+        failure_reason: String,
+    ) {
         if let Some(mut call) = self.call_stack.pop() {
             call.return_data = output.to_vec();
             call.gas_consumed = gas_used;
@@ -1305,7 +1084,10 @@ impl<Node: FullNodeComponents> Tracer<Node> {
 
             firehose_debug!(
                 "on_call_exit: success={} is_revert={} state_reverted={} status_reverted={}",
-                success, is_revert, call.state_reverted, call.status_reverted
+                success,
+                is_revert,
+                call.state_reverted,
+                call.status_reverted
             );
 
             // Parse failure reason to human-readable format
@@ -1328,7 +1110,7 @@ impl<Node: FullNodeComponents> Tracer<Node> {
             if call.depth > 0 {
                 let gas_left = call.gas_limit.saturating_sub(gas_used);
                 if gas_left > 0 {
-                    use crate::pb::sf::ethereum::r#type::v2::{GasChange, gas_change};
+                    use crate::pb::sf::ethereum::r#type::v2::{gas_change, GasChange};
                     call.gas_changes.push(GasChange {
                         old_value: gas_left,
                         new_value: 0,
@@ -1370,7 +1152,7 @@ impl<Node: FullNodeComponents> Tracer<Node> {
         };
 
         let call = Call {
-             // Index starts at 1
+            // Index starts at 1
             index: self.call_stack.len() as u32 + 1,
             parent_index,
             depth,
@@ -1462,7 +1244,7 @@ impl<Node: FullNodeComponents> Tracer<Node> {
             // Record EVENT_LOG gas change BEFORE the log itself
             // Use the gas saved in on_step and current gas
             if let Some(old_gas) = self.last_gas_before_opcode {
-                use crate::pb::sf::ethereum::r#type::v2::{GasChange, gas_change};
+                use crate::pb::sf::ethereum::r#type::v2::{gas_change, GasChange};
 
                 let cost = old_gas.saturating_sub(current_gas);
 
@@ -1493,10 +1275,8 @@ impl<Node: FullNodeComponents> Tracer<Node> {
             for topic in log.topics() {
                 let topic_hex = hex::encode(topic.as_slice());
                 if let Some(preimage) = self.pending_keccak_preimages.get(&topic_hex) {
-                    call.keccak_preimages.insert(
-                        topic_hex.clone(),
-                        hex::encode(preimage),
-                    );
+                    call.keccak_preimages
+                        .insert(topic_hex.clone(), hex::encode(preimage));
                 }
             }
 
@@ -1539,12 +1319,14 @@ impl<Node: FullNodeComponents> Tracer<Node> {
     /// Extract state changes from journal entries
     fn extract_journal_entries<CTX>(&mut self, context: &mut CTX)
     where
-        CTX: reth::revm::revm::context_interface::ContextTr,
-        CTX::Journal: reth::revm::revm::inspector::JournalExt,
+        CTX: revm::revm::context_interface::ContextTr,
+        CTX::Journal: revm::revm::inspector::JournalExt,
     {
-        use crate::pb::sf::ethereum::r#type::v2::{BalanceChange, StorageChange, NonceChange, balance_change};
-        use reth::revm::revm::context_interface::ContextTr as _;
-        use reth::revm::revm::context_interface::JournalTr as _;
+        use crate::pb::sf::ethereum::r#type::v2::{
+            balance_change, BalanceChange, NonceChange, StorageChange,
+        };
+        use revm::revm::context_interface::ContextTr as _;
+        use revm::revm::context_interface::JournalTr as _;
 
         // Collect journal entries to process
         let entries_to_process: Vec<_> = {
@@ -1567,9 +1349,13 @@ impl<Node: FullNodeComponents> Tracer<Node> {
             if let Some(call) = self.call_stack.last_mut() {
                 for entry in entries_to_process {
                     match entry {
-                        reth::revm::JournalEntry::BalanceChange { address, old_balance } => {
+                        revm::JournalEntry::BalanceChange {
+                            address,
+                            old_balance,
+                        } => {
                             // Query current balance from state
-                            let new_balance = context.balance(address)
+                            let new_balance = context
+                                .balance(address)
                                 .map(|load| load.data)
                                 .unwrap_or(U256::ZERO);
 
@@ -1582,12 +1368,14 @@ impl<Node: FullNodeComponents> Tracer<Node> {
                             });
                         }
 
-                        reth::revm::JournalEntry::BalanceTransfer { balance, from, to } => {
+                        revm::JournalEntry::BalanceTransfer { balance, from, to } => {
                             // Query actual account balances
-                            let from_balance = context.balance(from)
+                            let from_balance = context
+                                .balance(from)
                                 .map(|load| load.data)
                                 .unwrap_or(U256::ZERO);
-                            let to_balance = context.balance(to)
+                            let to_balance = context
+                                .balance(to)
                                 .map(|load| load.data)
                                 .unwrap_or(U256::ZERO);
 
@@ -1608,7 +1396,11 @@ impl<Node: FullNodeComponents> Tracer<Node> {
                             });
                         }
 
-                        reth::revm::JournalEntry::StorageChanged { address, key, had_value } => {
+                        revm::JournalEntry::StorageChanged {
+                            address,
+                            key,
+                            had_value,
+                        } => {
                             // TODO: Fix U256 conversion - temporarily disabled to debug memory allocation bug
                             // key and had_value are U256 (StorageKey and StorageValue are type aliases)
                             // Get current value from state
@@ -1625,9 +1417,10 @@ impl<Node: FullNodeComponents> Tracer<Node> {
                             // });
                         }
 
-                        reth::revm::JournalEntry::NonceChange { address } => {
+                        revm::JournalEntry::NonceChange { address } => {
                             // Nonce was incremented by 1, load account to get current nonce
-                            let new_nonce = context.journal_mut()
+                            let new_nonce = context
+                                .journal_mut()
                                 .load_account(address)
                                 .map(|load| load.data.info.nonce)
                                 .unwrap_or(0);
@@ -1654,5 +1447,5 @@ impl<Node: FullNodeComponents> Tracer<Node> {
             }
         }
     }
-
 }
+*/

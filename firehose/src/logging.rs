@@ -2,6 +2,7 @@ use std::sync::OnceLock;
 
 /// A wrapper that defers hex encoding until Display is called
 /// This avoids the cost of hex encoding when logging is disabled
+#[derive(Debug)]
 pub struct HexView<T: AsRef<[u8]>>(pub T);
 
 impl<T: AsRef<[u8]>> std::fmt::Display for HexView<T> {

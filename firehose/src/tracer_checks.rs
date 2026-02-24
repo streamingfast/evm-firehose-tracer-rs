@@ -1,14 +1,12 @@
 use super::HexView;
-use reth::api::FullNodeComponents;
 
 /// Tracer state checking functionality
-impl<Node: FullNodeComponents> super::Tracer<Node> {
-    /// Ensure that blockchain has been initialized (chain_spec is set)
+impl super::Tracer {
+    /// Ensure that blockchain has been initialized (chain_config is set)
+    /// Note: chain_config is now always set in the constructor, so this check is a no-op
     #[inline]
     pub(super) fn ensure_init(&self) {
-        if self.chain_spec.is_none() {
-            self.panic_invalid_state("the on_init hook should have been called at this point");
-        }
+        // chain_config is always set in constructor, so nothing to check
     }
 
     /// Ensure that we are currently in a block processing state
@@ -21,9 +19,7 @@ impl<Node: FullNodeComponents> super::Tracer<Node> {
             );
         }
 
-        if self.chain_spec.is_none() {
-            self.panic_invalid_state("the on_init hook should have been called at this point");
-        }
+        // chain_config is always set in constructor, no need to check
     }
 
     /// Ensure that we are NOT currently in a block processing state
@@ -70,7 +66,7 @@ impl<Node: FullNodeComponents> super::Tracer<Node> {
         // Add state information similar to Go version
         let state_info = format!(
             " (init={}, in_block={})",
-            self.chain_spec.is_some(),
+            true, // chain_config is always set
             self.current_block.is_some()
         );
         enhanced_msg.push_str(&state_info);
