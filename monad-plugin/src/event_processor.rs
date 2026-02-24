@@ -66,28 +66,37 @@ impl EventProcessor {
             ExecEvent::BlockStart(block_start) => {
                 self.process_block_start(block_start, block_number).await
             }
-            ExecEvent::BlockEnd(block_end) => {
-                self.process_block_end(block_end, block_number).await
-            }
+            ExecEvent::BlockEnd(block_end) => self.process_block_end(block_end, block_number).await,
             ExecEvent::TxnHeaderStart {
                 txn_index,
                 txn_header_start,
                 data_bytes,
                 blob_bytes,
             } => {
-                self.process_txn_header(txn_header_start, data_bytes, blob_bytes, txn_index, block_number)
-                    .await
+                self.process_txn_header(
+                    txn_header_start,
+                    data_bytes,
+                    blob_bytes,
+                    txn_index,
+                    block_number,
+                )
+                .await
             }
             ExecEvent::TxnAccessListEntry {
                 txn_index,
                 txn_access_list_entry,
                 storage_key_bytes,
             } => {
-                self.process_txn_access_list_entry(txn_index, txn_access_list_entry, storage_key_bytes)
-                    .await
+                self.process_txn_access_list_entry(
+                    txn_index,
+                    txn_access_list_entry,
+                    storage_key_bytes,
+                )
+                .await
             }
             ExecEvent::TxnEvmOutput { txn_index, output } => {
-                self.process_txn_evm_output(output, txn_index, block_number).await
+                self.process_txn_evm_output(output, txn_index, block_number)
+                    .await
             }
             ExecEvent::TxnEnd => self.process_txn_end(block_number).await,
             ExecEvent::TxnLog {
@@ -95,24 +104,55 @@ impl EventProcessor {
                 txn_log,
                 topic_bytes,
                 data_bytes,
-            } => self.process_txn_log(txn_log, topic_bytes, data_bytes, txn_index, block_number).await,
+            } => {
+                self.process_txn_log(txn_log, topic_bytes, data_bytes, txn_index, block_number)
+                    .await
+            }
             ExecEvent::BlockQC(qc) => self.process_block_qc(qc, block_number).await,
-            ExecEvent::BlockFinalized(finalized) => self.process_block_finalized(finalized, block_number).await,
+            ExecEvent::BlockFinalized(finalized) => {
+                self.process_block_finalized(finalized, block_number).await
+            }
             ExecEvent::TxnCallFrame {
                 txn_index,
                 txn_call_frame,
                 input_bytes,
                 return_bytes,
-            } => self.process_txn_call_frame(txn_call_frame, input_bytes, return_bytes, txn_index, block_number).await,
+            } => {
+                self.process_txn_call_frame(
+                    txn_call_frame,
+                    input_bytes,
+                    return_bytes,
+                    txn_index,
+                    block_number,
+                )
+                .await
+            }
             // System call events only
-            ExecEvent::AccountAccessListHeader(header) => {
-                self.process_account_access_list_header(header, None, block_number).await
+            ExecEvent::AccountAccessListHeader {
+                txn_index,
+                account_access_list_header,
+            } => {
+                self.process_account_access_list_header(
+                    account_access_list_header,
+                    txn_index,
+                    block_number,
+                )
+                .await
             }
-            ExecEvent::AccountAccess(account_access) => {
-                self.process_account_access(account_access, None, block_number).await
+            ExecEvent::AccountAccess {
+                txn_index,
+                account_access,
+            } => {
+                self.process_account_access(account_access, txn_index, block_number)
+                    .await
             }
-            ExecEvent::StorageAccess(storage_access) => {
-                self.process_storage_access(storage_access, None, 0, block_number).await
+            ExecEvent::StorageAccess {
+                txn_index,
+                account_index,
+                storage_access,
+            } => {
+                self.process_storage_access(storage_access, txn_index, account_index, block_number)
+                    .await
             }
             _ => {
                 debug!("Skipping event type: {:?}", exec_event);
@@ -243,9 +283,14 @@ impl EventProcessor {
         }
 
         // Remove the pending header and access list
-        let pending = self.pending_txn_headers.remove(&txn_index)
+        let pending = self
+            .pending_txn_headers
+            .remove(&txn_index)
             .expect("pending transaction header must exist after count validation");
-        let access_list = self.pending_access_lists.remove(&txn_index).unwrap_or_default();
+        let access_list = self
+            .pending_access_lists
+            .remove(&txn_index)
+            .unwrap_or_default();
 
         let event_type = EVENT_TYPE_TX_HEADER;
 

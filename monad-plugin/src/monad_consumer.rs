@@ -4,8 +4,8 @@
 //! event ring buffer system.
 
 use crate::{EventProcessor, PluginConfig};
-use eyre::Result;
-use monad_event_ring::{EventNextResult, EventPayloadResult, DecodedEventRing};
+use eyre::{Result, WrapErr};
+use monad_event_ring::{DecodedEventRing, EventNextResult, EventPayloadResult, EventRingPath};
 use monad_exec_events::ExecEventRing;
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, Stream};
@@ -29,7 +29,9 @@ impl MonadConsumer {
         let event_processor = EventProcessor::new();
 
         // Initialize the SDK event ring
-        let event_ring = ExecEventRing::new_from_path(&config.event_ring_path)
+        let event_ring_path = EventRingPath::resolve(&config.event_ring_path)
+            .map_err(|e| eyre::eyre!("Failed to resolve event ring path: {:?}", e))?;
+        let event_ring = ExecEventRing::new(event_ring_path)
             .map_err(|e| eyre::eyre!("Failed to open Monad event ring: {:?}", e))?;
 
         info!("Successfully opened Monad event ring");
@@ -112,14 +114,18 @@ impl MonadConsumer {
 
                     // Event descriptor will drop here at end of scope
                     // Extract block number from event if it's a BlockStart
-                    let block_number = if let monad_exec_events::ExecEvent::BlockStart(ref bs) = exec_event {
-                        bs.block_tag.block_number
-                    } else {
-                        event_processor.current_block().unwrap_or(0)
-                    };
+                    let block_number =
+                        if let monad_exec_events::ExecEvent::BlockStart(ref bs) = exec_event {
+                            bs.block_tag.block_number
+                        } else {
+                            event_processor.current_block().unwrap_or(0)
+                        };
 
                     // Process and send asynchronously
-                    match event_processor.process_monad_event(exec_event, block_number).await {
+                    match event_processor
+                        .process_monad_event(exec_event, block_number)
+                        .await
+                    {
                         Ok(Some(processed_event)) => {
                             if let Err(e) = tx.send(processed_event).await {
                                 warn!("Failed to send processed event: {}", e);

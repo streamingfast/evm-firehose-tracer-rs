@@ -17,19 +17,24 @@ This repository currently focuses on **Monad** blockchain integration with a 3-c
 
 ### Mac OS X
 
-Monad requires a recent LLVM version, the one that comes from stock OSX is often outdated so it's better to have a version from Brew directly. However `brew` will not hook it automatically to the system, you need to manually activate it. Ensure you have a recent version enough of LLVM:
+Monad requires a recent LLVM version, the one that comes from stock OSX is often outdated so it's better to have a version from Brew directly. Technically recent OSX Tahoe version with latest Command Line Tools has LLVM 17 which works properly, going the Homebrew route is still recommend. However `brew` will not hook it automatically to the system, you need to manually activate it. Ensure you have a recent version enough of LLVM:
 
 ```bash
-brew install llvm
+brew install llvm@20 zstd
 ```
+
+> [!NOTE]
+> Locally I got llvm@20 and it worked, `clang --version` `20.1.2` and it worked, ensure `clang/clang++` points to Homebrew version
 
 Then you can use this `.envrc` file to auto-load LLVM first:
 
 ```bash
-llvm_path="$(brew --prefix llvm)"
+llvm_path="$(brew --prefix llvm@20)"
+zstd_path="$(brew --prefix zstd)"
 
 path_add PATH "$llvm_path"/bin
-path_add DYLD_LIBRARY_PATH "$llvm_path"/lib
+path_add LIBRARY_PATH "$llvm_path"/lib
+path_add LIBRARY_PATH "$zstd_path"/lib
 
 export CC="${llvm_path}/bin/clang"
 export CXX="${llvm_path}/bin/clang++"
