@@ -4,12 +4,27 @@
 //! event ring buffer system.
 
 use crate::{EventProcessor, PluginConfig};
-use eyre::{Result, WrapErr};
-use monad_event_ring::{DecodedEventRing, EventNextResult, EventPayloadResult, EventRingPath};
-use monad_exec_events::ExecEventRing;
+use eyre::Result;
+use monad_event_ring::{DecodedEventRing, EventDecoder, EventDescriptorInfo, EventNextResult, EventPayloadResult};
+use monad_exec_events::{ExecEvent, ExecEventDecoder, ExecEventRing};
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, Stream};
 use tracing::{error, info, warn};
+
+#[derive(Debug, Clone, Copy)]
+pub struct EventMeta {
+    pub seqno: u64,
+}
+
+fn decode_with_meta(
+    info: EventDescriptorInfo<ExecEventDecoder>,
+    bytes: &[u8],
+) -> Option<(EventMeta, ExecEvent)> {
+    let seqno = info.seqno;
+    let event_ref = ExecEventDecoder::raw_to_event_ref(info, bytes);
+    let event = ExecEventDecoder::event_ref_to_event(event_ref);
+    Some((EventMeta { seqno }, event))
+}
 
 /// Consumer for Monad execution events
 pub struct MonadConsumer {
@@ -28,10 +43,7 @@ impl MonadConsumer {
 
         let event_processor = EventProcessor::new();
 
-        // Initialize the SDK event ring
-        let event_ring_path = EventRingPath::resolve(&config.event_ring_path)
-            .map_err(|e| eyre::eyre!("Failed to resolve event ring path: {:?}", e))?;
-        let event_ring = ExecEventRing::new(event_ring_path)
+        let event_ring = ExecEventRing::new_from_path(&config.event_ring_path)
             .map_err(|e| eyre::eyre!("Failed to open Monad event ring: {:?}", e))?;
 
         info!("Successfully opened Monad event ring");
@@ -103,19 +115,18 @@ impl MonadConsumer {
                         }
                     }
                 }
-                EventNextResult::Ready(event) => {
-                    let exec_event = match event.try_read() {
+                EventNextResult::Ready(event_descriptor) => {
+                    let (meta, exec_event) = match event_descriptor.try_filter_map_raw(decode_with_meta) {
                         EventPayloadResult::Expired => {
                             warn!("Event payload expired!");
                             continue;
                         }
-                        EventPayloadResult::Ready(exec_event) => exec_event,
+                        EventPayloadResult::Ready(Some(pair)) => pair,
+                        EventPayloadResult::Ready(None) => continue,
                     };
 
-                    // Event descriptor will drop here at end of scope
-                    // Extract block number from event if it's a BlockStart
                     let block_number =
-                        if let monad_exec_events::ExecEvent::BlockStart(ref bs) = exec_event {
+                        if let ExecEvent::BlockStart(ref bs) = exec_event {
                             bs.block_tag.block_number
                         } else {
                             event_processor.current_block().unwrap_or(0)
@@ -123,7 +134,7 @@ impl MonadConsumer {
 
                     // Process and send asynchronously
                     match event_processor
-                        .process_monad_event(exec_event, block_number)
+                        .process_monad_event(exec_event, meta, block_number)
                         .await
                     {
                         Ok(Some(processed_event)) => {

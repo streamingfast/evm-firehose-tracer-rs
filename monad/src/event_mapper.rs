@@ -126,6 +126,36 @@ fn compare_u256_bytes(a: &[u8], b: &[u8]) -> i32 {
     0
 }
 
+fn subtract_u256_bytes(a: &[u8], b: &[u8]) -> Vec<u8> {
+    let mut a_padded = [0u8; 32];
+    let mut b_padded = [0u8; 32];
+
+    let a_start = 32 - a.len().min(32);
+    let b_start = 32 - b.len().min(32);
+    a_padded[a_start..].copy_from_slice(&a[a.len().saturating_sub(32)..]);
+    b_padded[b_start..].copy_from_slice(&b[b.len().saturating_sub(32)..]);
+
+    if b_padded > a_padded {
+        return vec![];
+    }
+
+    let mut result = [0u8; 32];
+    let mut borrow = 0i16;
+
+    for i in (0..32).rev() {
+        let diff = a_padded[i] as i16 - b_padded[i] as i16 - borrow;
+        if diff < 0 {
+            result[i] = (diff + 256) as u8;
+            borrow = 1;
+        } else {
+            result[i] = diff as u8;
+            borrow = 0;
+        }
+    }
+
+    compact_bytes(result.to_vec())
+}
+
 /// Multiply a u256 (big-endian bytes) by a u64
 fn multiply_u256_by_u64(a: &[u8], b: u64) -> Vec<u8> {
     if a.is_empty() || b == 0 {
@@ -934,181 +964,6 @@ impl BlockBuilder {
         }
     }
 
-    fn add_basic_gas_changes(_call: &mut pb::sf::ethereum::r#type::v2::Call, _gas_limit: u64, _gas_used: u64) {
-    }
-
-    /// Populate balance changes, nonce changes, and storage changes from account accesses
-    /// NOTE: Gas changes are now handled per-call in build_call_tree, so this function
-    /// only adds balance changes, nonce changes, and storage changes.
-    /// Returns true if a suicide (SELFDESTRUCT) was detected.
-    #[allow(clippy::too_many_arguments)]
-    fn populate_state_changes_from_accesses(
-        call: &mut pb::sf::ethereum::r#type::v2::Call,
-        account_accesses: &[AccountAccessData],
-        storage_accesses: Option<&Vec<StorageAccessData>>,
-        from: &[u8],
-        to: &[u8],
-        value: Option<&BigInt>,
-        gas_limit: u64,
-        gas_used: u64,
-        gas_price: Option<&BigInt>,
-        coinbase: &[u8],
-    ) -> bool {
-        use pb::sf::ethereum::r#type::v2::balance_change::Reason as BalanceReason;
-        use pb::sf::ethereum::r#type::v2::{BalanceChange, NonceChange, StorageChange};
-
-        let mut has_suicide = false;
-
-        // Calculate gas cost for GAS_BUY balance change
-        let gas_cost = if let Some(gp) = gas_price {
-            // gas_cost = gas_limit * gas_price
-            multiply_u256_by_u64(&gp.bytes, gas_limit)
-        } else {
-            vec![]
-        };
-
-        // Process account accesses for balance and nonce changes
-        for access in account_accesses {
-            let address = ensure_address_bytes(access.address.clone());
-
-            // Add nonce change if modified
-            if access.is_nonce_modified {
-                call.nonce_changes.push(NonceChange {
-                    address: address.clone(),
-                    old_value: access.prestate_nonce,
-                    new_value: access.modified_nonce,
-                    ordinal: 0,
-                });
-            }
-
-            // Add balance change if modified
-            if access.is_balance_modified {
-                let old_balance = access.prestate_balance.clone();
-                let new_balance = access.modified_balance.clone();
-
-                // Check if this is a SELFDESTRUCT (suicide): balance goes to exactly 0 from non-zero
-                let is_balance_zero = new_balance.is_empty() || new_balance.iter().all(|&b| b == 0);
-                let was_balance_nonzero = !old_balance.is_empty() && old_balance.iter().any(|&b| b != 0);
-                let is_suicide_withdraw = is_balance_zero && was_balance_nonzero && address == to;
-
-                // Determine the reason based on the address and suicide detection
-                let reason = if is_suicide_withdraw {
-                    has_suicide = true;
-                    BalanceReason::SuicideWithdraw
-                } else if address == from {
-                    // Check if this is a gas buy (balance decreased by gas cost)
-                    // or a transfer (balance decreased by value)
-                    if !gas_cost.is_empty() && compare_u256_bytes(&old_balance, &new_balance) > 0 {
-                        // First balance change for sender is typically GAS_BUY
-                        if call.balance_changes.iter().all(|bc| bc.address != address || bc.reason != BalanceReason::GasBuy as i32) {
-                            BalanceReason::GasBuy
-                        } else {
-                            BalanceReason::Transfer
-                        }
-                    } else {
-                        BalanceReason::Transfer
-                    }
-                } else if address == to {
-                    BalanceReason::Transfer
-                } else if address == coinbase {
-                    BalanceReason::RewardTransactionFee
-                } else if address == from && has_suicide {
-                    // If we already detected suicide, this is likely the beneficiary receiving funds
-                    BalanceReason::SuicideRefund
-                } else {
-                    BalanceReason::Unknown
-                };
-
-                call.balance_changes.push(BalanceChange {
-                    address,
-                    old_value: Some(BigInt { bytes: old_balance }),
-                    new_value: Some(BigInt { bytes: new_balance }),
-                    reason: reason as i32,
-                    ordinal: 0,
-                });
-            }
-        }
-
-        // If we have a value transfer and no transfer balance changes were added, add them
-        if let Some(val) = value {
-            if !val.bytes.is_empty() && val.bytes != vec![0u8] {
-                let has_sender_transfer = call.balance_changes.iter().any(|bc| {
-                    bc.address == from && bc.reason == BalanceReason::Transfer as i32
-                });
-                let has_receiver_transfer = call.balance_changes.iter().any(|bc| {
-                    bc.address == to && bc.reason == BalanceReason::Transfer as i32
-                });
-
-                // Add sender transfer if missing
-                if !has_sender_transfer && !from.is_empty() {
-                    call.balance_changes.push(BalanceChange {
-                        address: from.to_vec(),
-                        old_value: Some(BigInt { bytes: val.bytes.clone() }),
-                        new_value: Some(BigInt { bytes: vec![] }),
-                        reason: BalanceReason::Transfer as i32,
-                        ordinal: 0,
-                    });
-                }
-
-                // Add receiver transfer if missing
-                if !has_receiver_transfer && !to.is_empty() {
-                    call.balance_changes.push(BalanceChange {
-                        address: to.to_vec(),
-                        old_value: Some(BigInt { bytes: vec![] }),
-                        new_value: Some(BigInt { bytes: val.bytes.clone() }),
-                        reason: BalanceReason::Transfer as i32,
-                        ordinal: 0,
-                    });
-                }
-            }
-        }
-
-        // Add transaction fee reward to coinbase if not already present
-        if !coinbase.is_empty() {
-            let has_fee_reward = call.balance_changes.iter().any(|bc| {
-                bc.address == coinbase && bc.reason == BalanceReason::RewardTransactionFee as i32
-            });
-
-            if !has_fee_reward && gas_used > 0 {
-                // Calculate fee = gas_used * gas_price
-                let fee = if let Some(gp) = gas_price {
-                    multiply_u256_by_u64(&gp.bytes, gas_used)
-                } else {
-                    vec![]
-                };
-
-                if !fee.is_empty() {
-                    call.balance_changes.push(BalanceChange {
-                        address: coinbase.to_vec(),
-                        old_value: Some(BigInt { bytes: vec![] }),
-                        new_value: Some(BigInt { bytes: fee }),
-                        reason: BalanceReason::RewardTransactionFee as i32,
-                        ordinal: 0,
-                    });
-                }
-            }
-        }
-
-        // Process storage accesses
-        if let Some(storages) = storage_accesses {
-            for storage in storages {
-                if storage.modified && !storage.transient {
-                    call.storage_changes.push(StorageChange {
-                        address: ensure_address_bytes(storage.address.clone()),
-                        key: ensure_hash_bytes(storage.key.clone()),
-                        old_value: ensure_hash_bytes(storage.start_value.clone()),
-                        new_value: ensure_hash_bytes(storage.end_value.clone()),
-                        ordinal: 0,
-                    });
-                }
-            }
-        }
-
-        has_suicide
-    }
-
-    /// Create a system call from BLOCK_PROLOGUE account/storage accesses and call frames
-    /// System calls go into block.system_calls, not as transactions
     /// Create a system call from call frames alone (when account accesses are not available)
     fn create_system_call_from_frames(
         &self,
@@ -1401,37 +1256,146 @@ impl BlockBuilder {
                 tx.calls.push(root_call);
             }
 
-            // Populate balance changes and nonce changes from account accesses
-            if let Some(accesses) = account_accesses.get(&txn_index) {
-                debug!("Tx #{}: Found {} account accesses", txn_index, accesses.len());
-                if let Some(root_call) = tx.calls.first_mut() {
-                    let has_suicide = Self::populate_state_changes_from_accesses(
-                        root_call,
-                        accesses,
-                        storage_accesses.get(&txn_index),
-                        &tx.from,
-                        &tx.to,
-                        tx.value.as_ref(),
-                        tx.gas_limit,
-                        tx.gas_used,
-                        tx.gas_price.as_ref(),
-                        &coinbase,
-                    );
-                    // Set suicide flag if detected
-                    root_call.suicide = has_suicide;
-                    debug!("Tx #{}: After populate - {} balance changes, {} nonce changes, {} gas changes, suicide={}",
-                           txn_index,
-                           root_call.balance_changes.len(),
-                           root_call.nonce_changes.len(),
-                           root_call.gas_changes.len(),
-                           has_suicide);
+            use pb::sf::ethereum::r#type::v2::balance_change::Reason as BalanceReason;
+            use pb::sf::ethereum::r#type::v2::{BalanceChange, BigInt as PbBigInt, NonceChange, StorageChange};
+
+            let empty_accesses: Vec<AccountAccessData> = vec![];
+            let accesses = account_accesses.get(&txn_index).unwrap_or(&empty_accesses);
+
+            let prestate_balances: std::collections::HashMap<Vec<u8>, Vec<u8>> =
+                accesses.iter().map(|a| {
+                    (ensure_address_bytes(a.address.clone()), a.prestate_balance.clone())
+                }).collect();
+
+            let gas_cost = tx.gas_price.as_ref()
+                .filter(|gp| !gp.bytes.is_empty())
+                .map(|gp| multiply_u256_by_u64(&gp.bytes, tx.gas_limit))
+                .unwrap_or_default();
+
+            // Seed sender at prestate - gas_cost so root call TRANSFER uses the post-gas-buy balance
+            let mut running_balances: std::collections::HashMap<Vec<u8>, Vec<u8>> =
+                prestate_balances.clone();
+
+            if !gas_cost.is_empty() {
+                let sender_prestate = running_balances.get(&tx.from).cloned().unwrap_or_default();
+                let sender_after_gas_buy = subtract_u256_bytes(&sender_prestate, &gas_cost);
+                running_balances.insert(tx.from.clone(), sender_after_gas_buy);
+            }
+
+            for call in tx.calls.iter_mut() {
+                let value = call.value.as_ref().map(|v| v.bytes.clone()).unwrap_or_default();
+                let has_value = !value.is_empty() && value.iter().any(|&b| b != 0);
+                if !has_value {
+                    continue;
                 }
-            } else {
-                debug!("Tx #{}: No account accesses found", txn_index);
-                // Even without account accesses, add basic gas changes for the root call
-                if let Some(root_call) = tx.calls.first_mut() {
-                    Self::add_basic_gas_changes(root_call, tx.gas_limit, tx.gas_used);
+
+                let caller = call.caller.clone();
+                let target = call.address.clone();
+
+                let caller_old = running_balances.get(&caller).cloned().unwrap_or_default();
+                let target_old = running_balances.get(&target).cloned().unwrap_or_default();
+
+                let caller_new = subtract_u256_bytes(&caller_old, &value);
+                let target_new = add_u256_bytes(&target_old, &value);
+
+                running_balances.insert(caller.clone(), caller_new.clone());
+                running_balances.insert(target.clone(), target_new.clone());
+
+                if !caller.is_empty() {
+                    call.balance_changes.push(BalanceChange {
+                        address: caller,
+                        old_value: Some(PbBigInt { bytes: caller_old }),
+                        new_value: Some(PbBigInt { bytes: caller_new }),
+                        reason: BalanceReason::Transfer as i32,
+                        ordinal: 0,
+                    });
                 }
+                if !target.is_empty() {
+                    call.balance_changes.push(BalanceChange {
+                        address: target,
+                        old_value: Some(PbBigInt { bytes: target_old }),
+                        new_value: Some(PbBigInt { bytes: target_new }),
+                        reason: BalanceReason::Transfer as i32,
+                        ordinal: 0,
+                    });
+                }
+            }
+
+            if let Some(root_call) = tx.calls.first_mut() {
+                if !gas_cost.is_empty() {
+                    let sender_prestate = prestate_balances.get(&tx.from).cloned().unwrap_or_default();
+                    let sender_after_gas_buy = subtract_u256_bytes(&sender_prestate, &gas_cost);
+                    root_call.balance_changes.insert(0, BalanceChange {
+                        address: tx.from.clone(),
+                        old_value: Some(PbBigInt { bytes: sender_prestate }),
+                        new_value: Some(PbBigInt { bytes: sender_after_gas_buy }),
+                        reason: BalanceReason::GasBuy as i32,
+                        ordinal: 0,
+                    });
+                }
+
+                if let Some(gp) = tx.gas_price.as_ref() {
+                    if !gp.bytes.is_empty() && tx.gas_limit > tx.gas_used {
+                        let refund_amount = multiply_u256_by_u64(&gp.bytes, tx.gas_limit - tx.gas_used);
+                        if !refund_amount.is_empty() {
+                            root_call.balance_changes.push(BalanceChange {
+                                address: tx.from.clone(),
+                                old_value: Some(PbBigInt { bytes: vec![] }),
+                                new_value: Some(PbBigInt { bytes: refund_amount }),
+                                reason: BalanceReason::GasRefund as i32,
+                                ordinal: 0,
+                            });
+                        }
+                    }
+                }
+
+                if !coinbase.is_empty() {
+                    if let Some(gp) = tx.gas_price.as_ref() {
+                        if !gp.bytes.is_empty() && tx.gas_used > 0 {
+                            let fee = multiply_u256_by_u64(&gp.bytes, tx.gas_used);
+                            if !fee.is_empty() {
+                                root_call.balance_changes.push(BalanceChange {
+                                    address: coinbase.clone(),
+                                    old_value: Some(PbBigInt { bytes: vec![] }),
+                                    new_value: Some(PbBigInt { bytes: fee }),
+                                    reason: BalanceReason::RewardTransactionFee as i32,
+                                    ordinal: 0,
+                                });
+                            }
+                        }
+                    }
+                }
+
+                for access in accesses {
+                    if access.is_nonce_modified {
+                        root_call.nonce_changes.push(NonceChange {
+                            address: ensure_address_bytes(access.address.clone()),
+                            old_value: access.prestate_nonce,
+                            new_value: access.modified_nonce,
+                            ordinal: 0,
+                        });
+                    }
+                }
+
+                if let Some(storages) = storage_accesses.get(&txn_index) {
+                    for storage in storages {
+                        if storage.modified && !storage.transient {
+                            root_call.storage_changes.push(StorageChange {
+                                address: ensure_address_bytes(storage.address.clone()),
+                                key: ensure_hash_bytes(storage.key.clone()),
+                                old_value: ensure_hash_bytes(storage.start_value.clone()),
+                                new_value: ensure_hash_bytes(storage.end_value.clone()),
+                                ordinal: 0,
+                            });
+                        }
+                    }
+                }
+
+                debug!("Tx #{}: root call has {} balance changes, {} nonce changes, {} storage changes",
+                    txn_index,
+                    root_call.balance_changes.len(),
+                    root_call.nonce_changes.len(),
+                    root_call.storage_changes.len());
             }
         }
 

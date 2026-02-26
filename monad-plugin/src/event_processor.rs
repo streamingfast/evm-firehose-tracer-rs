@@ -1,4 +1,4 @@
-use crate::monad_consumer::ProcessedEvent;
+use crate::monad_consumer::{EventMeta, ProcessedEvent};
 use eyre::Result;
 use monad_exec_events::ExecEvent;
 use serde_json;
@@ -30,8 +30,10 @@ struct PendingTxnHeader {
 pub struct EventProcessor {
     current_block: Option<u64>,
     event_count: u64,
+    current_txn_idx: Option<usize>,
     pending_access_lists: std::collections::HashMap<usize, Vec<serde_json::Value>>,
     pending_txn_headers: std::collections::HashMap<usize, PendingTxnHeader>,
+    current_account_idx: u64,
 }
 
 impl EventProcessor {
@@ -39,8 +41,10 @@ impl EventProcessor {
         Self {
             current_block: None,
             event_count: 0,
+            current_txn_idx: None,
             pending_access_lists: std::collections::HashMap::new(),
             pending_txn_headers: std::collections::HashMap::new(),
+            current_account_idx: 0,
         }
     }
 
@@ -51,6 +55,7 @@ impl EventProcessor {
     pub async fn process_monad_event(
         &mut self,
         exec_event: ExecEvent,
+        meta: EventMeta,
         block_number: u64,
     ) -> Result<Option<ProcessedEvent>> {
         self.event_count += 1;
@@ -58,21 +63,28 @@ impl EventProcessor {
         if self.current_block != Some(block_number) && block_number > 0 {
             debug!("Processing new block: {}", block_number);
             self.current_block = Some(block_number);
+            self.current_txn_idx = None;
+            self.current_account_idx = 0;
             self.pending_access_lists.clear();
             self.pending_txn_headers.clear();
         }
 
         match exec_event {
             ExecEvent::BlockStart(block_start) => {
-                self.process_block_start(block_start, block_number).await
+                self.current_txn_idx = None;
+                self.process_block_start(block_start, meta.seqno, block_number).await
             }
-            ExecEvent::BlockEnd(block_end) => self.process_block_end(block_end, block_number).await,
+            ExecEvent::BlockEnd(block_end) => {
+                self.current_txn_idx = None;
+                self.process_block_end(block_end, meta.seqno, block_number).await
+            }
             ExecEvent::TxnHeaderStart {
                 txn_index,
                 txn_header_start,
                 data_bytes,
                 blob_bytes,
             } => {
+                self.current_txn_idx = Some(txn_index);
                 self.process_txn_header(
                     txn_header_start,
                     data_bytes,
@@ -95,10 +107,13 @@ impl EventProcessor {
                 .await
             }
             ExecEvent::TxnEvmOutput { txn_index, output } => {
+                self.current_txn_idx = Some(txn_index);
                 self.process_txn_evm_output(output, txn_index, block_number)
                     .await
             }
-            ExecEvent::TxnEnd => self.process_txn_end(block_number).await,
+            ExecEvent::TxnEnd => {
+                self.process_txn_end(block_number).await
+            }
             ExecEvent::TxnLog {
                 txn_index,
                 txn_log,
@@ -127,30 +142,21 @@ impl EventProcessor {
                 )
                 .await
             }
-            // System call events only
-            ExecEvent::AccountAccessListHeader {
-                txn_index,
-                account_access_list_header,
-            } => {
-                self.process_account_access_list_header(
-                    account_access_list_header,
-                    txn_index,
-                    block_number,
-                )
-                .await
+            ExecEvent::AccountAccessListHeader(header) => {
+                let txn_index = self.current_txn_idx;
+                self.current_account_idx = 0;
+                self.process_account_access_list_header(header, txn_index, block_number)
+                    .await
             }
-            ExecEvent::AccountAccess {
-                txn_index,
-                account_access,
-            } => {
+            ExecEvent::AccountAccess(account_access) => {
+                let txn_index = self.current_txn_idx;
+                self.current_account_idx = account_access.index as u64;
                 self.process_account_access(account_access, txn_index, block_number)
                     .await
             }
-            ExecEvent::StorageAccess {
-                txn_index,
-                account_index,
-                storage_access,
-            } => {
+            ExecEvent::StorageAccess(storage_access) => {
+                let txn_index = self.current_txn_idx;
+                let account_index = self.current_account_idx;
                 self.process_storage_access(storage_access, txn_index, account_index, block_number)
                     .await
             }
@@ -165,6 +171,7 @@ impl EventProcessor {
     async fn process_block_start(
         &self,
         block_start: monad_exec_events::ffi::monad_exec_block_start,
+        seqno: u64,
         block_number: u64,
     ) -> Result<Option<ProcessedEvent>> {
         let parent_hash_hex = hex::encode(block_start.parent_eth_hash.bytes);
@@ -176,6 +183,7 @@ impl EventProcessor {
         let nonce = u64::from_le_bytes(block_start.eth_block_input.nonce.bytes);
 
         let block_data = serde_json::json!({
+            "seqno": seqno,
             "parent_hash": parent_hash_hex,
             "uncle_hash": hex::encode(block_start.eth_block_input.ommers_hash.bytes),
             "coinbase": hex::encode(block_start.eth_block_input.beneficiary.bytes),
@@ -206,6 +214,7 @@ impl EventProcessor {
     async fn process_block_end(
         &self,
         block_end: monad_exec_events::ffi::monad_exec_block_end,
+        seqno: u64,
         block_number: u64,
     ) -> Result<Option<ProcessedEvent>> {
         let block_hash_hex = hex::encode(block_end.eth_block_hash.bytes);
@@ -215,6 +224,7 @@ impl EventProcessor {
         );
 
         let block_data = serde_json::json!({
+            "seqno": seqno,
             "hash": block_hash_hex,
             "state_root": hex::encode(block_end.exec_output.state_root.bytes),
             "receipts_root": hex::encode(block_end.exec_output.receipts_root.bytes),
@@ -294,7 +304,6 @@ impl EventProcessor {
 
         let event_type = EVENT_TYPE_TX_HEADER;
 
-        // Serialize transaction header data using serde_json for structured format
         let tx_data = serde_json::json!({
             "txn_index": txn_index,
             "hash": hex::encode(pending.txn_header.txn_hash.bytes),
@@ -426,9 +435,6 @@ impl EventProcessor {
         txn_index: usize,
         block_number: u64,
     ) -> Result<Option<ProcessedEvent>> {
-        let event_type = EVENT_TYPE_TX_LOG;
-
-        // Parse topics from topic_bytes (each topic is 32 bytes)
         let mut topics = Vec::new();
         for i in 0..log.topic_count as usize {
             let start = i * 32;
@@ -438,7 +444,6 @@ impl EventProcessor {
             }
         }
 
-        // Serialize log data
         let log_data = serde_json::json!({
             "txn_index": txn_index,
             "log_index": log.index,
@@ -451,7 +456,7 @@ impl EventProcessor {
 
         Ok(Some(ProcessedEvent {
             block_number,
-            event_type: event_type.to_string(),
+            event_type: EVENT_TYPE_TX_LOG.to_string(),
             firehose_data,
         }))
     }
@@ -497,9 +502,6 @@ impl EventProcessor {
             );
         }
 
-        let event_type = EVENT_TYPE_TX_CALL_FRAME;
-
-        // Serialize call frame data
         let call_frame_data = serde_json::json!({
             "txn_index": txn_index,
             "index": call_frame.index,
@@ -521,12 +523,11 @@ impl EventProcessor {
 
         Ok(Some(ProcessedEvent {
             block_number,
-            event_type: event_type.to_string(),
+            event_type: EVENT_TYPE_TX_CALL_FRAME.to_string(),
             firehose_data,
         }))
     }
 
-    /// Process account access list header - batch metadata for account changes
     async fn process_account_access_list_header(
         &self,
         header: monad_exec_events::ffi::monad_exec_account_access_list_header,
@@ -534,11 +535,9 @@ impl EventProcessor {
         block_number: u64,
     ) -> Result<Option<ProcessedEvent>> {
         debug!(
-            "AccountAccessListHeader: tx {:?}, entry_count={}",
-            txn_index, header.entry_count
+            "AccountAccessListHeader: tx {:?}, entry_count={}, access_context={}",
+            txn_index, header.entry_count, header.access_context
         );
-
-        let event_type = EVENT_TYPE_ACCOUNT_ACCESS_LIST_HEADER;
 
         let header_data = serde_json::json!({
             "txn_index": txn_index,
@@ -550,12 +549,11 @@ impl EventProcessor {
 
         Ok(Some(ProcessedEvent {
             block_number,
-            event_type: event_type.to_string(),
+            event_type: EVENT_TYPE_ACCOUNT_ACCESS_LIST_HEADER.to_string(),
             firehose_data,
         }))
     }
 
-    /// Process account access event - balance/nonce changes
     async fn process_account_access(
         &self,
         account_access: monad_exec_events::ffi::monad_exec_account_access,
@@ -563,14 +561,13 @@ impl EventProcessor {
         block_number: u64,
     ) -> Result<Option<ProcessedEvent>> {
         debug!(
-            "AccountAccess: tx {:?}, addr={}, balance_mod={}, nonce_mod={}",
+            "AccountAccess: tx {:?}, index={}, addr={}, balance_mod={}, nonce_mod={}",
             txn_index,
+            account_access.index,
             hex::encode(&account_access.address.bytes[..8]),
             account_access.is_balance_modified,
             account_access.is_nonce_modified
         );
-
-        let event_type = EVENT_TYPE_ACCOUNT_ACCESS;
 
         let access_data = serde_json::json!({
             "txn_index": txn_index,
@@ -590,18 +587,18 @@ impl EventProcessor {
             },
             "modified_nonce": account_access.modified_nonce,
             "storage_key_count": account_access.storage_key_count,
+            "transient_count": account_access.transient_count,
         });
 
         let firehose_data = serde_json::to_vec(&access_data)?;
 
         Ok(Some(ProcessedEvent {
             block_number,
-            event_type: event_type.to_string(),
+            event_type: EVENT_TYPE_ACCOUNT_ACCESS.to_string(),
             firehose_data,
         }))
     }
 
-    /// Process storage access event - storage slot modifications
     async fn process_storage_access(
         &self,
         storage_access: monad_exec_events::ffi::monad_exec_storage_access,
@@ -610,14 +607,13 @@ impl EventProcessor {
         block_number: u64,
     ) -> Result<Option<ProcessedEvent>> {
         debug!(
-            "StorageAccess: tx {:?}, addr={}, modified={}, transient={}",
+            "StorageAccess: tx {:?}, account_index={}, addr={}, modified={}, transient={}",
             txn_index,
+            account_index,
             hex::encode(&storage_access.address.bytes[..8]),
             storage_access.modified,
             storage_access.transient
         );
-
-        let event_type = EVENT_TYPE_STORAGE_ACCESS;
 
         let storage_data = serde_json::json!({
             "txn_index": txn_index,
@@ -636,7 +632,7 @@ impl EventProcessor {
 
         Ok(Some(ProcessedEvent {
             block_number,
-            event_type: event_type.to_string(),
+            event_type: EVENT_TYPE_STORAGE_ACCESS.to_string(),
             firehose_data,
         }))
     }
@@ -650,7 +646,6 @@ impl Default for EventProcessor {
 
 impl Drop for EventProcessor {
     fn drop(&mut self) {
-        // Clean up any remaining pending access lists and headers
         self.pending_access_lists.clear();
         self.pending_txn_headers.clear();
     }
