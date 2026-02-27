@@ -874,19 +874,20 @@ impl BlockBuilder {
 
         call_frames.iter().map(|frame| {
             let depth = frame.depth as usize;
+            let firehose_index = frame.index + 1;
 
             let parent_index = if depth == 0 {
                 0
             } else if depth <= parent_stack.len() {
                 parent_stack[depth - 1]
             } else {
-                frame.index.saturating_sub(1)
+                frame.index
             };
 
             if depth >= parent_stack.len() {
-                parent_stack.resize(depth + 1, frame.index);
+                parent_stack.resize(depth + 1, firehose_index);
             } else {
-                parent_stack[depth] = frame.index;
+                parent_stack[depth] = firehose_index;
                 parent_stack.truncate(depth + 1);
             }
 
@@ -924,7 +925,7 @@ impl BlockBuilder {
             };
 
             pb::sf::ethereum::r#type::v2::Call {
-                index: frame.index,
+                index: firehose_index,
                 parent_index,
                 depth: frame.depth as u32,
                 call_type: call_type as i32,
