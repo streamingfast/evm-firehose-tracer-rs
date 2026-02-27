@@ -202,6 +202,10 @@ fn multiply_u256_by_u64(a: &[u8], b: u64) -> Vec<u8> {
     compact_bytes(bytes)
 }
 
+fn is_precompile_address(addr: &[u8]) -> bool {
+    matches!(addr, [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 1..=10])
+}
+
 /// Ensure address bytes are 20 bytes (zero-pad if empty)
 fn ensure_address_bytes(bytes: Vec<u8>) -> Vec<u8> {
     if bytes.is_empty() {
@@ -585,7 +589,7 @@ impl BlockBuilder {
             to,
             nonce,
             gas_limit,
-            value: Some(BigInt { bytes: value }),
+            value: if value.iter().any(|&b| b != 0) { Some(BigInt { bytes: value }) } else { None },
             gas_price: Some(BigInt { bytes: gas_price }),
             max_fee_per_gas: if txn_type == 2 {
                 Some(BigInt { bytes: u256_limbs_to_bytes(&max_fee_limbs) })
@@ -900,7 +904,7 @@ impl BlockBuilder {
             // EVMC_REVERT = 2
             // EVMC_OUT_OF_GAS = 3
             let status_reverted = frame.evmc_status == 2;
-            let status_failed = frame.evmc_status != 0 && frame.evmc_status != 2;
+            let status_failed = frame.evmc_status != 0;
 
             let failure_reason = match frame.evmc_status {
                 0 => String::new(),
@@ -931,12 +935,12 @@ impl BlockBuilder {
                 call_type: call_type as i32,
                 caller: ensure_address_bytes(frame.caller.clone()),
                 address: ensure_address_bytes(frame.call_target.clone()),
-                value: Some(BigInt { bytes: frame.value.clone() }),
+                value: if frame.value.iter().any(|&b| b != 0) { Some(BigInt { bytes: frame.value.clone() }) } else { None },
                 gas_limit: frame.gas,
                 gas_consumed: frame.gas_used,
                 return_data: frame.return_data.clone(),
                 input: frame.input.clone(),
-                executed_code: !frame.input.is_empty(),
+                executed_code: !frame.input.is_empty() && !is_precompile_address(&frame.call_target),
                 suicide: false,
                 status_failed,
                 status_reverted,
@@ -992,7 +996,7 @@ impl BlockBuilder {
             call_type: pb::sf::ethereum::r#type::v2::CallType::Call as i32,
             caller: system_caller,
             address: to_address.clone(),
-            value: Some(BigInt { bytes: vec![] }),
+            value: None,
             gas_limit: 30_000_000,
             gas_consumed: 0,
             return_data: Vec::new(),
@@ -1058,7 +1062,7 @@ impl BlockBuilder {
             call_type: pb::sf::ethereum::r#type::v2::CallType::Call as i32,
             caller: system_caller,
             address: to_address.clone(),
-            value: Some(BigInt { bytes: vec![] }),
+            value: None,
             gas_limit: 30_000_000,
             gas_consumed: 0,
             return_data: Vec::new(),
@@ -1250,6 +1254,18 @@ impl BlockBuilder {
                     ..Default::default()
                 };
                 tx.calls.push(root_call);
+            }
+
+            if let Some(root_call) = tx.calls.first() {
+                use pb::sf::ethereum::r#type::v2::TransactionTraceStatus;
+                if tx.status != TransactionTraceStatus::Succeeded as i32 {
+                    tx.status = if root_call.status_reverted {
+                        TransactionTraceStatus::Reverted as i32
+                    } else {
+                        TransactionTraceStatus::Failed as i32
+                    };
+                }
+                tx.return_data = root_call.return_data.clone();
             }
 
             use pb::sf::ethereum::r#type::v2::balance_change::Reason as BalanceReason;
