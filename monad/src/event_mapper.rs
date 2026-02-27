@@ -940,6 +940,7 @@ impl BlockBuilder {
                 suicide: false,
                 status_failed,
                 status_reverted,
+                state_reverted: frame.evmc_status != 0,
                 failure_reason,
                 ..Default::default()
             }
