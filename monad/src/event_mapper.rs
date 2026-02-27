@@ -903,8 +903,14 @@ impl BlockBuilder {
             // EVMC_FAILURE = 1
             // EVMC_REVERT = 2
             // EVMC_OUT_OF_GAS = 3
+            // EVMC_INSUFFICIENT_BALANCE = 17
+            let is_precompile = is_precompile_address(&frame.call_target);
             let status_reverted = frame.evmc_status == 2 || frame.evmc_status == 17;
-            let status_failed = frame.evmc_status != 0;
+            let status_failed = if is_precompile {
+                frame.evmc_status == 1 || frame.evmc_status == 12
+            } else {
+                frame.evmc_status != 0
+            };
 
             let failure_reason = match frame.evmc_status {
                 0 => String::new(),
@@ -928,6 +934,26 @@ impl BlockBuilder {
                 _ => format!("unknown error (status {})", frame.evmc_status),
             };
 
+            let is_call_opcode = frame.opcode == 0xF1;
+            let is_pure_transfer = is_call_opcode
+                && frame.depth == 0
+                && frame.input.is_empty()
+                && frame.return_data.is_empty()
+                && !is_precompile;
+            let executed_code = if is_precompile {
+                true
+            } else if is_pure_transfer {
+                false
+            } else {
+                frame.gas_used > 0
+            };
+
+            let state_reverted = if is_precompile {
+                frame.evmc_status == 2 || frame.evmc_status == 17
+            } else {
+                frame.evmc_status != 0
+            };
+
             pb::sf::ethereum::r#type::v2::Call {
                 index: firehose_index,
                 parent_index,
@@ -940,11 +966,11 @@ impl BlockBuilder {
                 gas_consumed: frame.gas_used,
                 return_data: frame.return_data.clone(),
                 input: frame.input.clone(),
-                executed_code: frame.gas_used > 0 && !is_precompile_address(&frame.call_target),
+                executed_code,
                 suicide: false,
                 status_failed,
                 status_reverted,
-                state_reverted: frame.evmc_status != 0,
+                state_reverted,
                 failure_reason,
                 ..Default::default()
             }
@@ -1223,6 +1249,16 @@ impl BlockBuilder {
                     debug!("Building call tree for tx #{} with {} frames", txn_index, frames.len());
                     tx.calls = Self::build_call_tree(frames, txn_index);
 
+                    // For CREATE transactions the tx header has an empty "to" field
+                    if tx.to.is_empty() || tx.to == vec![0u8; 20] {
+                        if let Some(root_frame) = frames.first() {
+                            let deployed = ensure_address_bytes(root_frame.call_target.clone());
+                            if deployed != vec![0u8; 20] {
+                                tx.to = deployed;
+                            }
+                        }
+                    }
+
                     // Propagate state_reverted to children when parent is reverted
                     let reverted: std::collections::HashSet<u32> = tx.calls.iter()
                         .filter(|c| c.state_reverted)
@@ -1267,6 +1303,13 @@ impl BlockBuilder {
                     ..Default::default()
                 };
                 tx.calls.push(root_call);
+            }
+
+            // Copy receipt logs to the root call frame
+            if let Some(root_call) = tx.calls.first_mut() {
+                if let Some(ref receipt) = tx.receipt {
+                    root_call.logs = receipt.logs.clone();
+                }
             }
 
             if let Some(root_call) = tx.calls.first() {
