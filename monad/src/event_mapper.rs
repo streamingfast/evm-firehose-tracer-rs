@@ -875,24 +875,18 @@ impl BlockBuilder {
         call_frames.iter().map(|frame| {
             let depth = frame.depth as usize;
 
-            // Determine parent_index based on depth
             let parent_index = if depth == 0 {
-                // Root call - parent is always 0
                 0
-            } else if depth <= parent_stack.len() && depth > 0 {
-                // Child call - parent is the call at depth-1
+            } else if depth <= parent_stack.len() {
                 parent_stack[depth - 1]
             } else {
-                // Shouldn't happen, but fallback to previous call
                 frame.index.saturating_sub(1)
             };
 
-            // Update parent stack for this depth level
             if depth >= parent_stack.len() {
                 parent_stack.resize(depth + 1, frame.index);
             } else {
                 parent_stack[depth] = frame.index;
-                // Truncate stack when returning from deeper calls
                 parent_stack.truncate(depth + 1);
             }
 
