@@ -904,7 +904,8 @@ impl BlockBuilder {
             // EVMC_REVERT = 2
             // EVMC_OUT_OF_GAS = 3
             // EVMC_INSUFFICIENT_BALANCE = 17
-            let is_precompile = is_precompile_address(&frame.call_target);
+            let normalized_call_target = ensure_address_bytes(frame.call_target.clone());
+            let is_precompile = is_precompile_address(&normalized_call_target);
             let status_reverted = frame.evmc_status == 2 || frame.evmc_status == 17;
             let status_failed = if is_precompile {
                 frame.evmc_status == 1 || frame.evmc_status == 12
@@ -1358,7 +1359,7 @@ impl BlockBuilder {
                 }
 
                 let is_delegate = call.call_type == pb::sf::ethereum::r#type::v2::CallType::Delegate as i32;
-                if is_delegate || call.state_reverted {
+                if is_delegate {
                     continue;
                 }
 
@@ -1371,8 +1372,11 @@ impl BlockBuilder {
                 let caller_new = subtract_u256_bytes(&caller_old, &value);
                 let target_new = add_u256_bytes(&target_old, &value);
 
-                running_balances.insert(caller.clone(), caller_new.clone());
-                running_balances.insert(target.clone(), target_new.clone());
+                // Always emit TRANSFER balance changes
+                if !call.state_reverted {
+                    running_balances.insert(caller.clone(), caller_new.clone());
+                    running_balances.insert(target.clone(), target_new.clone());
+                }
 
                 if !caller.is_empty() {
                     call.balance_changes.push(BalanceChange {
@@ -1450,25 +1454,35 @@ impl BlockBuilder {
                     }
                 }
 
+                debug!("Tx #{}: root call has {} balance changes, {} nonce changes",
+                    txn_index,
+                    root_call.balance_changes.len(),
+                    root_call.nonce_changes.len());
+            }
+
+            if !tx.calls.is_empty() {
                 if let Some(storages) = storage_accesses.get(&txn_index) {
+                    let mut addr_to_call_idx: std::collections::HashMap<Vec<u8>, usize> =
+                        std::collections::HashMap::new();
+                    for (ci, call) in tx.calls.iter().enumerate() {
+                        addr_to_call_idx.insert(call.address.clone(), ci);
+                    }
+
                     for storage in storages {
                         if storage.modified && !storage.transient {
-                            root_call.storage_changes.push(StorageChange {
-                                address: ensure_address_bytes(storage.address.clone()),
+                            let norm_addr = ensure_address_bytes(storage.address.clone());
+                            let sc = StorageChange {
+                                address: norm_addr.clone(),
                                 key: ensure_hash_bytes(storage.key.clone()),
                                 old_value: ensure_hash_bytes(storage.start_value.clone()),
                                 new_value: ensure_hash_bytes(storage.end_value.clone()),
                                 ordinal: 0,
-                            });
+                            };
+                            let ci = addr_to_call_idx.get(&norm_addr).copied().unwrap_or(0);
+                            tx.calls[ci].storage_changes.push(sc);
                         }
                     }
                 }
-
-                debug!("Tx #{}: root call has {} balance changes, {} nonce changes, {} storage changes",
-                    txn_index,
-                    root_call.balance_changes.len(),
-                    root_call.nonce_changes.len(),
-                    root_call.storage_changes.len());
             }
         }
 
