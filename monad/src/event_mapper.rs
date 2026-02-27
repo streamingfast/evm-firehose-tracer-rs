@@ -903,7 +903,7 @@ impl BlockBuilder {
             // EVMC_FAILURE = 1
             // EVMC_REVERT = 2
             // EVMC_OUT_OF_GAS = 3
-            let status_reverted = frame.evmc_status == 2;
+            let status_reverted = frame.evmc_status == 2 || frame.evmc_status == 17;
             let status_failed = frame.evmc_status != 0;
 
             let failure_reason = match frame.evmc_status {
@@ -940,7 +940,7 @@ impl BlockBuilder {
                 gas_consumed: frame.gas_used,
                 return_data: frame.return_data.clone(),
                 input: frame.input.clone(),
-                executed_code: !frame.input.is_empty() && !is_precompile_address(&frame.call_target),
+                executed_code: frame.gas_used > 0 && !is_precompile_address(&frame.call_target),
                 suicide: false,
                 status_failed,
                 status_reverted,
