@@ -924,7 +924,7 @@ impl BlockBuilder {
                 14 => "argument out of range".to_string(),
                 15 => "wasm unreachable instruction".to_string(),
                 16 => "wasm trap".to_string(),
-                17 => "insufficient balance".to_string(),
+                17 => "insufficient balance for transfer".to_string(),
                 _ => format!("unknown error (status {})", frame.evmc_status),
             };
 
@@ -1222,6 +1222,19 @@ impl BlockBuilder {
                 if !frames.is_empty() {
                     debug!("Building call tree for tx #{} with {} frames", txn_index, frames.len());
                     tx.calls = Self::build_call_tree(frames, txn_index);
+
+                    // Propagate state_reverted to children when parent is reverted
+                    let reverted: std::collections::HashSet<u32> = tx.calls.iter()
+                        .filter(|c| c.state_reverted)
+                        .map(|c| c.index)
+                        .collect();
+                    let mut reverted_indices = reverted;
+                    for i in 0..tx.calls.len() {
+                        if reverted_indices.contains(&tx.calls[i].parent_index) {
+                            tx.calls[i].state_reverted = true;
+                            reverted_indices.insert(tx.calls[i].index);
+                        }
+                    }
                 }
             }
 
@@ -1298,6 +1311,11 @@ impl BlockBuilder {
                 let value = call.value.as_ref().map(|v| v.bytes.clone()).unwrap_or_default();
                 let has_value = !value.is_empty() && value.iter().any(|&b| b != 0);
                 if !has_value {
+                    continue;
+                }
+
+                let is_delegate = call.call_type == pb::sf::ethereum::r#type::v2::CallType::Delegate as i32;
+                if is_delegate || call.state_reverted {
                     continue;
                 }
 
