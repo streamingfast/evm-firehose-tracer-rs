@@ -1250,6 +1250,13 @@ impl BlockBuilder {
                     debug!("Building call tree for tx #{} with {} frames", txn_index, frames.len());
                     tx.calls = Self::build_call_tree(frames, txn_index);
 
+                    if let Some(root_call) = tx.calls.first_mut() {
+                        root_call.gas_consumed = tx.gas_used;
+                    }
+                    if let Some(ref mut receipt) = tx.receipt {
+                        receipt.cumulative_gas_used = tx.gas_used;
+                    }
+
                     // For CREATE transactions the tx header has an empty "to" field
                     if tx.to.is_empty() || tx.to == vec![0u8; 20] {
                         if let Some(root_frame) = frames.first() {
