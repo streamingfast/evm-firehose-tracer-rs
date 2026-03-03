@@ -829,12 +829,9 @@ impl BlockBuilder {
             let normalized_call_target = ensure_address_bytes(frame.call_target.clone());
             let is_precompile = is_precompile_address(&normalized_call_target);
             let status_reverted = frame.evmc_status == 2 || frame.evmc_status == 17;
-            let status_failed = if is_precompile {
-                frame.evmc_status == 1 || frame.evmc_status == 12
-            } else {
-                frame.evmc_status != 0
-            };
+            let status_failed = frame.evmc_status != 0;
 
+            // https://github.com/ipsilon/evmc/blob/663a1c239b026501c5a1235ed815e14903c7f35e/include/evmc/evmc.h#L289
             let failure_reason = match frame.evmc_status {
                 0 => String::new(),
                 1 => "execution failed".to_string(),
@@ -871,11 +868,7 @@ impl BlockBuilder {
                 frame.gas_used > 0
             };
 
-            let state_reverted = if is_precompile {
-                frame.evmc_status == 2 || frame.evmc_status == 17
-            } else {
-                frame.evmc_status != 0
-            };
+            let state_reverted = frame.evmc_status != 0;
 
             pb::sf::ethereum::r#type::v2::Call {
                 index: firehose_index,
@@ -1166,9 +1159,6 @@ impl BlockBuilder {
                     debug!("Building call tree for tx #{} with {} frames", txn_index, frames.len());
                     tx.calls = Self::build_call_tree(frames, txn_index);
 
-                    if let Some(root_call) = tx.calls.first_mut() {
-                        root_call.gas_consumed = tx.gas_used;
-                    }
                     if let Some(ref mut receipt) = tx.receipt {
                         receipt.cumulative_gas_used = tx.gas_used;
                     }
