@@ -21,7 +21,7 @@ impl FirehoseTracer {
     /// Create a new Firehose tracer
     pub fn new(config: TracerConfig) -> Self {
         let event_mapper = EventMapper::new();
-        let printer = FirehosePrinter::new(config.clone());
+        let printer = FirehosePrinter::new();
 
         Self {
             config,

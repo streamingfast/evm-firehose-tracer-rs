@@ -1,21 +1,19 @@
 //! Firehose protocol printer
 
-use crate::{Block, FinalityStatus, TracerConfig, TRACER_NAME, TRACER_VERSION};
+use crate::{Block, FinalityStatus, TRACER_NAME, TRACER_VERSION};
 use eyre::Result;
 use tracing::{debug, info};
 
 /// Prints Firehose protocol messages to stdout
 pub struct FirehosePrinter {
-    config: TracerConfig,
     finality: FinalityStatus,
     initialized: bool,
 }
 
 impl FirehosePrinter {
     /// Create a new Firehose printer
-    pub fn new(config: TracerConfig) -> Self {
+    pub fn new() -> Self {
         Self {
-            config,
             finality: FinalityStatus::new(),
             initialized: false,
         }

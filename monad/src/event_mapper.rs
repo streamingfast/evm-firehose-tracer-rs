@@ -126,81 +126,6 @@ fn compare_u256_bytes(a: &[u8], b: &[u8]) -> i32 {
     0
 }
 
-fn subtract_u256_bytes(a: &[u8], b: &[u8]) -> Vec<u8> {
-    let mut a_padded = [0u8; 32];
-    let mut b_padded = [0u8; 32];
-
-    let a_start = 32 - a.len().min(32);
-    let b_start = 32 - b.len().min(32);
-    a_padded[a_start..].copy_from_slice(&a[a.len().saturating_sub(32)..]);
-    b_padded[b_start..].copy_from_slice(&b[b.len().saturating_sub(32)..]);
-
-    if b_padded > a_padded {
-        return vec![];
-    }
-
-    let mut result = [0u8; 32];
-    let mut borrow = 0i16;
-
-    for i in (0..32).rev() {
-        let diff = a_padded[i] as i16 - b_padded[i] as i16 - borrow;
-        if diff < 0 {
-            result[i] = (diff + 256) as u8;
-            borrow = 1;
-        } else {
-            result[i] = diff as u8;
-            borrow = 0;
-        }
-    }
-
-    compact_bytes(result.to_vec())
-}
-
-/// Multiply a u256 (big-endian bytes) by a u64
-fn multiply_u256_by_u64(a: &[u8], b: u64) -> Vec<u8> {
-    if a.is_empty() || b == 0 {
-        return vec![];
-    }
-
-    // Pad a to 32 bytes
-    let mut a_padded = [0u8; 32];
-    let a_start = 32 - a.len();
-    a_padded[a_start..].copy_from_slice(a);
-
-    // Result can be up to 40 bytes (32 + 8), but we'll use 40 for safety
-    let mut result = [0u128; 5]; // Use u128 for intermediate calculations
-
-    // Multiply each byte by b
-    let b_128 = b as u128;
-    for i in (0..32).rev() {
-        let product = (a_padded[i] as u128) * b_128;
-        let result_idx = 4 - (31 - i) / 8;
-        let shift = ((31 - i) % 8) * 8;
-
-        // Add the shifted product to result
-        let shifted = product << shift;
-        result[result_idx] = result[result_idx].wrapping_add(shifted & 0xFFFFFFFFFFFFFFFF);
-        if result_idx > 0 {
-            result[result_idx - 1] = result[result_idx - 1].wrapping_add(shifted >> 64);
-        }
-    }
-
-    // Handle carries
-    for i in (1..5).rev() {
-        let carry = result[i] >> 64;
-        result[i] &= 0xFFFFFFFFFFFFFFFF;
-        result[i - 1] = result[i - 1].wrapping_add(carry);
-    }
-    result[0] &= 0xFFFFFFFFFFFFFFFF;
-
-    // Convert to bytes
-    let mut bytes = Vec::with_capacity(40);
-    for val in &result {
-        bytes.extend_from_slice(&(*val as u64).to_be_bytes());
-    }
-
-    compact_bytes(bytes)
-}
 
 fn is_precompile_address(addr: &[u8]) -> bool {
     matches!(addr, [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 1..=10])
@@ -324,7 +249,7 @@ struct CallFrameData {
 /// Raw account access data from Monad events
 #[derive(Clone, Debug)]
 struct AccountAccessData {
-    index: u32,
+    // index: u32,
     address: Vec<u8>,
     access_context: u8,
     is_balance_modified: bool,
@@ -333,14 +258,14 @@ struct AccountAccessData {
     prestate_nonce: u64,
     modified_balance: Vec<u8>,
     modified_nonce: u64,
-    storage_key_count: u32,
+    // storage_key_count: u32,
 }
 
 /// Raw storage access data from Monad events
 #[derive(Clone, Debug)]
 struct StorageAccessData {
     address: Vec<u8>,
-    index: u32,
+    // index: u32,
     modified: bool,
     transient: bool,
     key: Vec<u8>,
@@ -766,7 +691,7 @@ impl BlockBuilder {
         }
 
         let account_access = AccountAccessData {
-            index: access_data["index"].as_u64().unwrap_or(0) as u32,
+            // index: access_data["index"].as_u64().unwrap_or(0) as u32,
             address: hex::decode(access_data["address"].as_str().unwrap_or("")).unwrap_or_default(),
             access_context: access_data["access_context"].as_u64().unwrap_or(1) as u8,
             is_balance_modified: access_data["is_balance_modified"].as_bool().unwrap_or(false),
@@ -775,7 +700,7 @@ impl BlockBuilder {
             prestate_nonce: access_data["prestate"]["nonce"].as_u64().unwrap_or(0),
             modified_balance: modified_balance_bytes,
             modified_nonce: access_data["modified_nonce"].as_u64().unwrap_or(0),
-            storage_key_count: access_data["storage_key_count"].as_u64().unwrap_or(0) as u32,
+            // storage_key_count: access_data["storage_key_count"].as_u64().unwrap_or(0) as u32,
         };
 
         debug!("Created AccountAccessData - address: {}, access_context: {}, balance_modified: {}, nonce_modified: {}",
@@ -810,7 +735,7 @@ impl BlockBuilder {
 
         let storage_access = StorageAccessData {
             address: hex::decode(storage_data["address"].as_str().unwrap_or("")).unwrap_or_default(),
-            index: storage_data["index"].as_u64().unwrap_or(0) as u32,
+            // index: storage_data["index"].as_u64().unwrap_or(0) as u32,
             modified: storage_data["modified"].as_bool().unwrap_or(false),
             transient: storage_data["transient"].as_bool().unwrap_or(false),
             key: hex::decode(storage_data["key"].as_str().unwrap_or("")).unwrap_or_default(),
@@ -869,9 +794,6 @@ impl BlockBuilder {
     /// Build call tree from call frames
     /// Converts flat list of call frames into hierarchical Call structures
     fn build_call_tree(call_frames: &[CallFrameData], _txn_index: usize) -> Vec<pb::sf::ethereum::r#type::v2::Call> {
-        use pb::sf::ethereum::r#type::v2::gas_change::Reason as GasReason;
-        use pb::sf::ethereum::r#type::v2::GasChange;
-
         // Track parent indices based on depth changes
         // parent_stack[depth] = index of call at that depth
         let mut parent_stack: Vec<u32> = Vec::new();
@@ -1000,8 +922,6 @@ impl BlockBuilder {
         index: u32,
     ) -> pb::sf::ethereum::r#type::v2::Call {
         use pb::sf::ethereum::r#type::v2::StorageChange;
-        use pb::sf::ethereum::r#type::v2::gas_change::Reason as GasReason;
-        use pb::sf::ethereum::r#type::v2::GasChange;
 
         debug!("Creating system call from frames for address: {}", hex::encode(&to_address));
 
@@ -1063,8 +983,6 @@ impl BlockBuilder {
     ) -> pb::sf::ethereum::r#type::v2::Call {
         use pb::sf::ethereum::r#type::v2::{BalanceChange, NonceChange, StorageChange};
         use pb::sf::ethereum::r#type::v2::balance_change::Reason as BalanceReason;
-        use pb::sf::ethereum::r#type::v2::gas_change::Reason as GasReason;
-        use pb::sf::ethereum::r#type::v2::GasChange;
 
         debug!("Creating system call for address: {}", hex::encode(&to_address));
 
@@ -1213,8 +1131,6 @@ impl BlockBuilder {
         let call_frames = self.call_frames;
         let account_accesses = self.account_accesses;
         let storage_accesses = self.storage_accesses;
-        let coinbase = self.coinbase.clone();
-
         // Move transactions from map to vec, sorted by index
         let mut transactions: Vec<TransactionTrace> = self
             .transactions_map.into_values().map(|tx| {
@@ -1332,125 +1248,25 @@ impl BlockBuilder {
                 tx.return_data = root_call.return_data.clone();
             }
 
-            use pb::sf::ethereum::r#type::v2::balance_change::Reason as BalanceReason;
             use pb::sf::ethereum::r#type::v2::{BalanceChange, BigInt as PbBigInt, NonceChange, StorageChange};
+            use pb::sf::ethereum::r#type::v2::balance_change::Reason as BalanceReason;
 
             let empty_accesses: Vec<AccountAccessData> = vec![];
             let accesses = account_accesses.get(&txn_index).unwrap_or(&empty_accesses);
 
-            let prestate_balances: std::collections::HashMap<Vec<u8>, Vec<u8>> =
-                accesses.iter().map(|a| {
-                    (ensure_address_bytes(a.address.clone()), a.prestate_balance.clone())
-                }).collect();
-
-            let gas_cost = tx.gas_price.as_ref()
-                .filter(|gp| !gp.bytes.is_empty())
-                .map(|gp| multiply_u256_by_u64(&gp.bytes, tx.gas_limit))
-                .unwrap_or_default();
-
-            // Seed sender at prestate - gas_cost so root call TRANSFER uses the post-gas-buy balance
-            let mut running_balances: std::collections::HashMap<Vec<u8>, Vec<u8>> =
-                prestate_balances.clone();
-
-            if !gas_cost.is_empty() {
-                let sender_prestate = running_balances.get(&tx.from).cloned().unwrap_or_default();
-                let sender_after_gas_buy = subtract_u256_bytes(&sender_prestate, &gas_cost);
-                running_balances.insert(tx.from.clone(), sender_after_gas_buy);
-            }
-
-            for call in tx.calls.iter_mut() {
-                let value = call.value.as_ref().map(|v| v.bytes.clone()).unwrap_or_default();
-                let has_value = !value.is_empty() && value.iter().any(|&b| b != 0);
-                if !has_value {
-                    continue;
-                }
-
-                let is_delegate = call.call_type == pb::sf::ethereum::r#type::v2::CallType::Delegate as i32;
-                if is_delegate {
-                    continue;
-                }
-
-                let caller = call.caller.clone();
-                let target = call.address.clone();
-
-                let caller_old = running_balances.get(&caller).cloned().unwrap_or_default();
-                let target_old = running_balances.get(&target).cloned().unwrap_or_default();
-
-                let caller_new = subtract_u256_bytes(&caller_old, &value);
-                let target_new = add_u256_bytes(&target_old, &value);
-
-                // Always emit TRANSFER balance changes
-                if !call.state_reverted {
-                    running_balances.insert(caller.clone(), caller_new.clone());
-                    running_balances.insert(target.clone(), target_new.clone());
-                }
-
-                if !caller.is_empty() {
-                    call.balance_changes.push(BalanceChange {
-                        address: caller,
-                        old_value: Some(PbBigInt { bytes: caller_old }),
-                        new_value: Some(PbBigInt { bytes: caller_new }),
-                        reason: BalanceReason::Transfer as i32,
-                        ordinal: 0,
-                    });
-                }
-                if !target.is_empty() {
-                    call.balance_changes.push(BalanceChange {
-                        address: target,
-                        old_value: Some(PbBigInt { bytes: target_old }),
-                        new_value: Some(PbBigInt { bytes: target_new }),
-                        reason: BalanceReason::Transfer as i32,
-                        ordinal: 0,
-                    });
-                }
-            }
-
+            // All state changes go to root call
             if let Some(root_call) = tx.calls.first_mut() {
-                if !gas_cost.is_empty() {
-                    let sender_prestate = prestate_balances.get(&tx.from).cloned().unwrap_or_default();
-                    let sender_after_gas_buy = subtract_u256_bytes(&sender_prestate, &gas_cost);
-                    root_call.balance_changes.insert(0, BalanceChange {
-                        address: tx.from.clone(),
-                        old_value: Some(PbBigInt { bytes: sender_prestate }),
-                        new_value: Some(PbBigInt { bytes: sender_after_gas_buy }),
-                        reason: BalanceReason::GasBuy as i32,
-                        ordinal: 0,
-                    });
-                }
-
-                if let Some(gp) = tx.gas_price.as_ref() {
-                    if !gp.bytes.is_empty() && tx.gas_limit > tx.gas_used {
-                        let refund_amount = multiply_u256_by_u64(&gp.bytes, tx.gas_limit - tx.gas_used);
-                        if !refund_amount.is_empty() {
-                            root_call.balance_changes.push(BalanceChange {
-                                address: tx.from.clone(),
-                                old_value: Some(PbBigInt { bytes: vec![] }),
-                                new_value: Some(PbBigInt { bytes: refund_amount }),
-                                reason: BalanceReason::GasRefund as i32,
-                                ordinal: 0,
-                            });
-                        }
-                    }
-                }
-
-                if !coinbase.is_empty() {
-                    if let Some(gp) = tx.gas_price.as_ref() {
-                        if !gp.bytes.is_empty() && tx.gas_used > 0 {
-                            let fee = multiply_u256_by_u64(&gp.bytes, tx.gas_used);
-                            if !fee.is_empty() {
-                                root_call.balance_changes.push(BalanceChange {
-                                    address: coinbase.clone(),
-                                    old_value: Some(PbBigInt { bytes: vec![] }),
-                                    new_value: Some(PbBigInt { bytes: fee }),
-                                    reason: BalanceReason::RewardTransactionFee as i32,
-                                    ordinal: 0,
-                                });
-                            }
-                        }
-                    }
-                }
-
                 for access in accesses {
+                    if access.is_balance_modified {
+                        root_call.balance_changes.push(BalanceChange {
+                            address: ensure_address_bytes(access.address.clone()),
+                            old_value: Some(PbBigInt { bytes: access.prestate_balance.clone() }),
+                            new_value: Some(PbBigInt { bytes: access.modified_balance.clone() }),
+                            reason: BalanceReason::Unknown as i32,
+                            ordinal: 0,
+                        });
+                    }
+
                     if access.is_nonce_modified {
                         root_call.nonce_changes.push(NonceChange {
                             address: ensure_address_bytes(access.address.clone()),
@@ -1461,32 +1277,16 @@ impl BlockBuilder {
                     }
                 }
 
-                debug!("Tx #{}: root call has {} balance changes, {} nonce changes",
-                    txn_index,
-                    root_call.balance_changes.len(),
-                    root_call.nonce_changes.len());
-            }
-
-            if !tx.calls.is_empty() {
                 if let Some(storages) = storage_accesses.get(&txn_index) {
-                    let mut addr_to_call_idx: std::collections::HashMap<Vec<u8>, usize> =
-                        std::collections::HashMap::new();
-                    for (ci, call) in tx.calls.iter().enumerate() {
-                        addr_to_call_idx.insert(call.address.clone(), ci);
-                    }
-
                     for storage in storages {
                         if storage.modified && !storage.transient {
-                            let norm_addr = ensure_address_bytes(storage.address.clone());
-                            let sc = StorageChange {
-                                address: norm_addr.clone(),
+                            root_call.storage_changes.push(StorageChange {
+                                address: ensure_address_bytes(storage.address.clone()),
                                 key: ensure_hash_bytes(storage.key.clone()),
                                 old_value: ensure_hash_bytes(storage.start_value.clone()),
                                 new_value: ensure_hash_bytes(storage.end_value.clone()),
                                 ordinal: 0,
-                            };
-                            let ci = addr_to_call_idx.get(&norm_addr).copied().unwrap_or(0);
-                            tx.calls[ci].storage_changes.push(sc);
+                            });
                         }
                     }
                 }
@@ -1558,6 +1358,7 @@ impl BlockBuilder {
             receipt_root: self.receipts_root,
             logs_bloom: self.logs_bloom,
             difficulty: Some(BigInt { bytes: vec![] }),
+            #[allow(deprecated)]
             total_difficulty: None,
             number: self.block_number,
             gas_limit: self.gas_limit,
