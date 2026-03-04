@@ -821,11 +821,6 @@ impl BlockBuilder {
             let call_type = Self::opcode_to_call_type(frame.opcode);
 
             // Map EVMC status to Firehose status
-            // EVMC_SUCCESS = 0
-            // EVMC_FAILURE = 1
-            // EVMC_REVERT = 2
-            // EVMC_OUT_OF_GAS = 3
-            // EVMC_INSUFFICIENT_BALANCE = 17
             let normalized_call_target = ensure_address_bytes(frame.call_target.clone());
             let is_precompile = is_precompile_address(&normalized_call_target);
             let status_reverted = frame.evmc_status == 2 || frame.evmc_status == 17;
@@ -1158,10 +1153,6 @@ impl BlockBuilder {
                 if !frames.is_empty() {
                     debug!("Building call tree for tx #{} with {} frames", txn_index, frames.len());
                     tx.calls = Self::build_call_tree(frames, txn_index);
-
-                    if let Some(ref mut receipt) = tx.receipt {
-                        receipt.cumulative_gas_used = tx.gas_used;
-                    }
 
                     // For CREATE transactions the tx header has an empty "to" field
                     if tx.to.is_empty() || tx.to == vec![0u8; 20] {
