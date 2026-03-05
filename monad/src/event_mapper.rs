@@ -703,6 +703,12 @@ impl BlockBuilder {
             // storage_key_count: access_data["storage_key_count"].as_u64().unwrap_or(0) as u32,
         };
 
+        debug!("ACCOUNT_ACCESS_CREATED: addr={} ctx={} bal_mod={} prestate_bal_hex={} modified_bal_hex={}",
+               hex::encode(&account_access.address),
+               account_access.access_context,
+               account_access.is_balance_modified,
+               hex::encode(&account_access.prestate_balance),
+               hex::encode(&account_access.modified_balance));
         debug!("Created AccountAccessData - address: {}, access_context: {}, balance_modified: {}, nonce_modified: {}",
                hex::encode(&account_access.address),
                account_access.access_context,
@@ -715,6 +721,8 @@ impl BlockBuilder {
             self.system_calls_account_accesses.push(account_access);
         } else {
             // Regular transaction account accesses
+            debug!("ACCOUNT_ACCESS_STORED: txn_index={} addr={} prestate_bal_hex={}",
+                txn_index, hex::encode(&account_access.address), hex::encode(&account_access.prestate_balance));
             self.account_accesses.entry(txn_index).or_default().push(account_access);
         }
 
@@ -1234,11 +1242,20 @@ impl BlockBuilder {
 
             let empty_accesses: Vec<AccountAccessData> = vec![];
             let accesses = account_accesses.get(&txn_index).unwrap_or(&empty_accesses);
+            debug!("FINALIZE_ACCESSES: txn_index={} accesses_count={}", txn_index, accesses.len());
+            for acc in accesses {
+                debug!("FINALIZE_ACCESS_ENTRY: addr={} bal_mod={} prestate_bal_hex={}",
+                    hex::encode(&acc.address), acc.is_balance_modified, hex::encode(&acc.prestate_balance));
+            }
 
             // All state changes go to root call
             if let Some(root_call) = tx.calls.first_mut() {
                 for access in accesses {
                     if access.is_balance_modified {
+                        debug!("BALANCE_CHANGE_PUSH: addr={} prestate_balance_hex={} modified_balance_hex={}",
+                            hex::encode(&access.address),
+                            hex::encode(&access.prestate_balance),
+                            hex::encode(&access.modified_balance));
                         root_call.balance_changes.push(BalanceChange {
                             address: ensure_address_bytes(access.address.clone()),
                             old_value: Some(PbBigInt { bytes: access.prestate_balance.clone() }),
