@@ -561,12 +561,14 @@ impl EventProcessor {
         block_number: u64,
     ) -> Result<Option<ProcessedEvent>> {
         debug!(
-            "AccountAccess: tx {:?}, index={}, addr={}, balance_mod={}, nonce_mod={}",
+            "AccountAccess: tx {:?}, index={}, addr={}, balance_mod={}, nonce_mod={}, pre_bal_limbs={:?}, mod_bal_limbs={:?}",
             txn_index,
             account_access.index,
             hex::encode(&account_access.address.bytes[..8]),
             account_access.is_balance_modified,
-            account_access.is_nonce_modified
+            account_access.is_nonce_modified,
+            account_access.prestate.balance.limbs,
+            account_access.modified_balance.limbs,
         );
 
         let access_data = serde_json::json!({
