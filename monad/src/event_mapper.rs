@@ -1,6 +1,6 @@
 use crate::{Block, BlockHeader, ProcessedEvent, TransactionTrace};
-use pb::sf::ethereum::r#type::v2::{block, BigInt, AccessTuple};
-use alloy_primitives::{Bloom, BloomInput};
+use pb::sf::ethereum::r#type::v2::{block, BigInt, AccessTuple, CodeChange};
+use alloy_primitives::{Bloom, BloomInput, keccak256};
 use eyre::Result;
 use serde_json;
 use tracing::debug;
@@ -256,6 +256,7 @@ struct AccountAccessData {
     is_nonce_modified: bool,
     prestate_balance: Vec<u8>,
     prestate_nonce: u64,
+    prestate_code_hash: Vec<u8>,
     modified_balance: Vec<u8>,
     modified_nonce: u64,
     // storage_key_count: u32,
@@ -690,6 +691,10 @@ impl BlockBuilder {
             debug!("  modified hex: {}", hex::encode(&modified_balance_bytes));
         }
 
+        let prestate_code_hash = hex::decode(
+            access_data["prestate"]["code_hash"].as_str().unwrap_or("")
+        ).unwrap_or_default();
+
         let account_access = AccountAccessData {
             // index: access_data["index"].as_u64().unwrap_or(0) as u32,
             address: hex::decode(access_data["address"].as_str().unwrap_or("")).unwrap_or_default(),
@@ -698,6 +703,7 @@ impl BlockBuilder {
             is_nonce_modified: access_data["is_nonce_modified"].as_bool().unwrap_or(false),
             prestate_balance: prestate_balance_bytes,
             prestate_nonce: access_data["prestate"]["nonce"].as_u64().unwrap_or(0),
+            prestate_code_hash,
             modified_balance: modified_balance_bytes,
             modified_nonce: access_data["modified_nonce"].as_u64().unwrap_or(0),
             // storage_key_count: access_data["storage_key_count"].as_u64().unwrap_or(0) as u32,
@@ -801,7 +807,7 @@ impl BlockBuilder {
 
     /// Build call tree from call frames
     /// Converts flat list of call frames into hierarchical Call structures
-    fn build_call_tree(call_frames: &[CallFrameData], _txn_index: usize) -> Vec<pb::sf::ethereum::r#type::v2::Call> {
+    fn build_call_tree(call_frames: &[CallFrameData], _txn_index: usize, code_hash_by_address: &std::collections::HashMap<Vec<u8>, Vec<u8>>) -> Vec<pb::sf::ethereum::r#type::v2::Call> {
         // Track parent indices based on depth changes
         // parent_stack[depth] = index of call at that depth
         let mut parent_stack: Vec<u32> = Vec::new();
@@ -873,6 +879,23 @@ impl BlockBuilder {
 
             let state_reverted = frame.evmc_status != 0;
 
+            let is_create = frame.opcode == 0xF0 || frame.opcode == 0xF5;
+            let is_successful_create = is_create && frame.evmc_status == 0 && !frame.return_data.is_empty();
+            let return_data = if is_successful_create { vec![] } else { frame.return_data.clone() };
+            let code_changes = if is_successful_create {
+                let target_addr = ensure_address_bytes(frame.call_target.clone());
+                vec![CodeChange {
+                    old_hash: code_hash_by_address.get(&target_addr).cloned().unwrap_or_default(),
+                    new_hash: keccak256(&frame.return_data).to_vec(),
+                    new_code: frame.return_data.clone(),
+                    address: target_addr,
+                    old_code: vec![],
+                    ordinal: 0,
+                }]
+            } else {
+                vec![]
+            };
+
             pb::sf::ethereum::r#type::v2::Call {
                 index: firehose_index,
                 parent_index,
@@ -883,7 +906,7 @@ impl BlockBuilder {
                 value: if frame.value.iter().any(|&b| b != 0) { Some(BigInt { bytes: frame.value.clone() }) } else { None },
                 gas_limit: frame.gas,
                 gas_consumed: frame.gas_used,
-                return_data: frame.return_data.clone(),
+                return_data,
                 input: frame.input.clone(),
                 executed_code,
                 suicide: false,
@@ -891,6 +914,7 @@ impl BlockBuilder {
                 status_reverted,
                 state_reverted,
                 failure_reason,
+                code_changes,
                 ..Default::default()
             }
         }).collect()
@@ -1152,6 +1176,14 @@ impl BlockBuilder {
             .collect();
         transactions.sort_by_key(|tx| tx.index);
 
+        // Build a map of address -> prestate_code_hash from all account accesses
+        let code_hash_by_address: std::collections::HashMap<Vec<u8>, Vec<u8>> = account_accesses
+            .values()
+            .flatten()
+            .filter(|a| !a.prestate_code_hash.is_empty())
+            .map(|a| (a.address.clone(), a.prestate_code_hash.clone()))
+            .collect();
+
         // Build call trees for each transaction
         // If no call frames exist, create a synthetic root call
         for tx in &mut transactions {
@@ -1160,7 +1192,7 @@ impl BlockBuilder {
             if let Some(frames) = call_frames.get(&txn_index) {
                 if !frames.is_empty() {
                     debug!("Building call tree for tx #{} with {} frames", txn_index, frames.len());
-                    tx.calls = Self::build_call_tree(frames, txn_index);
+                    tx.calls = Self::build_call_tree(frames, txn_index, &code_hash_by_address);
 
                     // For CREATE transactions the tx header has an empty "to" field
                     if tx.to.is_empty() || tx.to == vec![0u8; 20] {

@@ -583,6 +583,7 @@ impl EventProcessor {
                     "limbs": account_access.prestate.balance.limbs.to_vec()
                 },
                 "nonce": account_access.prestate.nonce,
+                "code_hash": hex::encode(account_access.prestate.code_hash.bytes),
             },
             "modified_balance": {
                 "limbs": account_access.modified_balance.limbs.to_vec()
