@@ -1,5 +1,5 @@
 use crate::{Block, BlockHeader, ProcessedEvent, TransactionTrace};
-use pb::sf::ethereum::r#type::v2::{block, BigInt, AccessTuple, CodeChange};
+use firehose::pb::sf::ethereum::r#type::v2::{block, BigInt, AccessTuple, CodeChange};
 use alloy_primitives::{Bloom, BloomInput, keccak256};
 use eyre::Result;
 use serde_json;
@@ -150,7 +150,7 @@ fn ensure_hash_bytes(bytes: Vec<u8>) -> Vec<u8> {
 }
 
 /// Calculate logs bloom filter from logs
-fn calculate_logs_bloom(logs: &[pb::sf::ethereum::r#type::v2::Log]) -> Vec<u8> {
+fn calculate_logs_bloom(logs: &[firehose::pb::sf::ethereum::r#type::v2::Log]) -> Vec<u8> {
     let mut bloom = Bloom::default();
 
     for log in logs {
@@ -559,7 +559,7 @@ impl BlockBuilder {
             tx.status = if status { 1 } else { 2 };
 
             // Create receipt with empty bloom - will be calculated in finalize() after logs are added
-            tx.receipt = Some(pb::sf::ethereum::r#type::v2::TransactionReceipt {
+            tx.receipt = Some(firehose::pb::sf::ethereum::r#type::v2::TransactionReceipt {
                 cumulative_gas_used: self.cumulative_gas_used,
                 logs_bloom: vec![0u8; 256],
                 logs: Vec::new(),
@@ -591,7 +591,7 @@ impl BlockBuilder {
         let log_index = self.total_log_count as u32;
         self.total_log_count += 1;
 
-        let log = pb::sf::ethereum::r#type::v2::Log {
+        let log = firehose::pb::sf::ethereum::r#type::v2::Log {
             address,
             topics,
             data,
@@ -807,7 +807,7 @@ impl BlockBuilder {
 
     /// Build call tree from call frames
     /// Converts flat list of call frames into hierarchical Call structures
-    fn build_call_tree(call_frames: &[CallFrameData], _txn_index: usize, code_hash_by_address: &std::collections::HashMap<Vec<u8>, Vec<u8>>) -> Vec<pb::sf::ethereum::r#type::v2::Call> {
+    fn build_call_tree(call_frames: &[CallFrameData], _txn_index: usize, code_hash_by_address: &std::collections::HashMap<Vec<u8>, Vec<u8>>) -> Vec<firehose::pb::sf::ethereum::r#type::v2::Call> {
         // Track parent indices based on depth changes
         // parent_stack[depth] = index of call at that depth
         let mut parent_stack: Vec<u32> = Vec::new();
@@ -896,7 +896,7 @@ impl BlockBuilder {
                 vec![]
             };
 
-            pb::sf::ethereum::r#type::v2::Call {
+            firehose::pb::sf::ethereum::r#type::v2::Call {
                 index: firehose_index,
                 parent_index,
                 depth: frame.depth as u32,
@@ -921,15 +921,15 @@ impl BlockBuilder {
     }
 
     /// Map EVM opcode to CallType enum
-    fn opcode_to_call_type(opcode: u8) -> pb::sf::ethereum::r#type::v2::CallType {
+    fn opcode_to_call_type(opcode: u8) -> firehose::pb::sf::ethereum::r#type::v2::CallType {
         match opcode {
-            0xF0 => pb::sf::ethereum::r#type::v2::CallType::Create,       // CREATE
-            0xF5 => pb::sf::ethereum::r#type::v2::CallType::Create,       // CREATE2
-            0xF1 => pb::sf::ethereum::r#type::v2::CallType::Call,         // CALL
-            0xF4 => pb::sf::ethereum::r#type::v2::CallType::Delegate, // DELEGATECALL
-            0xF2 => pb::sf::ethereum::r#type::v2::CallType::Callcode,     // CALLCODE
-            0xFA => pb::sf::ethereum::r#type::v2::CallType::Static,       // STATICCALL
-            _ => pb::sf::ethereum::r#type::v2::CallType::Call,            // Default to CALL
+            0xF0 => firehose::pb::sf::ethereum::r#type::v2::CallType::Create,       // CREATE
+            0xF5 => firehose::pb::sf::ethereum::r#type::v2::CallType::Create,       // CREATE2
+            0xF1 => firehose::pb::sf::ethereum::r#type::v2::CallType::Call,         // CALL
+            0xF4 => firehose::pb::sf::ethereum::r#type::v2::CallType::Delegate, // DELEGATECALL
+            0xF2 => firehose::pb::sf::ethereum::r#type::v2::CallType::Callcode,     // CALLCODE
+            0xFA => firehose::pb::sf::ethereum::r#type::v2::CallType::Static,       // STATICCALL
+            _ => firehose::pb::sf::ethereum::r#type::v2::CallType::Call,            // Default to CALL
         }
     }
 
@@ -940,8 +940,8 @@ impl BlockBuilder {
         call_frames: Vec<&CallFrameData>,
         all_storage_accesses: &[StorageAccessData],
         index: u32,
-    ) -> pb::sf::ethereum::r#type::v2::Call {
-        use pb::sf::ethereum::r#type::v2::StorageChange;
+    ) -> firehose::pb::sf::ethereum::r#type::v2::Call {
+        use firehose::pb::sf::ethereum::r#type::v2::StorageChange;
 
         debug!("Creating system call from frames for address: {}", hex::encode(&to_address));
 
@@ -956,11 +956,11 @@ impl BlockBuilder {
             debug!("System call input hex: {}", hex::encode(&input));
         }
 
-        let mut call = pb::sf::ethereum::r#type::v2::Call {
+        let mut call = firehose::pb::sf::ethereum::r#type::v2::Call {
             index,
             parent_index: 0,
             depth: 0,
-            call_type: pb::sf::ethereum::r#type::v2::CallType::Call as i32,
+            call_type: firehose::pb::sf::ethereum::r#type::v2::CallType::Call as i32,
             caller: system_caller,
             address: to_address.clone(),
             value: None,
@@ -1000,9 +1000,9 @@ impl BlockBuilder {
         all_storage_accesses: &[StorageAccessData],
         all_call_frames: &[CallFrameData],
         index: u32,
-    ) -> pb::sf::ethereum::r#type::v2::Call {
-        use pb::sf::ethereum::r#type::v2::{BalanceChange, NonceChange, StorageChange};
-        use pb::sf::ethereum::r#type::v2::balance_change::Reason as BalanceReason;
+    ) -> firehose::pb::sf::ethereum::r#type::v2::Call {
+        use firehose::pb::sf::ethereum::r#type::v2::{BalanceChange, NonceChange, StorageChange};
+        use firehose::pb::sf::ethereum::r#type::v2::balance_change::Reason as BalanceReason;
 
         debug!("Creating system call for address: {}", hex::encode(&to_address));
 
@@ -1020,11 +1020,11 @@ impl BlockBuilder {
             debug!("System call input hex: {}", hex::encode(&input));
         }
 
-        let mut call = pb::sf::ethereum::r#type::v2::Call {
+        let mut call = firehose::pb::sf::ethereum::r#type::v2::Call {
             index,
             parent_index: 0,
             depth: 0,
-            call_type: pb::sf::ethereum::r#type::v2::CallType::Call as i32,
+            call_type: firehose::pb::sf::ethereum::r#type::v2::CallType::Call as i32,
             caller: system_caller,
             address: to_address.clone(),
             value: None,
@@ -1048,7 +1048,7 @@ impl BlockBuilder {
                     address: access.address.clone(),
                     old_value: Some(BigInt { bytes: access.prestate_balance.clone() }),
                     new_value: Some(BigInt { bytes: access.modified_balance.clone() }),
-                    reason: BalanceReason::Unknown as i32,
+                    reason: BalanceReason::MonadTxPostState as i32,
                     ordinal: 0,
                 });
             }
@@ -1158,7 +1158,7 @@ impl BlockBuilder {
 
                 // Ensure receipt exists
                 if tx.receipt.is_none() {
-                    tx.receipt = Some(pb::sf::ethereum::r#type::v2::TransactionReceipt {
+                    tx.receipt = Some(firehose::pb::sf::ethereum::r#type::v2::TransactionReceipt {
                         cumulative_gas_used: 0,
                         logs_bloom: vec![0u8; 256],
                         logs: Vec::new(),
@@ -1223,14 +1223,14 @@ impl BlockBuilder {
             // This is needed for pure ETH transfers and other transactions without EVM execution
             if tx.calls.is_empty() {
                 debug!("Creating synthetic root call for tx #{}", txn_index);
-                let root_call = pb::sf::ethereum::r#type::v2::Call {
+                let root_call = firehose::pb::sf::ethereum::r#type::v2::Call {
                     index: 1,
                     parent_index: 0,
                     depth: 0,
                     call_type: if tx.to.is_empty() || tx.to == vec![0u8; 20] {
-                        pb::sf::ethereum::r#type::v2::CallType::Create as i32
+                        firehose::pb::sf::ethereum::r#type::v2::CallType::Create as i32
                     } else {
-                        pb::sf::ethereum::r#type::v2::CallType::Call as i32
+                        firehose::pb::sf::ethereum::r#type::v2::CallType::Call as i32
                     },
                     caller: tx.from.clone(),
                     address: tx.to.clone(),
@@ -1258,7 +1258,7 @@ impl BlockBuilder {
             }
 
             if let Some(root_call) = tx.calls.first() {
-                use pb::sf::ethereum::r#type::v2::TransactionTraceStatus;
+                use firehose::pb::sf::ethereum::r#type::v2::TransactionTraceStatus;
                 if tx.status != TransactionTraceStatus::Succeeded as i32 {
                     tx.status = if root_call.status_reverted {
                         TransactionTraceStatus::Reverted as i32
@@ -1269,8 +1269,8 @@ impl BlockBuilder {
                 tx.return_data = root_call.return_data.clone();
             }
 
-            use pb::sf::ethereum::r#type::v2::{BalanceChange, BigInt as PbBigInt, NonceChange, StorageChange};
-            use pb::sf::ethereum::r#type::v2::balance_change::Reason as BalanceReason;
+            use firehose::pb::sf::ethereum::r#type::v2::{BalanceChange, BigInt as PbBigInt, NonceChange, StorageChange};
+            use firehose::pb::sf::ethereum::r#type::v2::balance_change::Reason as BalanceReason;
 
             let empty_accesses: Vec<AccountAccessData> = vec![];
             let accesses = account_accesses.get(&txn_index).unwrap_or(&empty_accesses);
@@ -1292,7 +1292,7 @@ impl BlockBuilder {
                             address: ensure_address_bytes(access.address.clone()),
                             old_value: Some(PbBigInt { bytes: access.prestate_balance.clone() }),
                             new_value: Some(PbBigInt { bytes: access.modified_balance.clone() }),
-                            reason: BalanceReason::Unknown as i32,
+                            reason: BalanceReason::MonadTxPostState as i32,
                             ordinal: 0,
                         });
                     }

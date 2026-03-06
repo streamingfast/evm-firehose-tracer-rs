@@ -17,7 +17,7 @@ pub use printer::FirehosePrinter;
 pub use tracer::FirehoseTracer;
 
 // Re-export commonly used types
-pub use pb::sf::ethereum::r#type::v2::{Block, BlockHeader, TransactionTrace};
+pub use firehose::pb::sf::ethereum::r#type::v2::{Block, BlockHeader, TransactionTrace};
 pub use monad_plugin::{MonadConsumer, ProcessedEvent};
 
 /// Version of the Firehose tracer

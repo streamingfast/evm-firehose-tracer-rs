@@ -21,8 +21,10 @@ pub use types::{
 };
 pub use version::{BLOCK_VERSION, PROTOCOL_VERSION};
 
-// Re-export pb from the pb crate
-pub use pb;
+// pb module backed by buf-generated protobuf files in firehose/src/pb/
+pub mod pb {
+    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/pb/pb.rs"));
+}
 
 // // Type aliases for generic Node types
 // /// Type alias for RecoveredBlock that can be used with any Node that implements FullNodeComponents

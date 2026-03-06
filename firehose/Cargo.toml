@@ -4,8 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-pb.workspace = true
-
 # Alloy dependencies
 alloy-genesis.workspace = true
 alloy-primitives.workspace = true

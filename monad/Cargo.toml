@@ -8,7 +8,7 @@ name = "monad-firehose-tracer"
 path = "src/main.rs"
 
 [dependencies]
-pb = { workspace = true }
+firehose = { workspace = true }
 monad-plugin = { path = "../monad-plugin" }
 eyre = { workspace = true }
 tokio = { workspace = true }

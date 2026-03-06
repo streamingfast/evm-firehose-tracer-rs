@@ -6,7 +6,7 @@ use alloy_primitives::U256;
 use super::{finality::FinalityStatus, mapper, ordinal::Ordinal, printer, Config, HexView};
 use crate::types::{BlockEvent, ReceiptData, TxEvent};
 use crate::{firehose_debug, ChainConfig, Rules, PROTOCOL_VERSION};
-use pb::sf::ethereum::r#type::v2::{transaction_trace, Block, Call, TransactionTrace};
+use crate::pb::sf::ethereum::r#type::v2::{transaction_trace, Block, Call, TransactionTrace};
 use std::sync::Arc;
 use tracing::{debug, info};
 
