@@ -1276,8 +1276,9 @@ impl BlockBuilder {
             let accesses = account_accesses.get(&txn_index).unwrap_or(&empty_accesses);
             debug!("FINALIZE_ACCESSES: txn_index={} accesses_count={}", txn_index, accesses.len());
             for acc in accesses {
-                debug!("FINALIZE_ACCESS_ENTRY: addr={} bal_mod={} prestate_bal_hex={}",
-                    hex::encode(&acc.address), acc.is_balance_modified, hex::encode(&acc.prestate_balance));
+                debug!("FINALIZE_ACCESS_ENTRY: addr={} bal_mod={} nonce_mod={} pre_nonce={} mod_nonce={} prestate_bal_hex={}",
+                    hex::encode(&acc.address), acc.is_balance_modified, acc.is_nonce_modified,
+                    acc.prestate_nonce, acc.modified_nonce, hex::encode(&acc.prestate_balance));
             }
 
             // All state changes go to root call
@@ -1298,14 +1299,22 @@ impl BlockBuilder {
                     }
 
                     if access.is_nonce_modified {
+                        debug!("NONCE_CHANGE_PUSH: addr={} old={} new={}",
+                            hex::encode(&access.address), access.prestate_nonce, access.modified_nonce);
                         root_call.nonce_changes.push(NonceChange {
                             address: ensure_address_bytes(access.address.clone()),
                             old_value: access.prestate_nonce,
                             new_value: access.modified_nonce,
                             ordinal: 0,
                         });
+                    } else {
+                        debug!("NONCE_CHANGE_SKIP: addr={} nonce_mod=false pre_nonce={} mod_nonce={}",
+                            hex::encode(&access.address), access.prestate_nonce, access.modified_nonce);
                     }
                 }
+
+                debug!("FINALIZE_ROOT_CALL_RESULT: nonce_changes={} balance_changes={}",
+                    root_call.nonce_changes.len(), root_call.balance_changes.len());
 
                 if let Some(storages) = storage_accesses.get(&txn_index) {
                     for storage in storages {
