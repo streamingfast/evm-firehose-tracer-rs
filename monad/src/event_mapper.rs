@@ -909,7 +909,7 @@ impl BlockBuilder {
                 return_data,
                 input: frame.input.clone(),
                 executed_code,
-                suicide: false,
+                suicide: frame.opcode == 0xFF,
                 status_failed,
                 status_reverted,
                 state_reverted,
