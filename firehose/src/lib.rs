@@ -1,30 +1,29 @@
+mod callstack;
 pub mod config;
+mod deferred_call_state;
+mod eip7702;
 pub mod finality;
-// pub mod inspector; // TODO: Not yet implemented
 pub mod logging;
 pub mod mapper;
 mod ordinal;
 pub mod printer;
 mod tracer;
-mod tracer_checks;
 pub mod types;
+pub mod utils;
 mod version;
 
 // Re-export public items to maintain the same API
 pub use config::{ChainConfig, Config, Rules};
-// pub use inspector::FirehoseInspector; // TODO: Not yet implemented
 pub use logging::HexView;
 pub use tracer::Tracer;
 pub use types::{
-    BlockData, BlockEvent, CallFrame, CallType, FinalizedBlockRef, LogData, OpcodeScopeData,
-    ReceiptData, TxEvent, UncleData, WithdrawalData,
+    BlockData, BlockEvent, CallType, FinalizedBlockRef, LogData, ReceiptData, TxEvent, UncleData,
+    WithdrawalData,
 };
 pub use version::{BLOCK_VERSION, PROTOCOL_VERSION};
 
-// pb module backed by buf-generated protobuf files in firehose/src/pb/
-pub mod pb {
-    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/pb/pb.rs"));
-}
+// pb module backed by buf-generated protobuf files in pb/src/
+pub use pb;
 
 // // Type aliases for generic Node types
 // /// Type alias for RecoveredBlock that can be used with any Node that implements FullNodeComponents

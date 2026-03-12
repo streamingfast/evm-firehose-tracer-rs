@@ -1212,11 +1212,30 @@ dependencies = [
  "base64",
  "eyre",
  "hex",
+ "k256",
+ "pb",
  "prost",
  "prost-types",
  "serde",
  "serde_json",
  "tracing",
+]
+
+[[package]]
+name = "firehose-test"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-rlp",
+ "base64",
+ "eyre",
+ "firehose",
+ "hex",
+ "k256",
+ "pb",
+ "prost",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1578,6 +1597,7 @@ dependencies = [
  "elliptic-curve",
  "once_cell",
  "sha2",
+ "signature",
 ]
 
 [[package]]

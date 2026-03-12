@@ -11,20 +11,6 @@ use alloy_primitives::{Address, Bloom, Bytes, TxHash, B256, U256};
 pub struct BlockEvent {
     pub block: BlockData,
     pub finalized: Option<FinalizedBlockRef>,
-
-    /// Precompile Detection (at least one should be provided by chain implementation)
-    ///
-    /// The chain implementation should provide precompile information since it varies by:
-    /// - Chain type (Ethereum, BSC, Polygon, etc.)
-    /// - Fork rules (Istanbul adds blake2f, Cancun adds point evaluation, etc.)
-    /// - Custom chain precompiles
-    ///
-    /// Option 1: Provide a pre-built checker function
-    pub is_precompiled_addr: Option<Box<dyn Fn(Address) -> bool + Send + Sync>>,
-    //
-    // Option 2: Provide the list of addresses (tracer will build the checker)
-    // If neither is provided, all addresses will be treated as non-precompiled.
-    pub active_precompiles: Vec<Address>,
 }
 
 /// BlockData contains the minimal block data needed by the tracer
@@ -51,6 +37,24 @@ pub struct BlockData {
     pub size: u64,
     pub withdrawals: Vec<WithdrawalData>,
     pub is_merge: bool,
+
+    // EIP-4895: Shanghai withdrawals
+    pub withdrawals_root: Option<B256>, // Root hash of withdrawals tree (None for pre-Shanghai blocks)
+
+    // EIP-4844: Cancun blob gas tracking
+    pub blob_gas_used: Option<u64>, // Total blob gas consumed by blob transactions (None for pre-Cancun blocks)
+    pub excess_blob_gas: Option<u64>, // Running total of excess blob gas (None for pre-Cancun blocks)
+
+    // EIP-4788: Cancun beacon block root
+    pub parent_beacon_root: Option<B256>, // Parent beacon block root for CL/EL sync (None for pre-Cancun blocks)
+
+    // EIP-7685: Prague execution requests
+    pub requests_hash: Option<B256>, // Root hash of execution layer requests (None for pre-Prague blocks)
+
+    // Polygon-specific: Transaction dependency metadata
+    // List of transaction indexes that are dependent on each other in the block
+    // Used by Polygon's parallel execution engine (None for non-Polygon chains)
+    pub tx_dependency: Option<Vec<Vec<u64>>>,
 }
 
 /// UncleData contains uncle block header data
@@ -91,6 +95,24 @@ pub struct FinalizedBlockRef {
     pub hash: B256,
 }
 
+/// AccessTuple is a single entry in an EIP-2930 access list
+#[derive(Debug, Clone)]
+pub struct AccessTuple {
+    pub address: Address,
+    pub storage_keys: Vec<B256>,
+}
+
+/// SetCodeAuthorization represents EIP-7702 authorization
+#[derive(Debug, Clone)]
+pub struct SetCodeAuthorization {
+    pub chain_id: B256, // Using B256 to match [32]byte in Go
+    pub address: Address,
+    pub nonce: u64,
+    pub v: u32,
+    pub r: B256,
+    pub s: B256,
+}
+
 /// TxEvent contains the data needed for OnTxStart
 #[derive(Debug, Clone)]
 pub struct TxEvent {
@@ -104,31 +126,40 @@ pub struct TxEvent {
     pub gas_price: U256,
     pub nonce: u64,
     pub index: u32,
+
+    // Signature fields
+    pub v: Option<Bytes>, // Signature V value (can be None for unsigned transactions)
+    pub r: B256,          // Signature R point
+    pub s: B256,          // Signature S point
+
+    // EIP-1559 fields (type 2, 3, 4)
+    pub max_fee_per_gas: Option<U256>,
+    pub max_priority_fee_per_gas: Option<U256>,
+
+    // EIP-2930/EIP-1559 access list (type 1, 2, 3, 4)
+    pub access_list: Vec<AccessTuple>,
+
+    // EIP-4844 blob fields (type 3)
+    pub blob_gas_fee_cap: Option<U256>,
+    pub blob_hashes: Vec<B256>,
+
+    // EIP-7702 set code authorization list (type 4)
+    pub set_code_authorizations: Vec<SetCodeAuthorization>,
 }
 
-/// CallFrame contains the data for OnCallEnter/OnCallExit
-#[derive(Debug, Clone)]
-pub struct CallFrame {
-    pub call_type: CallType,
-    pub from: Address,
-    pub to: Address,
-    pub input: Bytes,
-    pub gas: u64,
-    pub value: U256,
-    pub code_address: Option<Address>, // For DELEGATECALL
-}
-
-/// CallType represents the type of call
+/// CallType represents the EVM opcode type for call operations
+/// These values match the actual EVM opcodes for the respective call types
+/// NOTE: This is different from pb::sf::ethereum::r#type::v2::CallType which uses different numbering
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum CallType {
-    Call = 0,
-    CallCode = 1,
-    DelegateCall = 2,
-    StaticCall = 3,
-    Create = 4,
-    Create2 = 5,
-    SelfDestruct = 6,
+    Create = 0xf0,       // CREATE opcode
+    Call = 0xf1,         // CALL opcode
+    CallCode = 0xf2,     // CALLCODE opcode
+    DelegateCall = 0xf4, // DELEGATECALL opcode
+    Create2 = 0xf5,      // CREATE2 opcode
+    StaticCall = 0xfa,   // STATICCALL opcode
+    SelfDestruct = 0xff, // SELFDESTRUCT opcode
 }
 
 /// ReceiptData contains transaction receipt data
@@ -138,7 +169,11 @@ pub struct ReceiptData {
     pub gas_used: u64,
     pub status: u64,
     pub logs: Vec<LogData>,
+    pub logs_bloom: [u8; 256],
     pub cumulative_gas_used: u64,
+    pub blob_gas_used: u64,           // EIP-4844: Gas used for blob data
+    pub blob_gas_price: Option<U256>, // EIP-4844: Price per unit of blob gas
+    pub state_root: Option<Bytes>, // State root after transaction execution (for genesis blocks and pre-Byzantium)
 }
 
 /// LogData contains log event data
@@ -147,18 +182,50 @@ pub struct LogData {
     pub address: Address,
     pub topics: Vec<B256>,
     pub data: Bytes,
+    pub block_index: u32, // Block-wide index of the log (prepopulated by chain implementation, matches go-ethereum behavior)
 }
 
-/// OpcodeScopeData contains data about opcode execution scope
-/// (used for tracking stack depth and call contexts)
+/// GenesisAccount represents an account in the genesis block allocation
+/// This is a simplified version of go-ethereum's types.Account for tracer use
 #[derive(Debug, Clone)]
-pub struct OpcodeScopeData {
-    pub depth: usize,
-    pub pc: u64,
-    pub op: u8,
-    pub gas: u64,
-    pub gas_cost: u64,
-    pub memory_size: u64,
+pub struct GenesisAccount {
+    /// Code is the contract bytecode (if this is a contract account)
+    pub code: Option<Bytes>,
+
+    /// Storage is the contract storage (key-value pairs)
+    pub storage: std::collections::HashMap<B256, B256>,
+
+    /// Balance is the account balance in wei
+    pub balance: Option<U256>,
+
+    /// Nonce is the account nonce
+    pub nonce: u64,
+}
+
+/// GenesisAlloc is a map of addresses to genesis accounts
+/// This represents the initial state allocation in the genesis block
+pub type GenesisAlloc = std::collections::HashMap<Address, GenesisAccount>;
+
+/// StateReader provides read-only access to blockchain state during transaction execution.
+/// Required for EIP-7702 delegation detection, CREATE address calculation, etc.
+/// Blockchain implementations must provide this (e.g., from EVM StateDB)
+pub trait StateReader {
+    /// Returns the account nonce for the given address
+    fn get_nonce(&self, address: Address) -> u64;
+
+    /// Returns the contract code for the given address
+    /// Returns empty bytes if the account has no code
+    fn get_code(&self, address: Address) -> Bytes;
+
+    /// Returns the code hash for the given address
+    /// Returns empty hash if the account has no code
+    fn get_code_hash(&self, address: Address) -> B256;
+
+    /// Returns the balance for the given address
+    fn get_balance(&self, address: Address) -> U256;
+
+    /// Returns the storage value at the given key for the given address
+    fn get_storage(&self, address: Address, key: B256) -> B256;
 }
 
 impl BlockEvent {
@@ -167,8 +234,6 @@ impl BlockEvent {
         Self {
             block,
             finalized: None,
-            is_precompiled_addr: None,
-            active_precompiles: Vec::new(),
         }
     }
 
@@ -177,34 +242,10 @@ impl BlockEvent {
         self.finalized = Some(finalized);
         self
     }
-
-    /// Sets the precompile checker function
-    pub fn with_precompile_checker<F>(mut self, checker: F) -> Self
-    where
-        F: Fn(Address) -> bool + Send + Sync + 'static,
-    {
-        self.is_precompiled_addr = Some(Box::new(checker));
-        self
-    }
-
-    /// Sets the active precompile addresses
-    pub fn with_active_precompiles(mut self, precompiles: Vec<Address>) -> Self {
-        self.active_precompiles = precompiles;
-        self
-    }
-
-    /// Checks if an address is a precompiled contract
-    pub fn is_precompile(&self, addr: Address) -> bool {
-        if let Some(ref checker) = self.is_precompiled_addr {
-            return checker(addr);
-        }
-
-        self.active_precompiles.contains(&addr)
-    }
 }
 
 impl TxEvent {
-    /// Creates a new TxEvent
+    /// Creates a new TxEvent with minimal required fields
     pub fn new(
         tx_type: u8,
         hash: TxHash,
@@ -228,55 +269,21 @@ impl TxEvent {
             gas_price,
             nonce,
             index,
+            v: None,
+            r: B256::ZERO,
+            s: B256::ZERO,
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            access_list: Vec::new(),
+            blob_gas_fee_cap: None,
+            blob_hashes: Vec::new(),
+            set_code_authorizations: Vec::new(),
         }
     }
 
     /// Returns true if this is a contract creation transaction
     pub fn is_create(&self) -> bool {
         self.to.is_none()
-    }
-}
-
-impl CallFrame {
-    /// Creates a new CallFrame
-    pub fn new(
-        call_type: CallType,
-        from: Address,
-        to: Address,
-        input: Bytes,
-        gas: u64,
-        value: U256,
-    ) -> Self {
-        Self {
-            call_type,
-            from,
-            to,
-            input,
-            gas,
-            value,
-            code_address: None,
-        }
-    }
-
-    /// Sets the code address (for DELEGATECALL)
-    pub fn with_code_address(mut self, code_address: Address) -> Self {
-        self.code_address = Some(code_address);
-        self
-    }
-
-    /// Returns true if this is a delegate call
-    pub fn is_delegate_call(&self) -> bool {
-        self.call_type == CallType::DelegateCall
-    }
-
-    /// Returns true if this is a static call
-    pub fn is_static_call(&self) -> bool {
-        self.call_type == CallType::StaticCall
-    }
-
-    /// Returns true if this is a create operation
-    pub fn is_create(&self) -> bool {
-        matches!(self.call_type, CallType::Create | CallType::Create2)
     }
 }
 
@@ -293,7 +300,11 @@ impl ReceiptData {
             gas_used,
             status,
             logs: Vec::new(),
+            logs_bloom: [0u8; 256],
             cumulative_gas_used,
+            blob_gas_used: 0,
+            blob_gas_price: None,
+            state_root: None,
         }
     }
 
@@ -310,11 +321,12 @@ impl ReceiptData {
 
 impl LogData {
     /// Creates a new LogData
-    pub fn new(address: Address, topics: Vec<B256>, data: Bytes) -> Self {
+    pub fn new(address: Address, topics: Vec<B256>, data: Bytes, block_index: u32) -> Self {
         Self {
             address,
             topics,
             data,
+            block_index,
         }
     }
 }
@@ -355,103 +367,11 @@ mod tests {
     }
 
     #[test]
-    fn test_call_frame_types() {
-        let frame = CallFrame::new(
-            CallType::DelegateCall,
-            Address::default(),
-            Address::default(),
-            Bytes::default(),
-            21000,
-            U256::ZERO,
-        );
-        assert!(frame.is_delegate_call());
-        assert!(!frame.is_static_call());
-        assert!(!frame.is_create());
-
-        let static_frame = CallFrame::new(
-            CallType::StaticCall,
-            Address::default(),
-            Address::default(),
-            Bytes::default(),
-            21000,
-            U256::ZERO,
-        );
-        assert!(static_frame.is_static_call());
-    }
-
-    #[test]
     fn test_receipt_status() {
         let mut receipt = ReceiptData::new(0, 21000, 1, 21000);
         assert!(receipt.is_success());
 
         receipt.status = 0;
         assert!(!receipt.is_success());
-    }
-
-    #[test]
-    fn test_block_event_precompiles() {
-        let block = BlockData {
-            number: 1,
-            hash: B256::default(),
-            parent_hash: B256::default(),
-            uncle_hash: B256::default(),
-            coinbase: Address::default(),
-            root: B256::default(),
-            tx_hash: B256::default(),
-            receipt_hash: B256::default(),
-            bloom: Bloom::default(),
-            difficulty: U256::ZERO,
-            gas_limit: 10000000,
-            gas_used: 0,
-            time: 1000000,
-            extra: Bytes::default(),
-            mix_digest: B256::default(),
-            nonce: 0,
-            base_fee: Some(U256::from(1000000000u64)),
-            uncles: Vec::new(),
-            size: 1000,
-            withdrawals: Vec::new(),
-            is_merge: true,
-        };
-
-        let precompile_addr = Address::from([1u8; 20]);
-        let event = BlockEvent::new(block).with_active_precompiles(vec![precompile_addr]);
-
-        assert!(event.is_precompile(precompile_addr));
-        assert!(!event.is_precompile(Address::default()));
-    }
-
-    #[test]
-    fn test_block_event_precompile_checker() {
-        let block = BlockData {
-            number: 1,
-            hash: B256::default(),
-            parent_hash: B256::default(),
-            uncle_hash: B256::default(),
-            coinbase: Address::default(),
-            root: B256::default(),
-            tx_hash: B256::default(),
-            receipt_hash: B256::default(),
-            bloom: Bloom::default(),
-            difficulty: U256::ZERO,
-            gas_limit: 10000000,
-            gas_used: 0,
-            time: 1000000,
-            extra: Bytes::default(),
-            mix_digest: B256::default(),
-            nonce: 0,
-            base_fee: Some(U256::from(1000000000u64)),
-            uncles: Vec::new(),
-            size: 1000,
-            withdrawals: Vec::new(),
-            is_merge: true,
-        };
-
-        let precompile_addr = Address::from([1u8; 20]);
-        let event = BlockEvent::new(block)
-            .with_precompile_checker(move |addr| addr == precompile_addr);
-
-        assert!(event.is_precompile(precompile_addr));
-        assert!(!event.is_precompile(Address::default()));
     }
 }

@@ -1,5 +1,5 @@
 [workspace]
-members = ["pb", "firehose", "monad", "monad-plugin"]
+members = ["pb", "firehose", "firehose-test", "monad", "monad-plugin"]
 resolver = "2"
 
 [workspace.package]

@@ -1,1451 +1,1524 @@
-use alloy_consensus::{Transaction, TxType};
-use alloy_primitives::U256;
-// REVM imports removed - tracer is now independent of REVM
-// Integration layer should handle REVM inspector trait implementation
-
-use super::{finality::FinalityStatus, mapper, ordinal::Ordinal, printer, Config, HexView};
-use crate::types::{BlockEvent, ReceiptData, TxEvent};
-use crate::{firehose_debug, ChainConfig, Rules, PROTOCOL_VERSION};
-use crate::pb::sf::ethereum::r#type::v2::{transaction_trace, Block, Call, TransactionTrace};
+use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tracing::{debug, info};
 
+use alloy_primitives::{Address, B256, U256};
+
+use super::{
+    callstack::CallStack, deferred_call_state::DeferredCallState, finality::FinalityStatus,
+    ordinal::Ordinal, Config,
+};
+use crate::types::{BlockEvent, ReceiptData, StateReader, TxEvent};
+use crate::{utils, ChainConfig, Rules, PROTOCOL_VERSION};
+use pb::sf::ethereum::r#type::v2::{Block, Call, TransactionTrace};
+
+/// Tracer is the main Firehose tracer that captures EVM execution and produces
+/// protobuf blocks for indexing.
+///
+/// Note: Parallel execution support (isolated tracer + coordinator) is excluded
+/// from this Rust port as per requirements.
 pub struct Tracer {
-    pub config: Config,
-    pub(super) chain_config: Arc<ChainConfig>,
-    pub(super) block_rules: Option<Rules>,
+    // Global state
+    output_writer: Box<dyn Write + Send>,
+    init_sent: Arc<AtomicBool>,
+    config: Config,
+    chain_config: Arc<ChainConfig>,
 
     // Block state
-    pub(super) current_block: Option<Block>,
+    block: Option<Block>,
+    block_base_fee: Option<U256>,
     block_ordinal: Ordinal,
-    finality_status: FinalityStatus,
+    block_finality: FinalityStatus,
+    block_rules: Rules, // Fork rules for current block (computed once per block)
     block_is_genesis: bool,
 
     // Transaction state
-    pub(super) current_transaction: Option<TransactionTrace>,
+    transaction: Option<TransactionTrace>,
     transaction_log_index: u32,
-    block_log_index: u32,
-    pub in_system_call: bool,
-    previous_cumulative_gas_used: u64,
+    transaction_state_reader: Option<Box<dyn StateReader>>,
+    in_system_call: bool,
 
-    // Call stack tracking
-    pub call_stack: Vec<Call>,
-
-    // Journal tracking for state changes
-    last_journal_len: usize,
-
-    // Opcode tracking for gas changes
-    last_opcode: Option<u8>,
-    last_gas_before_opcode: Option<u64>,
-    pending_log_gas_change: Option<(u64, u64)>,
-
-    // Keccak preimage tracking, stores potential preimages temporarily
-    // Map of hash -> preimage, only saved to call if hash appears in event topics
-    pending_keccak_preimages: std::collections::HashMap<String, Vec<u8>>,
+    // Call state
+    call_stack: CallStack,
+    deferred_call_state: DeferredCallState,
+    latest_call_enter_suicided: bool,
+    latest_call_enter_suicided_depth: i32, // Depth of the SELFDESTRUCT OnCallEnter
 }
 
 impl Tracer {
+    /// Creates a new Firehose tracer with the given configuration.
+    /// Output is written to stdout.
     pub fn new(config: Config, chain_config: Arc<ChainConfig>) -> Self {
+        Self::new_with_writer(config, chain_config, Box::new(std::io::stdout()))
+    }
+
+    /// Creates a new Firehose tracer with a custom output writer.
+    /// This is useful for testing where you want to capture output to a buffer.
+    pub fn new_with_writer(
+        config: Config,
+        chain_config: Arc<ChainConfig>,
+        output_writer: Box<dyn Write + Send>,
+    ) -> Self {
         Self {
+            // Global state
+            output_writer,
+            init_sent: Arc::new(AtomicBool::new(false)),
             config,
             chain_config,
-            block_rules: None,
-            current_block: None,
+
+            // Block state
+            block: None,
+            block_base_fee: None,
             block_ordinal: Ordinal::default(),
-            finality_status: FinalityStatus::default(),
+            block_finality: FinalityStatus::default(),
+            block_rules: Rules::default(),
             block_is_genesis: false,
-            current_transaction: None,
+
+            // Transaction state
+            transaction: None,
             transaction_log_index: 0,
-            block_log_index: 0,
+            transaction_state_reader: None,
             in_system_call: false,
-            previous_cumulative_gas_used: 0,
-            call_stack: Vec::new(),
-            last_journal_len: 0,
-            last_opcode: None,
-            last_gas_before_opcode: None,
-            pending_log_gas_change: None,
-            pending_keccak_preimages: std::collections::HashMap::new(),
+
+            // Call state
+            call_stack: CallStack::new(),
+            deferred_call_state: DeferredCallState::new(),
+            latest_call_enter_suicided: false,
+            latest_call_enter_suicided_depth: 0,
         }
     }
 
-    /// on_blockchain_init initializes the tracer and prints the INIT message
-    pub fn on_blockchain_init(&mut self) {
-        // Print Firehose init message to stdout
-        printer::firehose_init_to_stdout(PROTOCOL_VERSION, "firehose-tracer");
-
-        info!(
-            "Firehose tracer initialized: chain_id={}, protocol_version={}",
-            self.chain_config.chain_id, PROTOCOL_VERSION,
-        );
-    }
-
-    // NOTE: Genesis block handling is commented out because it depends on Reth types.
-    // The integration layer should handle genesis block processing by:
-    // 1. Creating a BlockEvent from the genesis block
-    // 2. Calling on_block_start() with that event
-    // 3. Manually adding genesis state changes if needed
-    //
-    // /// on_genesis_block processes the genesis block and its state allocation
-    // pub fn on_genesis_block(&mut self, genesis: &Genesis) {
-    //     self.ensure_not_in_block();
-    //     self.ensure_init();
-    //     // ... implementation commented out ...
-    // }
-
-    // NOTE: Genesis account allocation is commented out - handled by integration layer
-    // /// on_genesis_account_allocation processes a single account allocation in genesis
-    // fn on_genesis_account_allocation(&mut self, address: &Address, account: &GenesisAccount) {
-    //     // ... implementation commented out ...
-    // }
-
-    /// on_block_start prepares for block processing a new block altogether
-    pub fn on_block_start(&mut self, event: &BlockEvent) {
-        self.ensure_init();
-
-        // Compute rules for this block
-        self.block_rules = Some(self.chain_config.rules(
-            event.block.number,
-            event.block.is_merge,
-            event.block.time,
-        ));
-
-        // TODO: Convert BlockEvent to protobuf Block
-        // let pb_block = mapper::block_event_to_protobuf(event);
-        // self.on_block_start_inner(pb_block);
-
-        // Temporary: create an empty block for now
-        let pb_block = Block {
-            number: event.block.number,
-            hash: event.block.hash.to_vec(),
-            ..Default::default()
-        };
-        self.on_block_start_inner(pb_block);
-    }
-
-    /// on_block_start_inner contains the common block start logic used by both
-    /// normal block processing and genesis block processing
-    fn on_block_start_inner(&mut self, pb_block: Block) {
-        self.current_block = Some(pb_block);
+    /// Resets the block state only (not transaction or call state)
+    fn reset_block(&mut self) {
+        self.block = None;
+        self.block_base_fee = None;
         self.block_ordinal.reset();
-        self.finality_status.populate_from_chain(None);
-
-        // Reset transaction state for new block
-        self.reset_transaction();
-
-        let block = self.current_block.as_ref().expect("current_block is set");
-
-        debug!(
-            "Processing block: number={}, hash={}",
-            block.number,
-            HexView(&block.hash),
-        );
-    }
-
-    /// on_block_end finalizes block processing and outputs to stdout
-    pub fn on_block_end(&mut self) {
-        self.ensure_in_block();
-
-        let current: Option<Block> = self.current_block.take();
-
-        if let Some(block) = current {
-            printer::firehose_block_to_stdout(block, self.finality_status);
-        }
-
-        // Reset block state
-        self.reset_block();
-    }
-
-    /// reset_block resets the block state only, do not reset transaction or call state
-    /// Ported from Go resetBlock() method
-    pub fn reset_block(&mut self) {
-        firehose_debug!("resetting block state");
-
-        self.current_block = None;
-        self.block_ordinal.reset();
-        self.finality_status.reset();
+        self.block_finality.reset();
+        self.block_rules = Rules::default();
         self.block_is_genesis = false;
-        self.block_log_index = 0;
-        self.previous_cumulative_gas_used = 0;
-
-        // TODO: Add other block state resets when implemented:
-        // - block_base_fee reset
-        // - block_is_precompiled_addr reset
-        // - block_rules reset
     }
 
-    /// reset_transaction resets the transaction state and the call state in one shot
-    /// Ported from Go resetTransaction() method
-    pub fn reset_transaction(&mut self) {
-        firehose_debug!("resetting transaction state");
-
-        // Reset transaction state
-        self.current_transaction = None;
+    /// Resets the transaction state and call state in one shot
+    fn reset_transaction(&mut self) {
+        self.transaction = None;
         self.transaction_log_index = 0;
+        self.transaction_state_reader = None;
         self.in_system_call = false;
 
-        // Reset call stack
-        self.call_stack.clear();
-
-        // TODO: Add other transaction state resets when implemented:
-        // - evm reset
-        // - latest_call_enter_suicided reset
-        // - deferred_call_state.reset()
+        self.call_stack.reset();
+        self.latest_call_enter_suicided = false;
+        self.deferred_call_state.reset();
     }
 
-    /// on_tx_end finalizes the current transaction and adds it to the block
-    pub fn on_tx_end(&mut self, receipt: &ReceiptData) {
-        self.ensure_in_block();
-        self.ensure_in_transaction();
+    // ============================================================================
+    // Lifecycle Hooks
+    // ============================================================================
 
-        firehose_debug!("ending transaction");
-
-        if let Some(mut trx) = self.current_transaction.take() {
-            // TODO: Map receipt to protobuf
-            // trx.receipt = Some(mapper::receipt_data_to_protobuf(receipt));
-
-            // Set transaction status 1: success, 0: failure
-            let is_success = receipt.status == 1;
-            trx.status = if is_success { 1 } else { 0 };
-
-            // Calculate gas used by transaction
-            let cumulative_gas_used = receipt.cumulative_gas_used;
-            trx.gas_used = cumulative_gas_used - self.previous_cumulative_gas_used;
-
-            // Update gas for next transaction
-            self.previous_cumulative_gas_used = cumulative_gas_used;
-
-            trx.calls = std::mem::take(&mut self.call_stack);
-
-            // Check if root call reverted or failed to set transaction status
-            let root_call_reverted = trx
-                .calls
-                .first()
-                .map(|call| call.status_reverted)
-                .unwrap_or(false);
-            let _root_call_failed = trx
-                .calls
-                .first()
-                .map(|call| call.status_failed)
-                .unwrap_or(false);
-
-            // Set proper transaction status
-            use crate::pb::sf::ethereum::r#type::v2::TransactionTraceStatus;
-            if !is_success {
-                trx.status = if root_call_reverted {
-                    TransactionTraceStatus::Reverted as i32
-                } else {
-                    TransactionTraceStatus::Failed as i32
-                };
-            } else {
-                trx.status = TransactionTraceStatus::Succeeded as i32;
-            }
-
-            // Collect all logs from calls and add to receipt
-            // According to Ethereum rules:
-            // If the transaction failed (receipt.status=false), NO logs are included
-            // If a sub-call reverted/failed, only that sub-call's logs (and descendants) are excluded
-            if let Some(receipt_obj) = &mut trx.receipt {
-                // If transaction failed, exclude ALL logs
-                if !is_success {
-                    receipt_obj.logs = Vec::new();
-                } else {
-                    // Transaction succeeded - collect logs, excluding reverted/failed sub-calls
-                    fn collect_logs_recursive(
-                        call: &Call,
-                        calls: &[Call],
-                        logs: &mut Vec<crate::pb::sf::ethereum::r#type::v2::Log>,
-                    ) {
-                        // If this call reverted or failed, skip its logs and all child logs
-                        if call.status_reverted || call.status_failed {
-                            return;
-                        }
-
-                        // Add this call's logs
-                        logs.extend(call.logs.iter().cloned());
-
-                        // Recursively collect logs from child calls
-                        for child_call in calls {
-                            if child_call.parent_index == call.index {
-                                collect_logs_recursive(child_call, calls, logs);
-                            }
-                        }
-                    }
-
-                    // Start from root call
-                    if let Some(root_call) = trx.calls.first() {
-                        let mut all_logs = Vec::new();
-                        collect_logs_recursive(root_call, &trx.calls, &mut all_logs);
-                        receipt_obj.logs = all_logs;
-                    }
-                }
-            }
-
-            // NOTE: These methods were in the commented-out inspector section
-            // The integration layer should handle:
-            // - add_post_execution_state_changes: Adding state changes after transaction
-            // - add_miner_reward: Adding miner reward tracking
-            // self.add_post_execution_state_changes(&mut trx);
-            // self.add_miner_reward(&mut trx);
-
-            if let Some(root_call) = trx.calls.first() {
-                trx.return_data = root_call.return_data.clone();
-            }
-
-            trx.end_ordinal = self.block_ordinal.next();
-
-            // Get the current block and add the transaction to it
-            if let Some(block) = &mut self.current_block {
-                // Set the transaction index based on current count
-                trx.index = block.transaction_traces.len() as u32;
-
-                firehose_debug!(
-                    "adding transaction to block (index={} hash={} status={} gas_used={} calls={})",
-                    trx.index,
-                    HexView(&trx.hash),
-                    trx.status,
-                    trx.gas_used,
-                    trx.calls.len()
-                );
-
-                block.transaction_traces.push(trx);
-            }
+    /// OnBlockchainInit is called once when the blockchain is initialized
+    pub fn on_blockchain_init(&mut self, node_name: &str, node_version: &str) {
+        if self
+            .init_sent
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            crate::printer::print_to_firehose(
+                &mut self.output_writer,
+                "FIRE INIT",
+                PROTOCOL_VERSION,
+                node_name,
+                node_version,
+            );
+        } else {
+            panic!("OnBlockchainInit was called more than once");
         }
 
-        self.reset_transaction();
-        firehose_debug!("transaction ended");
-    }
-
-    /// on_tx_start starts tracing a transaction from a TxEvent
-    pub fn on_tx_start(&mut self, event: &TxEvent) {
-        self.on_tx_start_inner(event);
-    }
-
-    /// Starts capturing a system call
-    pub fn on_system_call_start(&mut self) {
-        firehose_debug!("starting system call");
-        self.in_system_call = true;
-        self.call_stack.clear();
-    }
-
-    /// Ends capturing a system call and adds it to the block's system_calls
-    pub fn on_system_call_end(&mut self) {
-        firehose_debug!("ending system call");
-
-        if let Some(_block) = &mut self.current_block {
-            // TEMPORARILY DISABLED: Move calls from the call stack to the block's system_calls
-            let system_calls = std::mem::take(&mut self.call_stack);
-            info!(target: "firehose:tracer", "Captured {} system calls (NOT adding to block to test)", system_calls.len());
-
-            // TODO: Re-enable once we figure out the memory corruption issue
-            // while let Some(call) = system_calls.pop() {
-            //     block.system_calls.insert(0, call);
-            // }
-
-            info!(target: "firehose:tracer", "Dropping system_calls without adding them to block");
-            drop(system_calls);
-            info!(target: "firehose:tracer", "system_calls vec dropped successfully");
-        }
-
-        info!(target: "firehose:tracer", "Setting in_system_call = false");
-        self.in_system_call = false;
-        info!(target: "firehose:tracer", "Clearing call_stack");
-        self.call_stack.clear();
-        info!(target: "firehose:tracer", "on_system_call_end() about to return");
-    }
-
-    // NOTE: on_system_call_enter is commented out because it depends on REVM types.
-    // The integration layer should handle system calls by constructing Call objects
-    // and calling methods to add them to the tracer.
-    //
-    // /// Manually create a system call entry from execution result
-    // pub fn on_system_call_enter<H>(...) {
-    //     // ... implementation commented out ...
-    // }
-
-    /// on_tx_start_inner is used internally to start transaction tracing
-    /// Ported from Go onTxStart() method
-    pub fn on_tx_start_inner(&mut self, event: &TxEvent) {
-        info!(target: "firehose:tracer", "on_tx_start_inner: START");
-
-        firehose_debug!(
-            "tx start inner (hash={} from={} to={})",
-            HexView(event.hash.as_slice()),
-            HexView(event.from.as_slice()),
-            event.to.map(|addr| hex::encode(addr)).unwrap_or_else(|| "None".to_string())
+        tracing::info!(
+            "tracer initialized (chain_id={})",
+            self.chain_config.chain_id
         );
+    }
 
-        info!(target: "firehose:tracer", "on_tx_start_inner: Creating transaction trace");
+    /// OnGenesisBlock is called for the genesis block
+    pub fn on_genesis_block(&mut self, event: BlockEvent, alloc: crate::types::GenesisAlloc) {
+        if self.config.ignore_genesis_block {
+            return;
+        }
 
-        let begin_ordinal = self.block_ordinal.next();
+        tracing::info!(
+            "genesis block (number={} hash={:?})",
+            event.block.number,
+            event.block.hash
+        );
+        self.ensure_blockchain_init();
 
-        // Convert gas_price to BigInt
-        let gas_price = if event.gas_price > U256::ZERO {
-            self.create_big_int_from_u256(event.gas_price)
-        } else {
-            None
-        };
+        // Keep a reference to block root before moving event
+        let block_root = event.block.root;
 
-        // Convert value to BigInt
-        let value = if event.value > U256::ZERO {
-            self.create_big_int_from_u256(event.value)
-        } else {
-            None
-        };
+        // Going to be reset in OnBlockEnd
+        self.block_is_genesis = true;
 
-        info!(target: "firehose:tracer", "on_tx_start_inner: Converting fields to vectors");
-        let hash_vec = event.hash.to_vec();
-        let from_vec = event.from.to_vec();
-        let to_vec = event.to.map(|addr| addr.to_vec()).unwrap_or_default();
-        let input_vec = event.input.to_vec();
+        // Start block
+        self.on_block_start(event);
 
-        info!(target: "firehose:tracer", "on_tx_start_inner: Creating TransactionTrace");
+        // Create a synthetic transaction to hold all genesis changes
+        // This matches the native tracer behavior (creating a synthetic empty transaction)
+        let zero_addr = Address::ZERO;
+        let zero_hash = B256::ZERO;
 
-        let trx = TransactionTrace {
-            begin_ordinal,
-            hash: hash_vec,
-            from: from_vec,
-            to: to_vec,
-            nonce: event.nonce as u64,
-            gas_limit: event.gas,
-            gas_price,
-            value,
-            input: input_vec,
-            v: Vec::new(), // Signature not included in minimal TxEvent
-            r: Vec::new(),
-            s: Vec::new(),
-            r#type: event.tx_type as i32,
-            access_list: Vec::new(),        // TODO: Add to TxEvent if needed
-            max_fee_per_gas: None,          // TODO: Add to TxEvent if needed
-            max_priority_fee_per_gas: None, // TODO: Add to TxEvent if needed
-
-            // Initialize with defaults - these will be set by other methods
-            index: event.index,
-            gas_used: 0,
-            status: 0,
-            receipt: None,
-            calls: Vec::new(),
-            return_data: Vec::new(),
-            public_key: Vec::new(),
-            end_ordinal: 0,
-
-            // Optional fields that depend on transaction type
-            blob_gas: None,
+        let tx_event = TxEvent {
+            tx_type: 0,
+            hash: zero_hash,
+            from: zero_addr,
+            to: Some(zero_addr),
+            input: Default::default(),
+            value: U256::ZERO,
+            gas: 0,
+            gas_price: U256::ZERO,
+            nonce: 0,
+            index: 0,
+            v: None,
+            r: B256::ZERO,
+            s: B256::ZERO,
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            access_list: Vec::new(),
             blob_gas_fee_cap: None,
             blob_hashes: Vec::new(),
             set_code_authorizations: Vec::new(),
         };
 
-        info!(target: "firehose:tracer", "on_tx_start_inner: TransactionTrace created, setting current_transaction");
-        self.current_transaction = Some(trx);
-        info!(target: "firehose:tracer", "on_tx_start_inner: COMPLETE");
-    }
-}
+        self.on_tx_start(tx_event, None);
 
-// Helper functions for transaction creation
-impl Tracer {
-    // NOTE: recover_public_key is commented out because it depends on Reth types.
-    // Public key recovery is no longer needed in Firehose 3.0
-    // /// Recover public key from transaction signature (unused in Firehose 3.0)
-    // fn recover_public_key(...) {
-    //     // ... implementation commented out ...
-    // }
+        // Create a synthetic call to hold the changes
+        // The CALL from zero address to zero address represents the genesis allocation
+        self.on_call_enter(0, 0xf1, zero_addr, zero_addr, &[], 0, U256::ZERO);
 
-    fn create_gas_price_big_int<T>(
-        &self,
-        tx: &T,
-    ) -> Option<crate::pb::sf::ethereum::r#type::v2::BigInt>
-    where
-        T: Transaction,
-    {
-        // For legacy transactions, use gas_price directly
-        // For EIP-1559+, this should be effective_gas_price = base_fee + min(max_priority_fee, max_fee - base_fee)
-        if let Some(price) = tx.gas_price() {
-            return Some(crate::pb::sf::ethereum::r#type::v2::BigInt {
-                bytes: mapper::u256_trimmed_be_bytes(U256::from(price)),
-            });
-        }
-        None
-    }
+        // Process genesis allocation in deterministic order (sorted by address)
+        let mut sorted_addrs: Vec<_> = alloc.keys().copied().collect();
+        sorted_addrs.sort_by(|a, b| a.as_slice().cmp(b.as_slice()));
 
-    fn create_big_int_from_u256(
-        &self,
-        value: U256,
-    ) -> Option<crate::pb::sf::ethereum::r#type::v2::BigInt> {
-        Some(crate::pb::sf::ethereum::r#type::v2::BigInt {
-            bytes: mapper::u256_trimmed_be_bytes(value),
-        })
-    }
+        for addr in sorted_addrs {
+            if let Some(account) = alloc.get(&addr) {
+                // Balance change (if non-zero)
+                if let Some(balance) = &account.balance {
+                    if !balance.is_zero() {
+                        self.on_balance_change(
+                            addr,
+                            U256::ZERO,
+                            *balance,
+                            pb::sf::ethereum::r#type::v2::balance_change::Reason::GenesisBalance,
+                        );
+                    }
+                }
 
-    fn transaction_type_from_tx_type(&self, tx_type: TxType) -> transaction_trace::Type {
-        match tx_type {
-            TxType::Legacy => transaction_trace::Type::TrxTypeLegacy,
-            TxType::Eip2930 => transaction_trace::Type::TrxTypeAccessList,
-            TxType::Eip1559 => transaction_trace::Type::TrxTypeDynamicFee,
-            TxType::Eip4844 => transaction_trace::Type::TrxTypeBlob,
-            TxType::Eip7702 => transaction_trace::Type::TrxTypeSetCode,
-        }
-    }
+                // Code change (if code exists)
+                if let Some(code) = &account.code {
+                    if !code.is_empty() {
+                        let code_hash = utils::hash_bytes(code);
+                        self.on_code_change(addr, B256::ZERO, code_hash, &[], code);
+                    }
+                }
 
-    fn create_access_list<T>(
-        &self,
-        _tx: &T,
-    ) -> Vec<crate::pb::sf::ethereum::r#type::v2::AccessTuple>
-    where
-        T: Transaction,
-    {
-        // TODO: Implement access list conversion from Reth transaction to protobuf
-        Vec::new()
-    }
+                // Nonce change (if non-zero)
+                if account.nonce > 0 {
+                    self.on_nonce_change(addr, 0, account.nonce);
+                }
 
-    fn create_max_fee_per_gas<T>(
-        &self,
-        _tx: &T,
-    ) -> Option<crate::pb::sf::ethereum::r#type::v2::BigInt>
-    where
-        T: Transaction,
-    {
-        // TODO: Implement max_fee_per_gas extraction for EIP-1559 transactions
-        None
-    }
+                // Storage changes (sorted by key for determinism)
+                let mut sorted_keys: Vec<_> = account.storage.keys().copied().collect();
+                sorted_keys.sort_by(|a, b| a.as_slice().cmp(b.as_slice()));
 
-    fn create_max_priority_fee_per_gas<T>(
-        &self,
-        _tx: &T,
-    ) -> Option<crate::pb::sf::ethereum::r#type::v2::BigInt>
-    where
-        T: Transaction,
-    {
-        // TODO: Implement max_priority_fee_per_gas extraction for EIP-1559 transactions
-        None
-    }
-
-    fn create_blob_gas<T>(&self, _tx: &T) -> Option<u64>
-    where
-        T: Transaction,
-    {
-        // TODO: Implement blob gas calculation for EIP-4844 transactions
-        None
-    }
-
-    fn create_blob_gas_fee_cap<T>(
-        &self,
-        _tx: &T,
-    ) -> Option<crate::pb::sf::ethereum::r#type::v2::BigInt>
-    where
-        T: Transaction,
-    {
-        // TODO: Implement blob gas fee cap for EIP-4844 transactions
-        None
-    }
-
-    fn create_blob_hashes<T>(&self, _tx: &T) -> Vec<Vec<u8>>
-    where
-        T: Transaction,
-    {
-        // TODO: Implement blob hashes extraction for EIP-4844 transactions
-        Vec::new()
-    }
-
-    fn create_set_code_authorizations<T>(
-        &self,
-        _tx: &T,
-    ) -> Vec<crate::pb::sf::ethereum::r#type::v2::SetCodeAuthorization>
-    where
-        T: Transaction,
-    {
-        // TODO: Implement set code authorizations for EIP-7702 transactions
-        Vec::new()
-    }
-}
-
-
-// ============================================================================
-// NOTE: All REVM inspector callback handlers have been commented out.
-// ============================================================================
-//
-// The following section contains REVM-specific inspector hooks (on_step, 
-// on_step_end, extract_journal_changes, etc.) that are implementation-specific
-// to REVM and should be handled by the integration layer.
-//
-// The integration layer is responsible for:
-// 1. Implementing the REVM Inspector trait
-// 2. Converting REVM types to tracer minimal types (BlockEvent, TxEvent, etc.)
-// 3. Calling the appropriate tracer methods with those minimal types
-// 4. Extracting state changes from REVM journal and calling tracer methods
-//    to record them (balance changes, storage changes, nonce changes, etc.)
-//
-// For examples of how to implement the integration layer, see:
-// - monad/src/tracer.rs (Monad-specific REVM integration)
-// - Future integrations for other EVM implementations
-//
-// The commented out code below is kept for reference:
-// ============================================================================
-/*
-
-// Inspector callback handlers
-impl Tracer {
-    /// EVM step, called BEFORE each opcode execution
-    pub fn on_step<CTX>(
-        &mut self,
-        interp: &mut revm::revm::interpreter::Interpreter<
-            revm::revm::interpreter::interpreter::EthInterpreter,
-        >,
-        context: &mut CTX,
-    ) where
-        CTX: revm::revm::context_interface::ContextTr,
-        CTX::Journal: revm::revm::inspector::JournalExt,
-    {
-        // Track journal for future state changes
-        self.last_journal_len = context.journal_ref().journal().len();
-
-        // Save gas BEFORE opcode executes (for gas tracking)
-        if !self.call_stack.is_empty() {
-            let opcode = interp.bytecode.opcode();
-            use revm::revm::bytecode::opcode;
-
-            // Track opcodes that cause gas changes we need to record
-            if opcode == opcode::CALLDATACOPY
-                || opcode == opcode::CODECOPY
-                || opcode == opcode::EXTCODECOPY
-                || opcode == opcode::LOG0
-                || opcode == opcode::LOG1
-                || opcode == opcode::LOG2
-                || opcode == opcode::LOG3
-                || opcode == opcode::LOG4
-            {
-                self.last_opcode = Some(opcode);
-                self.last_gas_before_opcode = Some(interp.gas.remaining());
-            }
-
-            // Track KECCAK256 to capture preimages for event topics
-            if opcode == opcode::KECCAK256 {
-                // Get the memory offset and size from the stack
-                if let Ok(offset) = interp.stack.peek(0) {
-                    if let Ok(size) = interp.stack.peek(1) {
-                        let offset_usize = offset.saturating_to::<usize>();
-                        let size_usize = size.saturating_to::<usize>();
-
-                        // Read the data from memory that will be hashed
-                        // Store ALL keccak preimages temporarily we'll only save the ones
-                        // that appear in event topics when we process the LOG
-                        if size_usize > 0 && size_usize <= 1024 * 1024 {
-                            let memory = &interp.memory;
-                            if offset_usize + size_usize <= memory.len() {
-                                let data = memory.slice(offset_usize..offset_usize + size_usize);
-
-                                // Calculate hash and store preimage temporarily
-                                use alloy_primitives::keccak256;
-                                let hash = keccak256(&*data);
-                                let hash_hex = hex::encode(hash.as_slice());
-
-                                self.pending_keccak_preimages
-                                    .insert(hash_hex, (*data).to_vec());
-                            }
-                        }
+                for key in sorted_keys {
+                    if let Some(value) = account.storage.get(&key) {
+                        self.on_storage_change(addr, key, B256::ZERO, *value);
                     }
                 }
             }
         }
-    }
 
-    /// EVM step end, called AFTER each opcode execution
-    pub fn on_step_end<CTX>(
-        &mut self,
-        interp: &mut revm::revm::interpreter::Interpreter<
-            revm::revm::interpreter::interpreter::EthInterpreter,
-        >,
-        context: &mut CTX,
-    ) where
-        CTX: revm::revm::context_interface::ContextTr,
-        CTX::Journal: revm::revm::inspector::JournalExt,
-    {
-        // Record gas change if we tracked an opcode
-        if let (Some(last_opcode), Some(old_gas)) = (self.last_opcode, self.last_gas_before_opcode)
-        {
-            let new_gas = interp.gas.remaining();
-            let cost = old_gas.saturating_sub(new_gas);
+        // End the synthetic call (output=empty, gasUsed=0, err=None, reverted=false)
+        self.on_call_exit(0, &[], 0, None, false);
 
-            if cost > 0 {
-                use crate::pb::sf::ethereum::r#type::v2::{gas_change, GasChange};
-                use revm::revm::bytecode::opcode;
-
-                let is_log_opcode = last_opcode == opcode::LOG0
-                    || last_opcode == opcode::LOG1
-                    || last_opcode == opcode::LOG2
-                    || last_opcode == opcode::LOG3
-                    || last_opcode == opcode::LOG4;
-
-                if is_log_opcode {
-                    // LOG opcodes are handled in on_log() where we have access to current gas
-                    // Just keep the saved gas for on_log() to use, don't process here
-                    return;
-                }
-
-                let reason = if last_opcode == opcode::CALLDATACOPY {
-                    gas_change::Reason::CallDataCopy
-                } else if last_opcode == opcode::CODECOPY {
-                    gas_change::Reason::CodeCopy
-                } else if last_opcode == opcode::EXTCODECOPY {
-                    gas_change::Reason::ExtCodeCopy
-                } else {
-                    // Clear and return
-                    self.last_opcode = None;
-                    self.last_gas_before_opcode = None;
-                    return;
-                };
-
-                // Add gas change to current call immediately for non-LOG opcodes
-                if let Some(root_call) = self.call_stack.last_mut() {
-                    root_call.gas_changes.push(GasChange {
-                        old_value: old_gas,
-                        new_value: new_gas,
-                        ordinal: self.block_ordinal.next(),
-                        reason: reason as i32,
-                    });
-                }
-            }
-
-            // Clear tracking
-            self.last_opcode = None;
-            self.last_gas_before_opcode = None;
-        }
-
-        // Extract state changes from journal entries added during this opcode
-        self.extract_journal_entries(context);
-    }
-
-    /// CALL* operation starts
-    pub fn on_call_enter(
-        &mut self,
-        caller: Address,
-        to: Address,
-        input: Bytes,
-        gas_limit: u64,
-        value: U256,
-        call_type: i32,
-    ) {
-        let depth = self.call_stack.len() as u32;
-        // parent_index should be the INDEX of the parent call (not stack position)
-        // Root call has index=1, so first nested call has parent_index=1
-        let parent_index = if depth > 0 {
-            self.call_stack.last().map(|c| c.index).unwrap_or(0)
-        } else {
-            0
-        };
-
-        // For root call, we need to add transaction-level state changes
-        let is_root_call = depth == 0;
-
-        let mut call = Call {
-            index: self.call_stack.len() as u32 + 1,
-            parent_index,
-            depth,
-            call_type,
-            caller: caller.to_vec(),
-            address: to.to_vec(),
-            value: if value > U256::ZERO {
-                Some(mapper::big_int_from_u256(value))
-            } else {
-                None
-            },
-            gas_limit,
-            input: input.to_vec(),
-            gas_consumed: 0,
-            return_data: Vec::new(),
-            executed_code: !input.is_empty() || depth > 0,
-            status_failed: false,
-            address_delegates_to: None,
-            suicide: false,
-            keccak_preimages: Default::default(),
-            storage_changes: Vec::new(),
-            balance_changes: Vec::new(),
-            nonce_changes: Vec::new(),
+        // End the synthetic transaction with a successful receipt
+        let receipt = ReceiptData {
+            transaction_index: 0,
+            gas_used: 0,
+            status: 1, // Success
             logs: Vec::new(),
-            code_changes: Vec::new(),
-            gas_changes: Vec::new(),
-            status_reverted: false,
-            state_reverted: false,
-            failure_reason: String::new(),
-            begin_ordinal: 0,
-            end_ordinal: 0,
-            #[allow(deprecated)]
-            account_creations: Vec::new(),
+            logs_bloom: [0u8; 256],
+            cumulative_gas_used: 0,
+            blob_gas_used: 0,
+            blob_gas_price: None,
+            state_root: Some(block_root.0.to_vec().into()),
         };
 
-        // Add transaction-level state changes for root call
-        if is_root_call {
-            self.populate_root_call_state_changes(&mut call, caller, to, value);
-        }
+        self.on_tx_end(Some(&receipt), None);
 
-        // Set begin_ordinal after state changes
-        call.begin_ordinal = self.block_ordinal.next();
+        // End the block
+        self.on_block_end(None);
+    }
 
-        // Add CALL_INITIAL_BALANCE for all calls (not just root)
-        if gas_limit > 0 {
-            use crate::pb::sf::ethereum::r#type::v2::{gas_change, GasChange};
-            call.gas_changes.push(GasChange {
-                old_value: 0,
-                new_value: gas_limit,
-                ordinal: self.block_ordinal.next(),
-                reason: gas_change::Reason::CallInitialBalance as i32,
-            });
-        }
+    /// OnBlockStart is called at the beginning of block processing
+    pub fn on_block_start(&mut self, event: BlockEvent) {
+        self.ensure_blockchain_init();
 
-        self.call_stack.push(call);
+        let block_data = &event.block;
 
-        firehose_debug!(
-            "call_enter: depth={} caller={} to={} gas={}",
-            depth,
-            HexView(caller.as_slice()),
-            HexView(to.as_slice()),
-            gas_limit
+        // Compute block rules for this block (block-scoped fork flags)
+        self.block_rules =
+            self.chain_config
+                .rules(block_data.number, block_data.is_merge, block_data.time);
+
+        tracing::info!(
+            "block start (number={} hash={:?})",
+            block_data.number,
+            block_data.hash
         );
-    }
 
-    // temporary
-    fn calculate_intrinsic_gas(&self, input: &[u8]) -> u64 {
-        let mut gas = 21000u64;
-        for &byte in input {
-            gas += if byte == 0 { 4 } else { 16 };
+        // Create protobuf block
+        self.block = Some(Block {
+            hash: block_data.hash.0.to_vec(),
+            number: block_data.number,
+            header: Some(self.new_block_header_from_block_data(&event.block)),
+            ver: 4, // Protocol version 4 (without backward compatibility)
+            size: block_data.size,
+            ..Default::default()
+        });
+
+        // Add uncles
+        let uncle_headers: Vec<_> = block_data
+            .uncles
+            .iter()
+            .map(|uncle| self.new_block_header_from_uncle_data(uncle))
+            .collect();
+
+        if let Some(block) = &mut self.block {
+            block.uncles.extend(uncle_headers);
         }
-        gas
+
+        // Set base fee
+        if let Some(base_fee) = block_data.base_fee {
+            self.block_base_fee = Some(base_fee);
+        }
+
+        // Note: The protobuf Block currently doesn't have a withdrawals array field.
+        // Withdrawals root hash is set in the block header during finalize_block.
+        // Individual withdrawal data would need to be added to the protobuf schema
+        // to match the Golang version's block.Withdrawals field.
+
+        // Populate finality status
+        if let Some(finalized) = event.finalized {
+            self.block_finality
+                .set_last_finalized_block(finalized.number);
+        }
     }
 
-    // temporary
-    fn calculate_tx_data_floor_gas(&self, input: &[u8]) -> Option<u64> {
-        const TX_GAS: u64 = 21_000;
-        const TOKENS_PER_NON_ZERO: u64 = 4;
-        const COST_FLOOR_PER_TOKEN: u64 = 10;
+    /// OnBlockEnd is called at the end of block processing
+    pub fn on_block_end(&mut self, err: Option<&dyn std::error::Error>) {
+        tracing::info!("block ending (err={:?})", err);
 
-        let zero_bytes = input.iter().filter(|&&b| b == 0).count() as u64;
-        let non_zero_bytes = (input.len() as u64).saturating_sub(zero_bytes);
+        if err.is_none() {
+            // Validate state: Must be in block and not in transaction
+            self.ensure_in_block_and_not_in_trx();
 
-        let non_zero_tokens = non_zero_bytes.checked_mul(TOKENS_PER_NON_ZERO)?;
-        let tokens = non_zero_tokens.checked_add(zero_bytes)?;
-        let extra_cost = tokens.checked_mul(COST_FLOOR_PER_TOKEN)?;
+            // Flush block to firehose
+            if let Some(block) = self.block.take() {
+                crate::printer::print_block_to_firehose(
+                    &mut self.output_writer,
+                    block,
+                    &self.block_finality,
+                );
+            }
+        } else {
+            // An error occurred, could have happened in transaction/call context
+            // We must not check if in trx/call, only check in block
+            self.ensure_in_block();
+        }
 
-        TX_GAS.checked_add(extra_cost)
+        self.reset_block();
+        self.reset_transaction();
+
+        tracing::info!("block end");
     }
 
-    // temporary
-    fn is_prague_active(&self) -> bool {
-        true
+    /// OnSkippedBlock is called for blocks that are skipped
+    pub fn on_skipped_block(&mut self, event: BlockEvent) {
+        // Validate we're not in a transaction (skipped blocks should never have transactions)
+        if self.transaction.is_some() {
+            panic!(
+                "OnSkippedBlock called while in transaction state - skipped blocks must have 0 transactions"
+            );
+        }
+
+        // Trace the block as normal, the Firehose system will discard it if needed
+        self.on_block_start(event);
+        self.on_block_end(None);
     }
 
-    fn populate_root_call_state_changes(
-        &mut self,
-        call: &mut Call,
-        from: Address,
-        _to: Address,
-        _value: U256,
-    ) {
-        use crate::pb::sf::ethereum::r#type::v2::{
-            balance_change, gas_change, BalanceChange, GasChange, NonceChange,
+    /// OnClose is called when the tracer is being shut down
+    pub fn on_close(&mut self) {
+        // No concurrent flush queue in this version, nothing to clean up
+    }
+
+    // ============================================================================
+    // Transaction Lifecycle Hooks
+    // ============================================================================
+
+    /// OnTxStart is called at the beginning of transaction execution
+    pub fn on_tx_start(&mut self, event: TxEvent, state_reader: Option<Box<dyn StateReader>>) {
+        tracing::info!("trx start (hash={:?} type={})", event.hash, event.tx_type);
+
+        // Validate state: Must be in block, not in transaction, not in call
+        self.ensure_in_block_and_not_in_trx_and_not_in_call();
+
+        // Store state reader for this transaction
+        self.transaction_state_reader = state_reader;
+
+        // Convert transaction type to protobuf enum
+        use pb::sf::ethereum::r#type::v2::transaction_trace::Type;
+        let tx_type = match event.tx_type {
+            0 => Type::TrxTypeLegacy as i32,
+            1 => Type::TrxTypeAccessList as i32,
+            2 => Type::TrxTypeDynamicFee as i32,
+            3 => Type::TrxTypeBlob as i32,
+            4 => Type::TrxTypeSetCode as i32,
+            _ => Type::TrxTypeLegacy as i32, // Default to legacy for unknown types
         };
 
-        let trx = self
-            .current_transaction
-            .as_ref()
-            .expect("transaction must be active");
-        let gas_price = trx
-            .gas_price
-            .as_ref()
-            .and_then(|gp| {
-                if gp.bytes.is_empty() {
-                    None
-                } else {
-                    Some(U256::try_from_be_slice(&gp.bytes).unwrap_or_default())
+        // Convert access list to protobuf format
+        let access_list = event
+            .access_list
+            .iter()
+            .map(|tuple| pb::sf::ethereum::r#type::v2::AccessTuple {
+                address: tuple.address.0.to_vec(),
+                storage_keys: tuple
+                    .storage_keys
+                    .iter()
+                    .map(|key| key.0.to_vec())
+                    .collect(),
+            })
+            .collect();
+
+        // Convert set code authorizations to protobuf format
+        let set_code_authorizations = event
+            .set_code_authorizations
+            .iter()
+            .map(|auth| {
+                // Trim leading zeros from chain_id (matches Go's big.Int.Bytes() behavior)
+                let chain_id_u256 = U256::from_be_bytes(auth.chain_id.0);
+                let chain_id_bytes = chain_id_u256.to_be_bytes_trimmed_vec();
+
+                // Recover authority (signer address) from signature
+                let authority = crate::eip7702::recover_authority(
+                    auth.chain_id,
+                    auth.address,
+                    auth.nonce,
+                    auth.v,
+                    auth.r,
+                    auth.s,
+                )
+                .map(|addr| addr.0.to_vec());
+
+                pb::sf::ethereum::r#type::v2::SetCodeAuthorization {
+                    chain_id: chain_id_bytes,
+                    address: auth.address.0.to_vec(),
+                    nonce: auth.nonce,
+                    v: auth.v,
+                    r: auth.r.0.to_vec(),
+                    s: auth.s.0.to_vec(),
+                    authority,
+                    ..Default::default() // discarded will be set during validation
                 }
             })
-            .unwrap_or_default();
-        let gas_limit = trx.gas_limit;
+            .collect();
 
-        call.gas_changes.push(GasChange {
-            old_value: 0,
-            new_value: gas_limit,
-            ordinal: self.block_ordinal.next(),
-            reason: gas_change::Reason::TxInitialBalance as i32,
-        });
+        // Convert blob hashes to protobuf format
+        let blob_hashes = event
+            .blob_hashes
+            .iter()
+            .map(|hash| hash.0.to_vec())
+            .collect();
 
-        let gas_cost = U256::from(gas_limit) * gas_price;
-        if gas_cost > U256::ZERO {
-            call.balance_changes.push(BalanceChange {
-                address: from.to_vec(),
-                old_value: Some(mapper::big_int_from_u256(gas_cost)),
-                new_value: Some(mapper::big_int_from_u256(U256::ZERO)),
-                ordinal: self.block_ordinal.next(),
-                reason: balance_change::Reason::GasBuy as i32,
-            });
-        }
+        // Compute effective gas price based on transaction type
+        let effective_gas_price = compute_effective_gas_price(&event, self.block_base_fee);
 
-        let intrinsic_gas = self.calculate_intrinsic_gas(&call.input);
-        call.gas_changes.push(GasChange {
-            old_value: gas_limit,
-            new_value: gas_limit.saturating_sub(intrinsic_gas),
-            ordinal: self.block_ordinal.next(),
-            reason: gas_change::Reason::IntrinsicGas as i32,
-        });
+        // Detect genesis synthetic transaction (hash=0, from=0, to=Some(0))
+        // Genesis transactions have nil gas_price and value in protobuf (matching Golang)
+        let is_genesis = self.block_is_genesis
+            && event.hash == B256::ZERO
+            && event.from == Address::ZERO
+            && event.to == Some(Address::ZERO);
 
-        call.nonce_changes.push(NonceChange {
-            address: from.to_vec(),
-            old_value: trx.nonce,
-            new_value: trx.nonce + 1,
-            ordinal: self.block_ordinal.next(),
-        });
-    }
-
-    fn add_post_execution_state_changes(&mut self, trx: &mut TransactionTrace) {
-        use crate::pb::sf::ethereum::r#type::v2::{
-            balance_change, gas_change, BalanceChange, GasChange,
+        // Create transaction trace (will be filled in as execution proceeds)
+        let trx = TransactionTrace {
+            begin_ordinal: self.block_ordinal.next(),
+            r#type: tx_type,
+            hash: event.hash.0.to_vec(),
+            from: event.from.0.to_vec(),
+            to: event.to.map(|a| a.0.to_vec()).unwrap_or_default(),
+            nonce: event.nonce,
+            gas_limit: event.gas,
+            gas_price: if is_genesis {
+                None
+            } else {
+                utils::u256_to_protobuf_always(effective_gas_price)
+            },
+            value: if is_genesis {
+                None
+            } else {
+                utils::u256_to_protobuf_always(event.value)
+            },
+            input: event.input.to_vec(),
+            v: event.v.map(|v| v.to_vec()).unwrap_or_default(),
+            r: utils::normalize_signature_point(&event.r.0).unwrap_or_default(),
+            s: utils::normalize_signature_point(&event.s.0).unwrap_or_default(),
+            max_fee_per_gas: event.max_fee_per_gas.and_then(utils::u256_to_protobuf),
+            max_priority_fee_per_gas: event
+                .max_priority_fee_per_gas
+                .and_then(utils::u256_to_protobuf),
+            access_list,
+            blob_gas_fee_cap: event.blob_gas_fee_cap.and_then(utils::u256_to_protobuf),
+            blob_hashes,
+            set_code_authorizations,
+            index: event.index,
+            ..Default::default()
         };
 
-        if let Some(root_call) = trx.calls.first_mut() {
-            let from = Address::from_slice(&trx.from);
-            let to = Address::from_slice(&root_call.address);
-            let gas_price = trx
-                .gas_price
-                .as_ref()
-                .and_then(|gp| {
-                    if gp.bytes.is_empty() {
-                        None
-                    } else {
-                        Some(U256::try_from_be_slice(&gp.bytes).unwrap_or_default())
-                    }
-                })
-                .unwrap_or_default();
+        self.transaction = Some(trx);
+    }
 
-            let gas_limit = root_call.gas_limit;
-            let gas_used = root_call.gas_consumed;
+    /// OnTxEnd is called at the end of transaction execution
+    pub fn on_tx_end(
+        &mut self,
+        receipt: Option<&ReceiptData>,
+        err: Option<&dyn std::error::Error>,
+    ) {
+        tracing::info!("trx ending (err={:?})", err);
 
-            // Check if transaction failed
-            let tx_failed = root_call.status_failed && !root_call.status_reverted;
+        // Validate state: Must be in block and in transaction
+        self.ensure_in_block_and_in_trx();
 
-            if let Some(value_bigint) = &root_call.value {
-                if !value_bigint.bytes.is_empty() {
-                    let value = U256::try_from_be_slice(&value_bigint.bytes).unwrap_or_default();
-                    if value > U256::ZERO {
-                        root_call.balance_changes.push(BalanceChange {
-                            address: from.to_vec(),
-                            old_value: Some(mapper::big_int_from_u256(value)),
-                            new_value: Some(mapper::big_int_from_u256(U256::ZERO)),
-                            ordinal: self.block_ordinal.next(),
-                            reason: balance_change::Reason::Transfer as i32,
-                        });
+        // Complete the transaction
+        if let Some(trx) = self.transaction.take() {
+            let completed_trx = self.complete_transaction(trx, receipt, err);
+            if let Some(block) = &mut self.block {
+                block.transaction_traces.push(completed_trx);
+            }
+        }
 
-                        root_call.balance_changes.push(BalanceChange {
-                            address: to.to_vec(),
-                            old_value: Some(mapper::big_int_from_u256(U256::ZERO)),
-                            new_value: Some(mapper::big_int_from_u256(value)),
-                            ordinal: self.block_ordinal.next(),
-                            reason: balance_change::Reason::Transfer as i32,
-                        });
-                    }
+        self.reset_transaction();
+
+        tracing::info!("trx end");
+    }
+
+    /// Complete transaction processing (matching Golang completeTransaction)
+    fn complete_transaction(
+        &mut self,
+        mut trx: TransactionTrace,
+        receipt: Option<&ReceiptData>,
+        _err: Option<&dyn std::error::Error>,
+    ) -> TransactionTrace {
+        tracing::info!("completing transaction (call_count={})", trx.calls.len());
+
+        if trx.calls.is_empty() {
+            // Bad block or misconfigured - terminate immediately
+            trx.end_ordinal = self.block_ordinal.next();
+            return trx;
+        }
+
+        // Step 1: Sort calls by index (MUST happen first)
+        trx.calls.sort_by(|a, b| a.index.cmp(&b.index));
+
+        // Step 2: Get root call for later operations
+        let root_call_reverted = trx
+            .calls
+            .first()
+            .map(|c| c.status_reverted)
+            .unwrap_or(false);
+
+        // Step 2.5: Discard SetCode authorizations that don't have corresponding nonce changes
+        // (matching native tracer's discardUncommittedSetCodeAuthorization)
+        // This MUST happen BEFORE deferred state is populated, since we need to check
+        // the initial deferred state that was already transferred into the root call
+        Self::discard_uncommitted_set_code_authorizations(&mut trx);
+
+        // Step 3: Move any remaining deferred state to root call
+        if !self.deferred_call_state.is_empty() {
+            if let Some(root_call) = trx.calls.first_mut() {
+                if let Err(e) = self
+                    .deferred_call_state
+                    .maybe_populate_call_and_reset("root", root_call)
+                {
+                    panic!("failed to populate deferred state on tx end: {}", e);
                 }
             }
+        }
 
-            let is_precompiled = {
-                let addr_u256 = U256::from_be_slice(to.as_slice());
-                addr_u256 >= U256::from(1) && addr_u256 <= U256::from(10)
+        // Step 4: Populate receipt data (BEFORE state reverted)
+        if let Some(receipt) = receipt {
+            trx.index = receipt.transaction_index;
+            trx.gas_used = receipt.gas_used;
+            trx.receipt = Some(self.new_receipt_from_data(receipt, trx.r#type));
+
+            // Set transaction status based on receipt
+            if receipt.status == 1 {
+                trx.status = pb::sf::ethereum::r#type::v2::TransactionTraceStatus::Succeeded as i32;
+            } else {
+                trx.status = pb::sf::ethereum::r#type::v2::TransactionTraceStatus::Failed as i32;
+            }
+        }
+
+        // Step 5: Check if root call reverted (overrides receipt status)
+        if root_call_reverted {
+            trx.status = pb::sf::ethereum::r#type::v2::TransactionTraceStatus::Reverted as i32;
+        }
+
+        // Step 6: Copy root call's return data to transaction
+        if let Some(root_call) = trx.calls.first() {
+            trx.return_data = root_call.return_data.clone();
+        }
+
+        // Step 7: Populate StateReverted for all calls
+        Self::populate_state_reverted(&mut trx);
+
+        // Step 8: Remove BlockIndex from logs in reverted calls
+        Self::remove_log_block_index_on_state_reverted_calls(&mut trx);
+
+        // Step 9: Assign ordinals and indexes to receipt logs from call logs
+        Self::assign_ordinal_and_index_to_receipt_logs(&mut trx);
+
+        // Step 10: Set end ordinal
+        trx.end_ordinal = self.block_ordinal.next();
+
+        trx
+    }
+
+    /// Assign ordinal and index from call logs to receipt logs
+    /// (matching Golang assignOrdinalAndIndexToReceiptLogs)
+    fn assign_ordinal_and_index_to_receipt_logs(trx: &mut TransactionTrace) {
+        // Collect all logs from non-reverted calls
+        let mut call_logs: Vec<&pb::sf::ethereum::r#type::v2::Log> = Vec::new();
+        for call in &trx.calls {
+            if call.state_reverted {
+                continue;
+            }
+            call_logs.extend(call.logs.iter());
+        }
+
+        // Sort call logs by ordinal to ensure correct ordering
+        call_logs.sort_by(|a, b| a.ordinal.cmp(&b.ordinal));
+
+        // Get receipt logs (mutable)
+        let receipt_logs = if let Some(receipt) = &mut trx.receipt {
+            &mut receipt.logs
+        } else {
+            return; // No receipt, nothing to do
+        };
+
+        // Validate counts match
+        if call_logs.len() != receipt_logs.len() {
+            panic!(
+                "mismatch between call logs and receipt logs: transaction has {} call logs but {} receipt logs",
+                call_logs.len(),
+                receipt_logs.len()
+            );
+        }
+
+        // Copy ordinal and index from call logs to receipt logs
+        for (i, call_log) in call_logs.iter().enumerate() {
+            let receipt_log = &mut receipt_logs[i];
+
+            // Validate BlockIndex matches
+            if call_log.block_index != receipt_log.block_index {
+                panic!(
+                    "mismatch between call log and receipt log BlockIndex at index {}: call log has {} but receipt log has {}",
+                    i, call_log.block_index, receipt_log.block_index
+                );
+            }
+
+            // Assign ordinal and index
+            receipt_log.ordinal = call_log.ordinal;
+            receipt_log.index = call_log.index;
+        }
+    }
+
+    /// Populate StateReverted field on all calls based on parent state and status
+    /// (matching Golang populateStateReverted)
+    fn populate_state_reverted(trx: &mut TransactionTrace) {
+        // Match native tracer logic: StateReverted is set if parent is reverted OR call failed
+        // Calls are ordered by index, so we see parents before children
+        for i in 0..trx.calls.len() {
+            let parent_reverted = if trx.calls[i].parent_index > 0 {
+                let parent_idx = (trx.calls[i].parent_index - 1) as usize;
+                trx.calls[parent_idx].state_reverted
+            } else {
+                false
             };
 
-            if is_precompiled && gas_used > 0 {
-                root_call.gas_changes.push(GasChange {
-                    old_value: gas_limit,
-                    new_value: gas_limit.saturating_sub(gas_used),
-                    ordinal: self.block_ordinal.next(),
-                    reason: gas_change::Reason::PrecompiledContract as i32,
-                });
-            }
+            let status_failed = trx.calls[i].status_failed;
+            trx.calls[i].state_reverted = parent_reverted || status_failed;
+        }
+    }
 
-            // Gas returned from call or failed execution
-            let call_gas_returned = gas_limit.saturating_sub(gas_used);
-
-            if call_gas_returned > 0 {
-                // For failed transactions
-                let reason = if tx_failed {
-                    gas_change::Reason::FailedExecution
-                } else {
-                    gas_change::Reason::CallLeftOverReturned
-                };
-
-                root_call.gas_changes.push(GasChange {
-                    old_value: call_gas_returned,
-                    new_value: 0,
-                    ordinal: self.block_ordinal.next(),
-                    reason: reason as i32,
-                });
-            }
-
-            // Set endOrdinal after gas changes
-            root_call.end_ordinal = self.block_ordinal.next();
-
-            // Only process gas refunds for successful transactions (failed transactions consume all gas)
-            if !tx_failed {
-                // EIP-7623: Data-heavy transactions pay the floor gas
-                let mut final_gas_refund = call_gas_returned;
-
-                if self.is_prague_active() {
-                    if let Some(floor_data_gas) = self.calculate_tx_data_floor_gas(&trx.input) {
-                        if floor_data_gas <= trx.gas_limit {
-                            let gas_used_before_floor =
-                                trx.gas_limit.saturating_sub(call_gas_returned);
-                            if gas_used_before_floor < floor_data_gas {
-                                let new_gas_remaining = trx.gas_limit - floor_data_gas;
-                                if new_gas_remaining < final_gas_refund {
-                                    root_call.gas_changes.push(GasChange {
-                                        old_value: final_gas_refund,
-                                        new_value: new_gas_remaining,
-                                        ordinal: self.block_ordinal.next(),
-                                        reason: gas_change::Reason::TxDataFloor as i32,
-                                    });
-                                    final_gas_refund = new_gas_remaining;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if final_gas_refund > 0 {
-                    let refund_value = U256::from(final_gas_refund) * gas_price;
-                    if refund_value > U256::ZERO {
-                        root_call.balance_changes.push(BalanceChange {
-                            address: from.to_vec(),
-                            old_value: Some(mapper::big_int_from_u256(U256::ZERO)),
-                            new_value: Some(mapper::big_int_from_u256(refund_value)),
-                            ordinal: self.block_ordinal.next(),
-                            reason: balance_change::Reason::GasRefund as i32,
-                        });
-                    }
-
-                    root_call.gas_changes.push(GasChange {
-                        old_value: final_gas_refund,
-                        new_value: 0,
-                        ordinal: self.block_ordinal.next(),
-                        reason: gas_change::Reason::TxLeftOverReturned as i32,
-                    });
+    /// Remove BlockIndex from logs in reverted calls
+    /// (matching Golang removeLogBlockIndexOnStateRevertedCalls)
+    /// Logs in reverted calls should have BlockIndex set to 0 since they don't make it into the final state
+    fn remove_log_block_index_on_state_reverted_calls(trx: &mut TransactionTrace) {
+        for call in &mut trx.calls {
+            if call.state_reverted {
+                for log in &mut call.logs {
+                    log.block_index = 0;
                 }
             }
         }
     }
 
-    fn add_miner_reward(&mut self, trx: &mut TransactionTrace) {
-        use crate::pb::sf::ethereum::r#type::v2::{balance_change, BalanceChange};
+    /// Discard SetCode authorizations that don't have corresponding nonce changes
+    /// (matching Golang discardUncommittedSetCodeAuthorizations)
+    ///
+    /// Per EIP-7702, when an authorization is applied, the authorizer's nonce is incremented.
+    /// If we don't see this nonce change, it means the authorization was not actually applied
+    /// (e.g., wrong nonce, already used, validation failed in EVM, etc.)
+    fn discard_uncommitted_set_code_authorizations(trx: &mut TransactionTrace) {
+        if trx.set_code_authorizations.is_empty() {
+            return;
+        }
 
-        if let Some(root_call) = trx.calls.first_mut() {
-            let trx_gas_used = trx.gas_used;
-            let gas_price = trx
-                .gas_price
+        // Get root call (first call in sorted list)
+        let root_call = match trx.calls.first() {
+            Some(call) => call,
+            None => return, // No calls, nothing to do
+        };
+
+        // Build a set to track which nonce changes we've used
+        // (each nonce change can only match one authorization)
+        use std::collections::HashSet;
+        let mut used_nonce_change_indices: HashSet<usize> = HashSet::new();
+
+        // Helper closure to find a matching nonce change for an authorization
+        let find_nonce_change = |authority: &[u8], nonce: u64, used: &mut HashSet<usize>| -> bool {
+            for (i, change) in root_call.nonce_changes.iter().enumerate() {
+                if change.old_value == nonce
+                    && change.new_value == nonce + 1
+                    && change.address == authority
+                    && !used.contains(&i)
+                {
+                    used.insert(i);
+                    return true;
+                }
+            }
+            false
+        };
+
+        // Check each authorization for a matching nonce change
+        for auth in &mut trx.set_code_authorizations {
+            // Check if authority is present
+            let authority_bytes = match &auth.authority {
+                Some(bytes) if !bytes.is_empty() => bytes.as_slice(),
+                _ => {
+                    // No authority (signature recovery failed) - mark as discarded
+                    auth.discarded = true;
+                    continue;
+                }
+            };
+
+            // Look for nonce change matching this authorization
+            if !find_nonce_change(authority_bytes, auth.nonce, &mut used_nonce_change_indices) {
+                // No matching nonce change found - authorization was not applied
+                tracing::debug!(
+                    "discarded SetCode authorization: no matching nonce change (authority={} nonce={})",
+                    hex::encode(authority_bytes),
+                    auth.nonce
+                );
+                auth.discarded = true;
+            }
+        }
+    }
+
+    /// Create receipt from receipt data (matching Golang newReceiptFromData)
+    fn new_receipt_from_data(
+        &self,
+        receipt: &ReceiptData,
+        tx_type: i32,
+    ) -> pb::sf::ethereum::r#type::v2::TransactionReceipt {
+        use pb::sf::ethereum::r#type::v2::{Log, TransactionReceipt};
+
+        let mut r = TransactionReceipt {
+            cumulative_gas_used: receipt.cumulative_gas_used,
+            logs_bloom: receipt.logs_bloom.to_vec(),
+            state_root: receipt
+                .state_root
                 .as_ref()
-                .and_then(|gp| {
-                    if gp.bytes.is_empty() {
-                        None
-                    } else {
-                        Some(U256::try_from_be_slice(&gp.bytes).unwrap_or_default())
-                    }
-                })
-                .unwrap_or_default();
+                .map(|b| b.to_vec())
+                .unwrap_or_default(),
+            logs: Vec::new(),
+            blob_gas_used: None,
+            blob_gas_price: None,
+        };
 
-            if let Some(block) = &self.current_block {
-                if let Some(header) = &block.header {
-                    let miner = Address::from_slice(&header.coinbase);
-                    let tx_fee = U256::from(trx_gas_used) * gas_price;
+        // Add EIP-4844 blob fields for blob transactions (type 3)
+        use pb::sf::ethereum::r#type::v2::transaction_trace::Type;
+        if tx_type == Type::TrxTypeBlob as i32 {
+            r.blob_gas_used = Some(receipt.blob_gas_used);
+            r.blob_gas_price = receipt
+                .blob_gas_price
+                .and_then(crate::utils::u256_to_protobuf);
+        }
 
-                    if tx_fee > U256::ZERO {
-                        root_call.balance_changes.push(BalanceChange {
-                            address: miner.to_vec(),
-                            old_value: Some(mapper::big_int_from_u256(U256::ZERO)),
-                            new_value: Some(mapper::big_int_from_u256(tx_fee)),
-                            ordinal: self.block_ordinal.next(),
-                            reason: balance_change::Reason::RewardTransactionFee as i32,
-                        });
+        // Add logs from receipt
+        for log in &receipt.logs {
+            let pb_log = Log {
+                address: log.address.0.to_vec(),
+                topics: log.topics.iter().map(|t| t.0.to_vec()).collect(),
+                data: log.data.to_vec(),
+                index: 0, // Will be assigned later
+                block_index: log.block_index,
+                ordinal: 0, // Will be assigned later
+            };
+            r.logs.push(pb_log);
+        }
+
+        r
+    }
+
+    // ============================================================================
+    // Call Lifecycle Hooks
+    // ============================================================================
+
+    /// OnCallEnter is called when entering a call
+    pub fn on_call_enter(
+        &mut self,
+        depth: i32,
+        typ: u8,
+        from: Address,
+        to: Address,
+        input: &[u8],
+        gas: u64,
+        value: U256,
+    ) {
+        tracing::trace!(
+            "call enter (depth={} type={} from={:?} to={:?})",
+            depth,
+            typ,
+            from,
+            to
+        );
+
+        // Handle SELFDESTRUCT specially
+        if typ == OP_SELFDESTRUCT {
+            // SELFDESTRUCT opcode
+            self.latest_call_enter_suicided = true;
+            self.latest_call_enter_suicided_depth = depth;
+            tracing::trace!("SELFDESTRUCT opcode: set latestCallEnterSuicided flag");
+            return;
+        }
+
+        // Create call (will be pushed to stack)
+        let mut call = Call {
+            begin_ordinal: self.block_ordinal.next(),
+            call_type: self.opcode_to_call_type(typ),
+            caller: from.0.to_vec(),
+            address: to.0.to_vec(),
+            value: utils::u256_to_protobuf(value),
+            gas_limit: gas,
+            input: input.to_vec(),
+            ..Default::default()
+        };
+
+        // Move deferred state to this call if it's the first call
+        if depth == 0 {
+            if let Err(e) = self
+                .deferred_call_state
+                .maybe_populate_call_and_reset("enter", &mut call)
+            {
+                panic!("failed to populate deferred state on call enter: {}", e);
+            }
+        }
+
+        // EIP-7702: Detect delegation designators in account code (Prague fork)
+        // Check if account code contains delegation bytecode (0xef0100 + address)
+        if self.block_rules.is_prague
+            && !self.in_system_call
+            && !self.block_is_genesis
+            && call.call_type != pb::sf::ethereum::r#type::v2::CallType::Create as i32
+        {
+            // Get code from state reader if available
+            if let Some(state_reader) = &self.transaction_state_reader {
+                let code: alloy_primitives::Bytes = state_reader.get_code(to);
+                if !code.is_empty() {
+                    // ParseDelegation returns (address, true) if valid delegation
+                    if let Some(target) = Self::parse_delegation(&code) {
+                        tracing::debug!(
+                            "call resolved delegation (from={:?}, delegates_to={:?})",
+                            from,
+                            target
+                        );
+                        call.address_delegates_to = Some(target.0.to_vec());
                     }
                 }
             }
         }
+
+        self.call_stack.push(&mut call);
     }
 
-    /// CALL* operation completes
+    /// parse_delegation tries to parse a delegation designator from bytecode
+    /// EIP-7702: Delegation format is 0xef0100 + 20-byte address (23 bytes total)
+    fn parse_delegation(code: &[u8]) -> Option<Address> {
+        const DELEGATION_PREFIX: [u8; 3] = [0xef, 0x01, 0x00];
+
+        if code.len() != 23 || !code.starts_with(&DELEGATION_PREFIX) {
+            return None;
+        }
+
+        // Extract address bytes (last 20 bytes)
+        let addr_bytes = &code[DELEGATION_PREFIX.len()..];
+        Some(Address::from_slice(addr_bytes))
+    }
+
+    /// OnCallExit is called when exiting a call
     pub fn on_call_exit(
         &mut self,
-        output: Bytes,
+        depth: i32,
+        output: &[u8],
         gas_used: u64,
-        success: bool,
-        is_revert: bool,
-        failure_reason: String,
+        err: Option<&dyn std::error::Error>,
+        reverted: bool,
     ) {
+        // Handle SELFDESTRUCT exit
+        if self.latest_call_enter_suicided {
+            tracing::trace!("skipping OnCallExit for SELFDESTRUCT opcode");
+            self.latest_call_enter_suicided = false;
+            return;
+        }
+
+        // Ensure we're in a valid state
+        self.ensure_in_block_and_in_trx_and_in_call();
+
+        // Pop call from stack
         if let Some(mut call) = self.call_stack.pop() {
-            call.return_data = output.to_vec();
+            tracing::trace!("call exit (depth={} gas_used={})", depth, gas_used);
+
             call.gas_consumed = gas_used;
-            call.status_failed = !success;
-            call.status_reverted = is_revert;
-            // state_reverted: true when state was rolled back
-            // This happens for ANY failure
-            call.state_reverted = !success;
 
-            firehose_debug!(
-                "on_call_exit: success={} is_revert={} state_reverted={} status_reverted={}",
-                success,
-                is_revert,
-                call.state_reverted,
-                call.status_reverted
-            );
+            // For CREATE calls, don't set return data (matching Golang tracer line ~1437)
+            // CREATE calls receive the contract code as output but it's NOT stored in ReturnData
+            if call.call_type != pb::sf::ethereum::r#type::v2::CallType::Create as i32 {
+                call.return_data = output.to_vec();
+            }
 
-            // Parse failure reason to human-readable format
-            if !success {
-                call.failure_reason = if is_revert {
-                    // For reverts, try to decode the error message from return data
-                    if output.len() >= 4 {
-                        // Standard Solidity revert: Error(string)
-                        "execution reverted".to_string()
-                    } else {
-                        "execution reverted".to_string()
-                    }
+            // Handle errors
+            if reverted {
+                let failure_reason = if let Some(e) = err {
+                    e.to_string()
                 } else {
-                    // Other failures
-                    failure_reason
+                    String::new()
+                };
+
+                call.failure_reason = failure_reason;
+                call.status_failed = true;
+
+                // Match native tracer logic: We also treat ErrInsufficientBalance and
+                // ErrDepth as reverted in Firehose model because they do not cost any gas.
+                call.status_reverted = if let Some(e) = err {
+                    utils::error_is_string(e, utils::TEXT_EXECUTION_REVERTED_ERR)
+                        || utils::error_is_string(e, utils::TEXT_INSUFFICIENT_BALANCE_TRANSFER_ERR)
+                        || utils::error_is_string(e, utils::TEXT_MAX_CALL_DEPTH_ERR)
+                } else {
+                    false
                 };
             }
 
-            // Add CALL_LEFT_OVER_RETURNED for nested calls
-            if call.depth > 0 {
-                let gas_left = call.gas_limit.saturating_sub(gas_used);
-                if gas_left > 0 {
-                    use crate::pb::sf::ethereum::r#type::v2::{gas_change, GasChange};
-                    call.gas_changes.push(GasChange {
-                        old_value: gas_left,
-                        new_value: 0,
-                        ordinal: self.block_ordinal.next(),
-                        reason: gas_change::Reason::CallLeftOverReturned as i32,
-                    });
-                }
+            call.end_ordinal = self.block_ordinal.next();
 
-                call.end_ordinal = self.block_ordinal.next();
+            // Append to transaction calls
+            if let Some(trx) = &mut self.transaction {
+                trx.calls.push(call);
             }
-
-            firehose_debug!(
-                "call_exit: index={} gas_used={} success={} reverted={}",
-                call.index,
-                gas_used,
-                success,
-                is_revert
-            );
-
-            self.call_stack.push(call);
         }
     }
 
-    /// CREATE* operation starts
-    pub fn on_create_enter(
+    // ============================================================================
+    // State Change Hooks
+    // ============================================================================
+
+    /// OnBalanceChange is called when an account balance changes
+    pub fn on_balance_change(
         &mut self,
-        caller: Address,
-        init_code: Bytes,
-        gas_limit: u64,
-        value: U256,
-        call_type: i32,
+        addr: Address,
+        old_balance: U256,
+        new_balance: U256,
+        reason: pb::sf::ethereum::r#type::v2::balance_change::Reason,
     ) {
-        let depth = self.call_stack.len() as u32;
-        // index of the parent call
-        let parent_index = if depth > 0 {
-            self.call_stack.last().map(|c| c.index).unwrap_or(0)
-        } else {
-            0
-        };
-
-        let call = Call {
-            // Index starts at 1
-            index: self.call_stack.len() as u32 + 1,
-            parent_index,
-            depth,
-            call_type,
-            caller: caller.to_vec(),
-            address: Vec::new(),
-            value: Some(mapper::big_int_from_u256(value)),
-            gas_limit,
-            input: init_code.to_vec(),
-            gas_consumed: 0,
-            return_data: Vec::new(),
-            executed_code: true,
-            status_failed: false,
-            address_delegates_to: None,
-            suicide: false,
-            keccak_preimages: Default::default(),
-            storage_changes: Vec::new(),
-            balance_changes: Vec::new(),
-            nonce_changes: Vec::new(),
-            logs: Vec::new(),
-            code_changes: Vec::new(),
-            gas_changes: Vec::new(),
-            status_reverted: false,
-            state_reverted: false,
-            failure_reason: String::new(),
-            begin_ordinal: self.block_ordinal.next(),
-            end_ordinal: 0,
-            #[allow(deprecated)]
-            account_creations: Vec::new(),
-        };
-
-        self.call_stack.push(call);
-
-        firehose_debug!(
-            "create_enter: depth={} caller={} gas={}",
-            depth,
-            HexView(caller.as_slice()),
-            gas_limit
-        );
-    }
-
-    /// CREATE* operation completes
-    pub fn on_create_exit(
-        &mut self,
-        output: Bytes,
-        gas_used: u64,
-        success: bool,
-        created_address: Address,
-        is_revert: bool,
-        failure_reason: String,
-    ) {
-        if let Some(mut call) = self.call_stack.pop() {
-            call.address = created_address.to_vec();
-            call.return_data = output.to_vec();
-            call.gas_consumed = gas_used;
-            call.status_failed = !success;
-            call.status_reverted = is_revert;
-            // state_reverted: true when state was rolled back (any failure)
-            call.state_reverted = !success;
-
-            if !success {
-                call.failure_reason = if is_revert {
-                    "execution reverted".to_string()
-                } else {
-                    failure_reason
-                };
-            }
-
-            if call.depth > 0 {
-                call.end_ordinal = self.block_ordinal.next();
-            }
-
-            firehose_debug!(
-                "create_exit: index={} created={} gas_used={} success={} reverted={}",
-                call.index,
-                HexView(created_address.as_slice()),
-                gas_used,
-                success,
-                is_revert
-            );
-
-            self.call_stack.push(call);
+        // Ignore unspecified reasons
+        if reason == pb::sf::ethereum::r#type::v2::balance_change::Reason::Unknown {
+            return;
         }
-    }
 
-    /// LOG operation is executed
-    pub fn on_log(&mut self, log: AlloyLog, current_gas: u64) {
-        if let Some(call) = self.call_stack.last_mut() {
-            // Record EVENT_LOG gas change BEFORE the log itself
-            // Use the gas saved in on_step and current gas
-            if let Some(old_gas) = self.last_gas_before_opcode {
-                use crate::pb::sf::ethereum::r#type::v2::{gas_change, GasChange};
+        self.ensure_in_block_or_trx();
 
-                let cost = old_gas.saturating_sub(current_gas);
+        let change = pb::sf::ethereum::r#type::v2::BalanceChange {
+            ordinal: self.block_ordinal.next(),
+            address: addr.0.to_vec(),
+            old_value: utils::u256_to_protobuf(old_balance),
+            new_value: utils::u256_to_protobuf(new_balance),
+            reason: reason.into(),
+        };
 
-                firehose_debug!(
-                    "on_log: gas change old={} new={} cost={}",
-                    old_gas,
-                    current_gas,
-                    cost
-                );
-
-                if cost > 0 {
-                    call.gas_changes.push(GasChange {
-                        old_value: old_gas,
-                        new_value: current_gas,
-                        ordinal: self.block_ordinal.next(),
-                        reason: gas_change::Reason::EventLog as i32,
-                    });
-                }
-
-                // Clear the saved gas
-                self.last_gas_before_opcode = None;
-                self.last_opcode = None;
+        // In transaction context - attach to call or defer
+        if self.transaction.is_some() {
+            if let Some(active_call) = self.call_stack.peek_mut() {
+                active_call.balance_changes.push(change);
             } else {
-                firehose_debug!("on_log: NO saved gas before opcode!");
+                self.deferred_call_state.add_balance_change(change);
             }
+        } else {
+            // Block-level balance change
+            if let Some(block) = &mut self.block {
+                block.balance_changes.push(change);
+            }
+        }
+    }
 
-            // save preimages to the call's keccak_preimages
-            for topic in log.topics() {
-                let topic_hex = hex::encode(topic.as_slice());
-                if let Some(preimage) = self.pending_keccak_preimages.get(&topic_hex) {
-                    call.keccak_preimages
-                        .insert(topic_hex.clone(), hex::encode(preimage));
+    /// OnNonceChange is called when an account nonce changes
+    pub fn on_nonce_change(&mut self, addr: Address, old_nonce: u64, new_nonce: u64) {
+        self.ensure_in_block_and_in_trx();
+
+        let change = pb::sf::ethereum::r#type::v2::NonceChange {
+            address: addr.0.to_vec(),
+            old_value: old_nonce,
+            new_value: new_nonce,
+            ordinal: self.block_ordinal.next(),
+        };
+
+        if let Some(active_call) = self.call_stack.peek_mut() {
+            active_call.nonce_changes.push(change);
+        } else {
+            self.deferred_call_state.add_nonce_change(change);
+        }
+    }
+
+    /// OnCodeChange is called when contract code changes
+    pub fn on_code_change(
+        &mut self,
+        addr: Address,
+        prev_code_hash: B256,
+        new_code_hash: B256,
+        old_code: &[u8],
+        new_code: &[u8],
+    ) {
+        tracing::debug!(
+            "code changed (address={:?} prev_hash={:?} new_hash={:?})",
+            addr,
+            prev_code_hash,
+            new_code_hash
+        );
+
+        self.ensure_in_block_or_trx();
+
+        let change = pb::sf::ethereum::r#type::v2::CodeChange {
+            address: addr.0.to_vec(),
+            old_hash: prev_code_hash.0.to_vec(),
+            old_code: old_code.to_vec(),
+            new_hash: new_code_hash.0.to_vec(),
+            new_code: new_code.to_vec(),
+            ordinal: self.block_ordinal.next(),
+        };
+
+        // In transaction context - attach to call or defer
+        if self.transaction.is_some() {
+            if let Some(active_call) = self.call_stack.peek_mut() {
+                // Ignore code changes from suicide if there was previous code
+                if active_call.suicide && !old_code.is_empty() && new_code.is_empty() {
+                    tracing::debug!("ignoring code change due to suicide");
+                    return;
                 }
+                active_call.code_changes.push(change);
+            } else {
+                self.deferred_call_state.add_code_change(change);
             }
+        } else {
+            // Block-level code change
+            if let Some(block) = &mut self.block {
+                block.code_changes.push(change);
+            }
+        }
+    }
 
-            let pb_log = crate::pb::sf::ethereum::r#type::v2::Log {
-                address: log.address.to_vec(),
-                topics: log.topics().iter().map(|t| t.to_vec()).collect(),
-                data: log.data.data.to_vec(),
+    /// OnStorageChange is called when contract storage changes
+    pub fn on_storage_change(
+        &mut self,
+        addr: Address,
+        slot: B256,
+        old_value: B256,
+        new_value: B256,
+    ) {
+        tracing::trace!("storage changed (address={:?} key={:?})", addr, slot);
+
+        self.ensure_in_block_and_in_trx();
+
+        let change = pb::sf::ethereum::r#type::v2::StorageChange {
+            address: addr.0.to_vec(),
+            key: slot.0.to_vec(),
+            old_value: old_value.0.to_vec(),
+            new_value: new_value.0.to_vec(),
+            ordinal: self.block_ordinal.next(),
+        };
+
+        if let Some(active_call) = self.call_stack.peek_mut() {
+            active_call.storage_changes.push(change);
+        } else {
+            self.deferred_call_state.add_storage_change(change);
+        }
+    }
+
+    // ============================================================================
+    // Other Hooks
+    // ============================================================================
+
+    /// OnLog is called when a log event is emitted
+    pub fn on_log(&mut self, addr: Address, topics: Vec<B256>, data: &[u8], block_index: u32) {
+        self.ensure_in_block_and_in_trx_and_in_call();
+
+        if let Some(active_call) = self.call_stack.peek_mut() {
+            tracing::trace!(
+                "adding log to call (address={:?} call={} existing_logs={})",
+                addr,
+                active_call.index,
+                active_call.logs.len()
+            );
+
+            let pb_log = pb::sf::ethereum::r#type::v2::Log {
+                address: addr.0.to_vec(),
+                data: data.to_vec(),
                 index: self.transaction_log_index,
-                block_index: self.block_log_index,
+                block_index,
                 ordinal: self.block_ordinal.next(),
+                topics: topics.iter().map(|t| t.0.to_vec()).collect(),
             };
 
-            call.logs.push(pb_log);
+            active_call.logs.push(pb_log);
             self.transaction_log_index += 1;
-            self.block_log_index += 1;
-
-            firehose_debug!(
-                "log: call_index={} log_index={} topics={}",
-                call.index,
-                self.transaction_log_index - 1,
-                log.topics().len()
-            );
         }
     }
 
-    /// SELFDESTRUCT is executed
-    pub fn on_selfdestruct(&mut self, contract: Address, target: Address, value: U256) {
-        if let Some(call) = self.call_stack.last_mut() {
-            call.suicide = true;
+    /// OnGasChange is called when gas is consumed
+    /// Note: The chain implementation should filter out:
+    ///   - GasChangeCallOpCode: Gas changes due to call opcodes (handled separately)
+    ///   - GasChangeIgnored: Gas changes that should not be recorded
+    pub fn on_gas_change(
+        &mut self,
+        old_gas: u64,
+        new_gas: u64,
+        reason: pb::sf::ethereum::r#type::v2::gas_change::Reason,
+    ) {
+        self.ensure_in_block_and_in_trx();
 
-            firehose_debug!(
-                "selfdestruct: contract={} target={} value={}",
-                HexView(contract.as_slice()),
-                HexView(target.as_slice()),
-                value
-            );
+        // No change in gas - ignore
+        if old_gas == new_gas {
+            return;
+        }
+
+        // Ignore UNKNOWN reasons (filtered by caller in chain implementation)
+        if reason == pb::sf::ethereum::r#type::v2::gas_change::Reason::Unknown {
+            return;
+        }
+
+        let change = self.new_gas_change(old_gas, new_gas, reason);
+
+        // Initial gas consumption happens before call starts - defer it
+        if let Some(active_call) = self.call_stack.peek_mut() {
+            active_call.gas_changes.push(change);
+        } else {
+            self.deferred_call_state.add_gas_change(change);
         }
     }
 
-    /// Extract state changes from journal entries
-    fn extract_journal_entries<CTX>(&mut self, context: &mut CTX)
-    where
-        CTX: revm::revm::context_interface::ContextTr,
-        CTX::Journal: revm::revm::inspector::JournalExt,
-    {
-        use crate::pb::sf::ethereum::r#type::v2::{
-            balance_change, BalanceChange, NonceChange, StorageChange,
-        };
-        use revm::revm::context_interface::ContextTr as _;
-        use revm::revm::context_interface::JournalTr as _;
+    /// OnOpcode is called for each opcode executed
+    pub fn on_opcode(
+        &mut self,
+        _pc: u64,
+        op: u8,
+        gas: u64,
+        cost: u64,
+        _data: &[u8],
+        _depth: i32,
+        err: Option<&dyn std::error::Error>,
+    ) {
+        if self.call_stack.peek().is_none() {
+            return;
+        }
 
-        // Collect journal entries to process
-        let entries_to_process: Vec<_> = {
-            let journal = context.journal_ref().journal();
-            let current_len = journal.len();
+        // Set ExecutedCode to true (non-backward-compatible mode)
+        if let Some(active_call) = self.call_stack.peek_mut() {
+            active_call.executed_code = true;
+        }
 
-            if current_len > self.last_journal_len {
-                journal[self.last_journal_len..current_len].to_vec()
-            } else {
-                Vec::new()
-            }
-        };
+        // The rest of the logic expects that a call succeeded
+        if err.is_some() {
+            return;
+        }
 
-        // Update journal length tracker
-        let current_len = context.journal_ref().journal().len();
-        self.last_journal_len = current_len;
-
-        // Process collected entries
-        if !entries_to_process.is_empty() {
-            if let Some(call) = self.call_stack.last_mut() {
-                for entry in entries_to_process {
-                    match entry {
-                        revm::JournalEntry::BalanceChange {
-                            address,
-                            old_balance,
-                        } => {
-                            // Query current balance from state
-                            let new_balance = context
-                                .balance(address)
-                                .map(|load| load.data)
-                                .unwrap_or(U256::ZERO);
-
-                            call.balance_changes.push(BalanceChange {
-                                address: address.to_vec(),
-                                old_value: Some(mapper::big_int_from_u256(old_balance)),
-                                new_value: Some(mapper::big_int_from_u256(new_balance)),
-                                ordinal: self.block_ordinal.next(),
-                                reason: balance_change::Reason::Transfer as i32,
-                            });
-                        }
-
-                        revm::JournalEntry::BalanceTransfer { balance, from, to } => {
-                            // Query actual account balances
-                            let from_balance = context
-                                .balance(from)
-                                .map(|load| load.data)
-                                .unwrap_or(U256::ZERO);
-                            let to_balance = context
-                                .balance(to)
-                                .map(|load| load.data)
-                                .unwrap_or(U256::ZERO);
-
-                            call.balance_changes.push(BalanceChange {
-                                address: from.to_vec(),
-                                old_value: Some(mapper::big_int_from_u256(from_balance + balance)),
-                                new_value: Some(mapper::big_int_from_u256(from_balance)),
-                                ordinal: self.block_ordinal.next(),
-                                reason: balance_change::Reason::Transfer as i32,
-                            });
-
-                            call.balance_changes.push(BalanceChange {
-                                address: to.to_vec(),
-                                old_value: Some(mapper::big_int_from_u256(to_balance - balance)),
-                                new_value: Some(mapper::big_int_from_u256(to_balance)),
-                                ordinal: self.block_ordinal.next(),
-                                reason: balance_change::Reason::Transfer as i32,
-                            });
-                        }
-
-                        revm::JournalEntry::StorageChanged {
-                            address,
-                            key,
-                            had_value,
-                        } => {
-                            // TODO: Fix U256 conversion - temporarily disabled to debug memory allocation bug
-                            // key and had_value are U256 (StorageKey and StorageValue are type aliases)
-                            // Get current value from state
-                            // let current_value = context.sload(address, key)
-                            //     .map(|load| load.data)
-                            //     .unwrap_or(had_value);
-
-                            // call.storage_changes.push(StorageChange {
-                            //     address: address.to_vec(),
-                            //     key: Vec::new(),  // TODO
-                            //     old_value: Vec::new(),  // TODO
-                            //     new_value: Vec::new(),  // TODO
-                            //     ordinal: self.block_ordinal.next(),
-                            // });
-                        }
-
-                        revm::JournalEntry::NonceChange { address } => {
-                            // Nonce was incremented by 1, load account to get current nonce
-                            let new_nonce = context
-                                .journal_mut()
-                                .load_account(address)
-                                .map(|load| load.data.info.nonce)
-                                .unwrap_or(0);
-                            let old_nonce = new_nonce.saturating_sub(1);
-
-                            call.nonce_changes.push(NonceChange {
-                                address: address.to_vec(),
-                                old_value: old_nonce,
-                                new_value: new_nonce,
-                                ordinal: self.block_ordinal.next(),
-                            });
-                        }
-
-                        _ => {
-                            // Other journal entries we may want to track later:
-                            // - AccountCreated
-                            // - AccountDestroyed
-                            // - AccountWarmed (for gas tracking)
-                            // - StorageWarmed (for gas tracking)
-                            // whatever
-                        }
-                    }
+        // Record gas change for specific opcodes
+        if cost > 0 {
+            if let Some(reason) = Self::opcode_to_gas_change_reason(op) {
+                let change = self.new_gas_change(gas, gas - cost, reason);
+                if let Some(active_call) = self.call_stack.peek_mut() {
+                    active_call.gas_changes.push(change);
                 }
             }
+        }
+
+        // Mark SELFDESTRUCT opcode
+        if op == OP_SELFDESTRUCT {
+            if let Some(active_call) = self.call_stack.peek_mut() {
+                active_call.suicide = true;
+            }
+        }
+    }
+
+    /// OnOpcodeFault is called when an opcode execution fails
+    pub fn on_opcode_fault(
+        &mut self,
+        pc: u64,
+        op: u8,
+        _gas: u64,
+        _cost: u64,
+        _depth: i32,
+        err: &dyn std::error::Error,
+    ) {
+        tracing::debug!("opcode fault (pc={} op={} err={})", pc, op, err);
+
+        if let Some(active_call) = self.call_stack.peek_mut() {
+            // Even faulted opcodes count as executed code
+            active_call.executed_code = true;
+        }
+    }
+
+    /// OnKeccakPreimage is called when a keccak256 preimage is available
+    pub fn on_keccak_preimage(&mut self, hash: B256, preimage: &[u8]) {
+        self.ensure_in_block_and_in_trx_and_in_call();
+
+        if let Some(call) = self.call_stack.peek_mut() {
+            // Store the preimage as hex-encoded string
+            call.keccak_preimages
+                .insert(hex::encode(hash.0), hex::encode(preimage));
+
+            tracing::trace!(
+                "keccak preimage (hash={:?} preimage_len={})",
+                hash,
+                preimage.len()
+            );
+        }
+    }
+
+    // ============================================================================
+    // System Call Hooks
+    // ============================================================================
+
+    /// OnSystemCallStart is called when a system call starts (chain-specific)
+    pub fn on_system_call_start(&mut self) {
+        tracing::info!("system call start");
+        self.ensure_in_block_and_not_in_trx();
+
+        self.in_system_call = true;
+        self.transaction = Some(TransactionTrace::default());
+    }
+
+    /// OnSystemCallEnd is called when a system call ends (chain-specific)
+    pub fn on_system_call_end(&mut self) {
+        tracing::info!("system call end");
+        self.ensure_in_block_and_in_trx();
+        self.ensure_in_system_call();
+
+        // Move any calls created during system call to block's system calls list
+        if let (Some(block), Some(trx)) = (&mut self.block, &mut self.transaction) {
+            block.system_calls.append(&mut trx.calls);
+        }
+
+        self.reset_transaction();
+    }
+
+    // ============================================================================
+    // Helper Methods
+    // ============================================================================
+
+    fn new_gas_change(
+        &mut self,
+        old_value: u64,
+        new_value: u64,
+        reason: pb::sf::ethereum::r#type::v2::gas_change::Reason,
+    ) -> pb::sf::ethereum::r#type::v2::GasChange {
+        tracing::trace!(
+            "gas consumed (before={} after={} reason={:?})",
+            old_value,
+            new_value,
+            reason
+        );
+
+        pb::sf::ethereum::r#type::v2::GasChange {
+            old_value,
+            new_value,
+            reason: reason.into(),
+            ordinal: self.block_ordinal.next(),
+        }
+    }
+
+    /// Maps opcodes to their gas change reasons
+    fn opcode_to_gas_change_reason(
+        op: u8,
+    ) -> Option<pb::sf::ethereum::r#type::v2::gas_change::Reason> {
+        use pb::sf::ethereum::r#type::v2::gas_change::Reason;
+
+        match op {
+            OP_CREATE => Some(Reason::ContractCreation),
+            OP_CREATE2 => Some(Reason::ContractCreation2),
+            OP_CALL => Some(Reason::Call),
+            OP_STATICCALL => Some(Reason::StaticCall),
+            OP_CALLCODE => Some(Reason::CallCode),
+            OP_DELEGATECALL => Some(Reason::DelegateCall),
+            OP_RETURN => Some(Reason::Return),
+            OP_REVERT => Some(Reason::Revert),
+            OP_LOG0 | OP_LOG1 | OP_LOG2 | OP_LOG3 | OP_LOG4 => Some(Reason::EventLog),
+            OP_SELFDESTRUCT => Some(Reason::SelfDestruct),
+            OP_CALLDATACOPY => Some(Reason::CallDataCopy),
+            OP_CODECOPY => Some(Reason::CodeCopy),
+            OP_EXTCODECOPY => Some(Reason::ExtCodeCopy),
+            OP_RETURNDATACOPY => Some(Reason::ReturnDataCopy),
+            _ => None,
+        }
+    }
+
+    fn new_block_header_from_block_data(
+        &self,
+        block: &crate::types::BlockData,
+    ) -> pb::sf::ethereum::r#type::v2::BlockHeader {
+        pb::sf::ethereum::r#type::v2::BlockHeader {
+            parent_hash: block.parent_hash.0.to_vec(),
+            uncle_hash: block.uncle_hash.0.to_vec(),
+            coinbase: block.coinbase.0.to_vec(),
+            state_root: block.root.0.to_vec(),
+            transactions_root: block.tx_hash.0.to_vec(),
+            receipt_root: block.receipt_hash.0.to_vec(),
+            logs_bloom: block.bloom.as_slice().to_vec(),
+            difficulty: utils::u256_to_protobuf_always(block.difficulty),
+            number: block.number,
+            gas_limit: block.gas_limit,
+            gas_used: block.gas_used,
+            timestamp: Some(prost_types::Timestamp {
+                seconds: block.time as i64,
+                nanos: 0,
+            }),
+            extra_data: block.extra.to_vec(),
+            mix_hash: block.mix_digest.0.to_vec(),
+            nonce: block.nonce,
+            hash: block.hash.0.to_vec(),
+            base_fee_per_gas: block.base_fee.and_then(utils::u256_to_protobuf),
+            // EIP-4895: Shanghai withdrawals root
+            withdrawals_root: block
+                .withdrawals_root
+                .map(|root| root.0.to_vec())
+                .unwrap_or_default(),
+            // EIP-4844: Cancun blob gas tracking
+            blob_gas_used: block.blob_gas_used,
+            excess_blob_gas: block.excess_blob_gas,
+            // EIP-4788: Cancun parent beacon block root
+            parent_beacon_root: block
+                .parent_beacon_root
+                .map(|root| root.0.to_vec())
+                .unwrap_or_default(),
+            // EIP-7685: Prague execution requests hash
+            requests_hash: block
+                .requests_hash
+                .map(|hash| hash.0.to_vec())
+                .unwrap_or_default(),
+            // Polygon-specific: Transaction dependency metadata
+            tx_dependency: block.tx_dependency.as_ref().map(|deps| {
+                pb::sf::ethereum::r#type::v2::Uint64NestedArray {
+                    val: deps
+                        .iter()
+                        .map(|inner| pb::sf::ethereum::r#type::v2::Uint64Array {
+                            val: inner.clone(),
+                        })
+                        .collect(),
+                }
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn new_block_header_from_uncle_data(
+        &self,
+        uncle: &crate::types::UncleData,
+    ) -> pb::sf::ethereum::r#type::v2::BlockHeader {
+        pb::sf::ethereum::r#type::v2::BlockHeader {
+            parent_hash: uncle.parent_hash.0.to_vec(),
+            uncle_hash: uncle.uncle_hash.0.to_vec(),
+            coinbase: uncle.coinbase.0.to_vec(),
+            state_root: uncle.root.0.to_vec(),
+            transactions_root: uncle.tx_hash.0.to_vec(),
+            receipt_root: uncle.receipt_hash.0.to_vec(),
+            logs_bloom: uncle.bloom.as_slice().to_vec(),
+            difficulty: utils::u256_to_protobuf_always(uncle.difficulty),
+            number: uncle.number,
+            gas_limit: uncle.gas_limit,
+            gas_used: uncle.gas_used,
+            timestamp: Some(prost_types::Timestamp {
+                seconds: uncle.time as i64,
+                nanos: 0,
+            }),
+            extra_data: uncle.extra.to_vec(),
+            mix_hash: uncle.mix_digest.0.to_vec(),
+            nonce: uncle.nonce,
+            hash: uncle.hash.0.to_vec(),
+            base_fee_per_gas: uncle.base_fee.and_then(utils::u256_to_protobuf),
+            ..Default::default()
+        }
+    }
+
+    // ============================================================================
+    // State Validation Methods
+    // ============================================================================
+
+    fn ensure_blockchain_init(&self) {
+        if !self.init_sent.load(Ordering::SeqCst) {
+            panic!("the OnBlockchainInit hook should have been called at this point");
+        }
+    }
+
+    /// Converts an EVM opcode to a protobuf CallType enum value
+    fn opcode_to_call_type(&self, opcode: u8) -> i32 {
+        use pb::sf::ethereum::r#type::v2::CallType;
+
+        match opcode {
+            OP_CREATE => CallType::Create as i32,
+            OP_CALL => CallType::Call as i32,
+            OP_CALLCODE => CallType::Callcode as i32,
+            OP_DELEGATECALL => CallType::Delegate as i32,
+            OP_CREATE2 => CallType::Create as i32, // CREATE2 maps to CREATE
+            OP_STATICCALL => CallType::Static as i32,
+            OP_SELFDESTRUCT => CallType::Unspecified as i32, // SELFDESTRUCT is not a call type
+            _ => CallType::Unspecified as i32,               // Unknown
+        }
+    }
+
+    fn ensure_in_block(&self) {
+        if self.block.is_none() {
+            panic!("caller expected to be in block state but we were not");
+        }
+    }
+
+    fn ensure_in_block_and_in_trx(&self) {
+        self.ensure_in_block();
+        if self.transaction.is_none() {
+            panic!("caller expected to be in transaction state but we were not");
+        }
+    }
+
+    fn ensure_in_block_and_not_in_trx(&self) {
+        self.ensure_in_block();
+        if self.transaction.is_some() {
+            panic!("caller expected to not be in transaction state but we were");
+        }
+    }
+
+    fn ensure_in_block_and_not_in_trx_and_not_in_call(&self) {
+        self.ensure_in_block();
+        if self.transaction.is_some() {
+            panic!("caller expected to not be in transaction state but we were");
+        }
+        if self.call_stack.has_active_call() {
+            panic!("caller expected to not be in call state but we were");
+        }
+    }
+
+    fn ensure_in_block_or_trx(&self) {
+        if self.transaction.is_none() && self.block.is_none() {
+            panic!("caller expected to be in either block or transaction state but we were not");
+        }
+    }
+
+    fn ensure_in_block_and_in_trx_and_in_call(&self) {
+        if self.transaction.is_none() || self.block.is_none() {
+            panic!("caller expected to be in block and in transaction but we were not");
+        }
+        if !self.call_stack.has_active_call() {
+            panic!("caller expected to be in call state but we were not");
+        }
+    }
+
+    fn ensure_in_system_call(&self) {
+        if !self.in_system_call {
+            panic!("caller expected to be in system call state but we were not");
         }
     }
 }
-*/
+
+/// Computes the effective gas price for a transaction based on its type and block base fee.
+/// Follows the same logic as go-ethereum's gasPrice function:
+/// - For legacy/access list transactions (types 0, 1): use gas_price
+/// - For EIP-1559 transactions (types 2, 3, 4: dynamic fee, blob, set code):
+///   - If base_fee is None: use max_fee_per_gas (or fallback to gas_price)
+///   - If base_fee is Some: use min(max_priority_fee_per_gas + base_fee, max_fee_per_gas)
+// Transaction type constants (from Ethereum specification)
+const TX_TYPE_LEGACY: u8 = 0; // Pre-EIP-2718 legacy transaction
+const TX_TYPE_ACCESS_LIST: u8 = 1; // EIP-2930 access list transaction
+const TX_TYPE_DYNAMIC_FEE: u8 = 2; // EIP-1559 dynamic fee transaction
+const TX_TYPE_BLOB: u8 = 3; // EIP-4844 blob transaction
+const TX_TYPE_SET_CODE: u8 = 4; // EIP-7702 set code transaction
+
+// EVM Opcode constants (from Ethereum Yellow Paper)
+const OP_CALLDATACOPY: u8 = 0x37;
+const OP_CODECOPY: u8 = 0x39;
+const OP_EXTCODECOPY: u8 = 0x3c;
+const OP_RETURNDATACOPY: u8 = 0x3e;
+const OP_LOG0: u8 = 0xa0;
+const OP_LOG1: u8 = 0xa1;
+const OP_LOG2: u8 = 0xa2;
+const OP_LOG3: u8 = 0xa3;
+const OP_LOG4: u8 = 0xa4;
+const OP_CREATE: u8 = 0xf0;
+const OP_CALL: u8 = 0xf1;
+const OP_CALLCODE: u8 = 0xf2;
+const OP_RETURN: u8 = 0xf3;
+const OP_DELEGATECALL: u8 = 0xf4;
+const OP_CREATE2: u8 = 0xf5;
+const OP_STATICCALL: u8 = 0xfa;
+const OP_REVERT: u8 = 0xfd;
+const OP_SELFDESTRUCT: u8 = 0xff;
+
+fn compute_effective_gas_price(event: &TxEvent, base_fee: Option<U256>) -> U256 {
+    match event.tx_type {
+        TX_TYPE_LEGACY | TX_TYPE_ACCESS_LIST => {
+            // Legacy, AccessList
+            event.gas_price
+        }
+        TX_TYPE_DYNAMIC_FEE | TX_TYPE_BLOB | TX_TYPE_SET_CODE => {
+            // DynamicFee, Blob, SetCode (EIP-1559 transactions)
+            if base_fee.is_none() {
+                // If baseFee is nil, use MaxFeePerGas
+                event.max_fee_per_gas.unwrap_or(event.gas_price)
+            } else {
+                let base_fee = base_fee.unwrap();
+                // Compute: min(MaxPriorityFeePerGas + baseFee, MaxFeePerGas)
+                if let (Some(max_priority), Some(max_fee)) =
+                    (event.max_priority_fee_per_gas, event.max_fee_per_gas)
+                {
+                    let effective_price = max_priority.saturating_add(base_fee);
+                    if effective_price > max_fee {
+                        max_fee
+                    } else {
+                        effective_price
+                    }
+                } else {
+                    // Fallback to GasPrice if EIP-1559 fields are not set
+                    event.gas_price
+                }
+            }
+        }
+        _ => {
+            // Unknown type, use GasPrice
+            event.gas_price
+        }
+    }
+}

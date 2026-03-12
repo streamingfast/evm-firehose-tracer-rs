@@ -1,7 +1,7 @@
 //! Mapper functions for converting between Rust types and protobuf types
 
 use alloy_primitives::U256;
-use crate::pb::sf::ethereum::r#type::v2::BigInt;
+use pb::sf::ethereum::r#type::v2::BigInt;
 
 /// Converts a U256 to a trimmed big-endian byte array
 /// Removes leading zeros for more efficient protobuf encoding

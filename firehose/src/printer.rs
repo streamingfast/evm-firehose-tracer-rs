@@ -1,10 +1,33 @@
+//! Firehose printer functions
+//!
+//! This module contains functions for writing Firehose protocol output,
+//! separated from the main tracer logic (similar to Golang's tracer_printer.go).
+
 use super::finality::FinalityStatus;
 use crate::pb::sf::ethereum::r#type::v2::Block;
-use base64::{Engine as _, engine::general_purpose};
+use base64::{engine::general_purpose, Engine as _};
 use prost::Message;
+use std::io::Write;
 
-/// Prints block in Firehose protocol format to stdout
-pub fn firehose_block_to_stdout(block: Block, finality_status: FinalityStatus) {
+/// Print a formatted message to the Firehose output stream
+pub fn print_to_firehose<W: Write>(
+    writer: &mut W,
+    prefix: &str,
+    args: &str,
+    args2: &str,
+    args3: &str,
+) {
+    let line = format!("{} {} {} {}\n", prefix, args, args2, args3);
+    let _ = writer.write_all(line.as_bytes());
+    let _ = writer.flush();
+}
+
+/// Print a block to the Firehose output stream in the protocol format
+pub fn print_block_to_firehose<W: Write>(
+    writer: &mut W,
+    block: Block,
+    finality_status: &FinalityStatus,
+) {
     let block_number = block.number;
     let block_hash = hex::encode(&block.hash);
 
@@ -35,11 +58,11 @@ pub fn firehose_block_to_stdout(block: Block, finality_status: FinalityStatus) {
 
     // Handle finalized block number using finality status
     let lib_num = if finality_status.is_empty() {
-        // FIXME: We should have access to the genesis block to perform this operation to ensure we never go below the
-        // the genesis block
         if block_number >= 200 {
             block_number - 200
         } else {
+            // Ideally we would have chain's genesis block height, 0 isn't harmful anyway and finality
+            // should always be present which avoids this.
             0
         }
     } else {
@@ -54,21 +77,22 @@ pub fn firehose_block_to_stdout(block: Block, finality_status: FinalityStatus) {
 
     let line = format!(
         "FIRE BLOCK {} {} {} {} {} {} {}\n",
-        block_number, block_hash, previous_block_number, previous_block_hash, lib_num, timestamp_ns, encoded
+        block_number,
+        block_hash,
+        previous_block_number,
+        previous_block_hash,
+        lib_num,
+        timestamp_ns,
+        encoded
     );
 
-    // Print the complete line and flush immediately
-    use std::io::{self, Write};
-    print!("{}", line);
-    let _ = io::stdout().flush();
+    let _ = writer.write_all(line.as_bytes());
+    let _ = writer.flush();
 }
 
-/// Prints init message in Firehose protocol format to stdout
-pub(super) fn firehose_init_to_stdout(protocol_version: &str, client_name: &str) {
-    println!(
-        "FIRE INIT {} {} {}",
-        protocol_version,
-        client_name,
-        env!("CARGO_PKG_VERSION")
-    );
+/// Prints block in Firehose protocol format to stdout
+/// (convenience function for backward compatibility)
+pub fn firehose_block_to_stdout(block: Block, finality_status: FinalityStatus) {
+    let mut stdout = std::io::stdout();
+    print_block_to_firehose(&mut stdout, block, &finality_status);
 }

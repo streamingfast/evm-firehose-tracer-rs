@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+pb.workspace = true
+
 # Alloy dependencies
 alloy-genesis.workspace = true
 alloy-primitives.workspace = true
@@ -15,6 +17,7 @@ alloy-eips.workspace = true
 base64.workspace = true
 eyre.workspace = true
 hex.workspace = true
+k256 = { version = "0.13", features = ["ecdsa"] }
 prost.workspace = true
 prost-types.workspace = true
 serde.workspace = true

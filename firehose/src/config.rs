@@ -151,6 +151,12 @@ impl Rules {
     }
 }
 
+impl Default for Rules {
+    fn default() -> Self {
+        Self::new(1)
+    }
+}
+
 /// Config holds tracer runtime configuration
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
@@ -172,6 +178,10 @@ pub struct Config {
     /// The actual io::Writer will be created when needed
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_path: Option<String>,
+
+    /// If true, skip tracing genesis block
+    #[serde(default)]
+    pub ignore_genesis_block: bool,
 }
 
 impl Config {
@@ -182,6 +192,7 @@ impl Config {
             enable_concurrent_flushing: false,
             concurrent_buffer_size: default_concurrent_buffer_size(),
             output_path: None,
+            ignore_genesis_block: false,
         }
     }
 
@@ -243,6 +254,7 @@ impl Default for Config {
             enable_concurrent_flushing: false,
             concurrent_buffer_size: default_concurrent_buffer_size(),
             output_path: None,
+            ignore_genesis_block: false,
         }
     }
 }
@@ -358,13 +370,23 @@ mod tests {
             enable_concurrent_flushing: true,
             concurrent_buffer_size: 150,
             output_path: Some("/tmp/output.log".to_string()),
+            ignore_genesis_block: false,
         };
 
         let json = serde_json::to_string_pretty(&config).unwrap();
         let deserialized: Config = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(config.chain_config.chain_id, deserialized.chain_config.chain_id);
-        assert_eq!(config.enable_concurrent_flushing, deserialized.enable_concurrent_flushing);
-        assert_eq!(config.concurrent_buffer_size, deserialized.concurrent_buffer_size);
+        assert_eq!(
+            config.chain_config.chain_id,
+            deserialized.chain_config.chain_id
+        );
+        assert_eq!(
+            config.enable_concurrent_flushing,
+            deserialized.enable_concurrent_flushing
+        );
+        assert_eq!(
+            config.concurrent_buffer_size,
+            deserialized.concurrent_buffer_size
+        );
     }
 }

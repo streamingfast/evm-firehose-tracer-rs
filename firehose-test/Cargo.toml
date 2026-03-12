@@ -1,0 +1,140 @@
+[package]
+name = "firehose-test"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# Internal dependencies
+firehose.workspace = true
+pb.workspace = true
+
+# External dependencies
+alloy-primitives.workspace = true
+alloy-rlp.workspace = true
+base64.workspace = true
+eyre.workspace = true
+hex.workspace = true
+k256 = { version = "0.13", features = ["ecdsa"] }
+prost.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+# Test dependencies (always available in this crate)
+[dev-dependencies]
+
+[lib]
+name = "firehose_test"
+path = "src/lib.rs"
+
+# Integration tests
+[[test]]
+name = "tracer_block_test"
+path = "tests/tracer_block_test.rs"
+
+[[test]]
+name = "tracer_balance_test"
+path = "tests/tracer_balance_test.rs"
+
+[[test]]
+name = "tracer_nonce_test"
+path = "tests/tracer_nonce_test.rs"
+
+[[test]]
+name = "tracer_code_test"
+path = "tests/tracer_code_test.rs"
+
+[[test]]
+name = "tracer_storage_test"
+path = "tests/tracer_storage_test.rs"
+
+[[test]]
+name = "tracer_log_test"
+path = "tests/tracer_log_test.rs"
+
+[[test]]
+name = "tracer_call_test"
+path = "tests/tracer_call_test.rs"
+
+[[test]]
+name = "tracer_gas_test"
+path = "tests/tracer_gas_test.rs"
+
+[[test]]
+name = "tracer_calls_test"
+path = "tests/tracer_calls_test.rs"
+
+[[test]]
+name = "tracer_keccak_test"
+path = "tests/tracer_keccak_test.rs"
+
+[[test]]
+name = "tracer_receipt_test"
+path = "tests/tracer_receipt_test.rs"
+
+[[test]]
+name = "tracer_deferred_test"
+path = "tests/tracer_deferred_test.rs"
+
+[[test]]
+name = "tracer_transaction_test"
+path = "tests/tracer_transaction_test.rs"
+
+[[test]]
+name = "tracer_suicide_test"
+path = "tests/tracer_suicide_test.rs"
+
+[[test]]
+name = "tracer_create_test"
+path = "tests/tracer_create_test.rs"
+
+[[test]]
+name = "tracer_opcode_test"
+path = "tests/tracer_opcode_test.rs"
+
+[[test]]
+name = "tracer_system_call_test"
+path = "tests/tracer_system_call_test.rs"
+
+[[test]]
+name = "tracer_executed_code_test"
+path = "tests/tracer_executed_code_test.rs"
+
+[[test]]
+name = "tracer_trx_types_test"
+path = "tests/tracer_trx_types_test.rs"
+
+[[test]]
+name = "tracer_skipped_block_test"
+path = "tests/tracer_skipped_block_test.rs"
+
+[[test]]
+name = "tracer_opcode_gas_test"
+path = "tests/tracer_opcode_gas_test.rs"
+
+[[test]]
+name = "tracer_receipt_logs_test"
+path = "tests/tracer_receipt_logs_test.rs"
+
+[[test]]
+name = "tracer_integration_test"
+path = "tests/tracer_integration_test.rs"
+
+[[test]]
+name = "tracer_block_header_test"
+path = "tests/tracer_block_header_test.rs"
+
+[[test]]
+name = "tracer_block_level_test"
+path = "tests/tracer_block_level_test.rs"
+
+[[test]]
+name = "tracer_trx_test"
+path = "tests/tracer_trx_test.rs"
+
+[[test]]
+name = "tracer_create_nonce_test"
+path = "tests/tracer_create_nonce_test.rs"
+
+[[test]]
+name = "tracer_transaction_edge_cases_test"
+path = "tests/tracer_transaction_edge_cases_test.rs"
