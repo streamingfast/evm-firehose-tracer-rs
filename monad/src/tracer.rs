@@ -1,16 +1,21 @@
 //! Main Firehose tracer implementation
 
-use crate::{EventMapper, FirehosePrinter, MonadConsumer, ProcessedEvent, TracerConfig};
+use crate::{EventMapper, MonadConsumer, ProcessedEvent, TracerConfig};
 use eyre::Result;
+use firehose::{FinalityStatus, PROTOCOL_VERSION};
+use firehose::printer::{print_block_to_firehose, print_to_firehose};
 use futures_util::StreamExt;
+use std::io::stdout;
 use std::time::Instant;
 use tracing::{error, info, warn};
+
+use crate::{TRACER_NAME, TRACER_VERSION};
 
 /// Main Firehose tracer for Monad
 pub struct FirehoseTracer {
     config: TracerConfig,
     event_mapper: EventMapper,
-    printer: FirehosePrinter,
+    finality: FinalityStatus,
     consumer: Option<MonadConsumer>,
     /// Current HEAD block number for LIB calculation
     current_head: u64,
@@ -21,12 +26,11 @@ impl FirehoseTracer {
     /// Create a new Firehose tracer
     pub fn new(config: TracerConfig) -> Self {
         let event_mapper = EventMapper::new();
-        let printer = FirehosePrinter::new();
 
         Self {
             config,
             event_mapper,
-            printer,
+            finality: FinalityStatus::default(),
             consumer: None,
             current_head: 0,
             lib_delta: 10,
@@ -52,7 +56,14 @@ impl FirehoseTracer {
         );
 
         // Print the FIRE INIT message
-        self.printer.print_init()?;
+        print_to_firehose(
+            &mut stdout(),
+            "FIRE INIT",
+            PROTOCOL_VERSION,
+            TRACER_NAME,
+            TRACER_VERSION,
+        );
+        info!("Printed FIRE INIT message");
 
         // Get the consumer
         let consumer = self
@@ -70,8 +81,6 @@ impl FirehoseTracer {
             if let Err(e) = self.process_event(event).await {
                 error!("Failed to process event: {}", e);
                 if !self.config.debug {
-                    // In production, we might want to continue processing
-                    // In debug mode, we'll let the error bubble up
                     continue;
                 }
             }
@@ -81,7 +90,7 @@ impl FirehoseTracer {
 
         // Finalize any pending block
         if let Some(block) = self.event_mapper.finalize_pending()? {
-            self.printer.print_block(&block)?;
+            print_block_to_firehose(&mut stdout(), *block, &self.finality);
         }
 
         Ok(())
@@ -110,9 +119,7 @@ impl FirehoseTracer {
             } else {
                 0
             };
-
-            // Update finality status with new LIB
-            self.printer.update_finality(lib);
+            self.finality.set_last_finalized_block(lib);
 
             // Log block summary with metrics
             let hash_short = if block.hash.len() >= 6 {
@@ -149,7 +156,7 @@ impl FirehoseTracer {
             );
 
             // Print the completed block
-            self.printer.print_block(&block)?;
+            print_block_to_firehose(&mut stdout(), *block, &self.finality);
         }
 
         Ok(())

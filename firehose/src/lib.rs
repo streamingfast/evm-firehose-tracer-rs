@@ -14,6 +14,7 @@ mod version;
 
 // Re-export public items to maintain the same API
 pub use config::{ChainConfig, Config, Rules};
+pub use finality::FinalityStatus;
 pub use logging::HexView;
 pub use tracer::Tracer;
 pub use types::{

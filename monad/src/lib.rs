@@ -6,14 +6,10 @@
 
 pub mod config;
 pub mod event_mapper;
-pub mod finality;
-pub mod printer;
 pub mod tracer;
 
 pub use config::TracerConfig;
 pub use event_mapper::EventMapper;
-pub use finality::FinalityStatus;
-pub use printer::FirehosePrinter;
 pub use tracer::FirehoseTracer;
 
 // Re-export commonly used types
