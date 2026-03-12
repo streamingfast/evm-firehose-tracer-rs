@@ -353,6 +353,7 @@ impl BlockBuilder {
             "TX_RECEIPT" => self.handle_transaction_receipt(event).await?,
             "TX_LOG" => self.handle_transaction_log(event).await?,
             "TX_CALL_FRAME" => self.handle_call_frame(event).await?,
+            "TX_END" => self.handle_tx_end(event).await?,
             "ACCOUNT_ACCESS_LIST_HEADER" => {
                 // Just metadata, we don't need to store it
             }
@@ -654,6 +655,90 @@ impl BlockBuilder {
         Ok(())
     }
 
+    /// Handle TX_END event, build call tree so account/storage accesses can push to calls[0]
+    async fn handle_tx_end(&mut self, event: ProcessedEvent) -> Result<()> {
+        let tx_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
+        let txn_index = tx_data["txn_index"].as_u64().unwrap_or(0) as usize;
+
+        debug!("TX_END: building call tree eagerly for tx #{}", txn_index);
+
+        if !self.transactions_map.contains_key(&txn_index) {
+            debug!("TX_END: no transaction found for index {}", txn_index);
+            return Ok(());
+        }
+
+        // Only build if calls aren't already populated
+        if self.transactions_map[&txn_index].calls.is_empty() {
+            // Remove frames before borrowing tx mutably
+            let frames = self.call_frames.remove(&txn_index).unwrap_or_default();
+
+            // code_hash_by_address will be empty since account accesses arrive after TX_END
+            let code_hash_by_address: std::collections::HashMap<Vec<u8>, Vec<u8>> = std::collections::HashMap::new();
+
+            let tx = self.transactions_map.get_mut(&txn_index).unwrap();
+
+            if !frames.is_empty() {
+                debug!("TX_END: building call tree for tx #{} with {} frames", txn_index, frames.len());
+                tx.calls = Self::build_call_tree(&frames, txn_index, &code_hash_by_address);
+
+                // For CREATE transactions fix the "to" field from the root frame's call_target
+                if tx.to.is_empty() || tx.to == vec![0u8; 20] {
+                    if let Some(root_frame) = frames.first() {
+                        let deployed = ensure_address_bytes(root_frame.call_target.clone());
+                        if deployed != vec![0u8; 20] {
+                            tx.to = deployed;
+                        }
+                    }
+                }
+
+                // Propagate state_reverted to children when parent is reverted
+                let reverted: std::collections::HashSet<u32> = tx.calls.iter()
+                    .filter(|c| c.state_reverted)
+                    .map(|c| c.index)
+                    .collect();
+                let mut reverted_indices = reverted;
+                for i in 0..tx.calls.len() {
+                    if reverted_indices.contains(&tx.calls[i].parent_index) {
+                        tx.calls[i].state_reverted = true;
+                        reverted_indices.insert(tx.calls[i].index);
+                    }
+                }
+            }
+
+            // If no calls exist, create a synthetic root call
+            if tx.calls.is_empty() {
+                debug!("TX_END: creating synthetic root call for tx #{}", txn_index);
+                let root_call = firehose::pb::sf::ethereum::r#type::v2::Call {
+                    index: 1,
+                    parent_index: 0,
+                    depth: 0,
+                    call_type: if tx.to.is_empty() || tx.to == vec![0u8; 20] {
+                        firehose::pb::sf::ethereum::r#type::v2::CallType::Create as i32
+                    } else {
+                        firehose::pb::sf::ethereum::r#type::v2::CallType::Call as i32
+                    },
+                    caller: tx.from.clone(),
+                    address: tx.to.clone(),
+                    value: tx.value.clone(),
+                    gas_limit: 0,
+                    gas_consumed: 0,
+                    return_data: Vec::new(),
+                    input: tx.input.clone(),
+                    executed_code: false,
+                    suicide: false,
+                    status_failed: tx.status != 1,
+                    status_reverted: false,
+                    failure_reason: String::new(),
+                    state_reverted: false,
+                    ..Default::default()
+                };
+                tx.calls.push(root_call);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Handle account access event - balance/nonce changes
     async fn handle_account_access(&mut self, event: ProcessedEvent) -> Result<()> {
         debug!("Handling account access");
@@ -726,9 +811,36 @@ impl BlockBuilder {
             debug!("BLOCK_PROLOGUE account access detected for address: {}", hex::encode(&account_access.address));
             self.system_calls_account_accesses.push(account_access);
         } else {
-            // Regular transaction account accesses
-            debug!("ACCOUNT_ACCESS_STORED: txn_index={} addr={} prestate_bal_hex={}",
-                txn_index, hex::encode(&account_access.address), hex::encode(&account_access.prestate_balance));
+            use firehose::pb::sf::ethereum::r#type::v2::{BalanceChange, BigInt as PbBigInt, NonceChange};
+            use firehose::pb::sf::ethereum::r#type::v2::balance_change::Reason as BalanceReason;
+
+            // If call tree already built (TX_END received), push directly to root call
+            if let Some(tx) = self.transactions_map.get_mut(&txn_index) {
+                if let Some(root_call) = tx.calls.first_mut() {
+                    debug!("ACCOUNT_ACCESS_EAGER: txn_index={} addr={}", txn_index, hex::encode(&account_access.address));
+                    if account_access.is_balance_modified {
+                        root_call.balance_changes.push(BalanceChange {
+                            address: ensure_address_bytes(account_access.address.clone()),
+                            old_value: Some(PbBigInt { bytes: account_access.prestate_balance.clone() }),
+                            new_value: Some(PbBigInt { bytes: account_access.modified_balance.clone() }),
+                            reason: BalanceReason::MonadTxPostState as i32,
+                            ordinal: 0,
+                        });
+                    }
+                    if account_access.is_nonce_modified {
+                        root_call.nonce_changes.push(NonceChange {
+                            address: ensure_address_bytes(account_access.address.clone()),
+                            old_value: account_access.prestate_nonce,
+                            new_value: account_access.modified_nonce,
+                            ordinal: 0,
+                        });
+                    }
+                    return Ok(());
+                }
+            }
+
+            // Call tree not yet built — buffer for finalize
+            debug!("ACCOUNT_ACCESS_STORED: txn_index={} addr={}", txn_index, hex::encode(&account_access.address));
             self.account_accesses.entry(txn_index).or_default().push(account_access);
         }
 
@@ -749,7 +861,6 @@ impl BlockBuilder {
 
         let storage_access = StorageAccessData {
             address: hex::decode(storage_data["address"].as_str().unwrap_or("")).unwrap_or_default(),
-            // index: storage_data["index"].as_u64().unwrap_or(0) as u32,
             modified: storage_data["modified"].as_bool().unwrap_or(false),
             transient: storage_data["transient"].as_bool().unwrap_or(false),
             key: hex::decode(storage_data["key"].as_str().unwrap_or("")).unwrap_or_default(),
@@ -761,9 +872,28 @@ impl BlockBuilder {
         if access_context == 0 {
             debug!("BLOCK_PROLOGUE storage access detected for address: {}", hex::encode(&storage_access.address));
             self.system_calls_storage_accesses.push(storage_access);
-        } else {
+        } else if storage_access.modified && !storage_access.transient {
+            use firehose::pb::sf::ethereum::r#type::v2::StorageChange;
+
+            // If call tree already built (TX_END received), push directly to root call
+            if let Some(tx) = self.transactions_map.get_mut(&txn_index) {
+                if let Some(root_call) = tx.calls.first_mut() {
+                    debug!("STORAGE_ACCESS_EAGER: txn_index={} addr={}", txn_index, hex::encode(&storage_access.address));
+                    root_call.storage_changes.push(StorageChange {
+                        address: ensure_address_bytes(storage_access.address.clone()),
+                        key: ensure_hash_bytes(storage_access.key.clone()),
+                        old_value: ensure_hash_bytes(storage_access.start_value.clone()),
+                        new_value: ensure_hash_bytes(storage_access.end_value.clone()),
+                        ordinal: 0,
+                    });
+                    return Ok(());
+                }
+            }
+
+            // Call tree not yet built — buffer for finalize
             self.storage_accesses.entry(txn_index).or_default().push(storage_access);
         }
+        // Non-modified or transient storage — skip entirely
 
         Ok(())
     }
@@ -1147,10 +1277,6 @@ impl BlockBuilder {
             }
         }
 
-        // Extract data after creating system calls
-        let call_frames = self.call_frames;
-        let account_accesses = self.account_accesses;
-        let storage_accesses = self.storage_accesses;
         // Move transactions from map to vec, sorted by index
         let mut transactions: Vec<TransactionTrace> = self
             .transactions_map.into_values().map(|tx| {
@@ -1176,78 +1302,85 @@ impl BlockBuilder {
             .collect();
         transactions.sort_by_key(|tx| tx.index);
 
-        // Build a map of address -> prestate_code_hash from all account accesses
-        let code_hash_by_address: std::collections::HashMap<Vec<u8>, Vec<u8>> = account_accesses
-            .values()
-            .flatten()
-            .filter(|a| !a.prestate_code_hash.is_empty())
-            .map(|a| (a.address.clone(), a.prestate_code_hash.clone()))
-            .collect();
+        // Drain remaining buffered accesses (fallback for txns that didn't receive TX_END before accesses)
+        let account_accesses = std::mem::take(&mut self.account_accesses);
+        let storage_accesses = std::mem::take(&mut self.storage_accesses);
 
-        // Build call trees for each transaction
-        // If no call frames exist, create a synthetic root call
+        // Drain any call frames not yet processed by handle_tx_end (safety fallback)
+        let remaining_call_frames = std::mem::take(&mut self.call_frames);
+
         for tx in &mut transactions {
             let txn_index = tx.index as usize;
 
-            if let Some(frames) = call_frames.get(&txn_index) {
-                if !frames.is_empty() {
-                    debug!("Building call tree for tx #{} with {} frames", txn_index, frames.len());
-                    tx.calls = Self::build_call_tree(frames, txn_index, &code_hash_by_address);
+            // Build call tree from remaining frames (TX_END not received)
+            if tx.calls.is_empty() {
+                let code_hash_by_address: std::collections::HashMap<Vec<u8>, Vec<u8>> =
+                    account_accesses.get(&txn_index)
+                        .map(|accesses| {
+                            accesses.iter()
+                                .filter(|a| !a.prestate_code_hash.is_empty())
+                                .map(|a| (a.address.clone(), a.prestate_code_hash.clone()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
 
-                    // For CREATE transactions the tx header has an empty "to" field
-                    if tx.to.is_empty() || tx.to == vec![0u8; 20] {
-                        if let Some(root_frame) = frames.first() {
-                            let deployed = ensure_address_bytes(root_frame.call_target.clone());
-                            if deployed != vec![0u8; 20] {
-                                tx.to = deployed;
+                if let Some(frames) = remaining_call_frames.get(&txn_index) {
+                    if !frames.is_empty() {
+                        debug!("FALLBACK: building call tree for tx #{} with {} frames", txn_index, frames.len());
+                        tx.calls = Self::build_call_tree(frames, txn_index, &code_hash_by_address);
+
+                        if tx.to.is_empty() || tx.to == vec![0u8; 20] {
+                            if let Some(root_frame) = frames.first() {
+                                let deployed = ensure_address_bytes(root_frame.call_target.clone());
+                                if deployed != vec![0u8; 20] {
+                                    tx.to = deployed;
+                                }
+                            }
+                        }
+
+                        let reverted: std::collections::HashSet<u32> = tx.calls.iter()
+                            .filter(|c| c.state_reverted)
+                            .map(|c| c.index)
+                            .collect();
+                        let mut reverted_indices = reverted;
+                        for i in 0..tx.calls.len() {
+                            if reverted_indices.contains(&tx.calls[i].parent_index) {
+                                tx.calls[i].state_reverted = true;
+                                reverted_indices.insert(tx.calls[i].index);
                             }
                         }
                     }
-
-                    // Propagate state_reverted to children when parent is reverted
-                    let reverted: std::collections::HashSet<u32> = tx.calls.iter()
-                        .filter(|c| c.state_reverted)
-                        .map(|c| c.index)
-                        .collect();
-                    let mut reverted_indices = reverted;
-                    for i in 0..tx.calls.len() {
-                        if reverted_indices.contains(&tx.calls[i].parent_index) {
-                            tx.calls[i].state_reverted = true;
-                            reverted_indices.insert(tx.calls[i].index);
-                        }
-                    }
                 }
-            }
 
-            // If no calls exist, create a synthetic root call
-            // This is needed for pure ETH transfers and other transactions without EVM execution
-            if tx.calls.is_empty() {
-                debug!("Creating synthetic root call for tx #{}", txn_index);
-                let root_call = firehose::pb::sf::ethereum::r#type::v2::Call {
-                    index: 1,
-                    parent_index: 0,
-                    depth: 0,
-                    call_type: if tx.to.is_empty() || tx.to == vec![0u8; 20] {
-                        firehose::pb::sf::ethereum::r#type::v2::CallType::Create as i32
-                    } else {
-                        firehose::pb::sf::ethereum::r#type::v2::CallType::Call as i32
-                    },
-                    caller: tx.from.clone(),
-                    address: tx.to.clone(),
-                    value: tx.value.clone(),
-                    gas_limit: 0, // Pure transfers don't consume call gas
-                    gas_consumed: 0,
-                    return_data: Vec::new(),
-                    input: tx.input.clone(),
-                    executed_code: false,
-                    suicide: false,
-                    status_failed: tx.status != 1, // 1 = success
-                    status_reverted: false,
-                    failure_reason: String::new(),
-                    state_reverted: false,
-                    ..Default::default()
-                };
-                tx.calls.push(root_call);
+                // Synthetic root call if still empty (TODO: We'll see)
+                if tx.calls.is_empty() {
+                    debug!("FALLBACK: creating synthetic root call for tx #{}", txn_index);
+                    let root_call = firehose::pb::sf::ethereum::r#type::v2::Call {
+                        index: 1,
+                        parent_index: 0,
+                        depth: 0,
+                        call_type: if tx.to.is_empty() || tx.to == vec![0u8; 20] {
+                            firehose::pb::sf::ethereum::r#type::v2::CallType::Create as i32
+                        } else {
+                            firehose::pb::sf::ethereum::r#type::v2::CallType::Call as i32
+                        },
+                        caller: tx.from.clone(),
+                        address: tx.to.clone(),
+                        value: tx.value.clone(),
+                        gas_limit: 0,
+                        gas_consumed: 0,
+                        return_data: Vec::new(),
+                        input: tx.input.clone(),
+                        executed_code: false,
+                        suicide: false,
+                        status_failed: tx.status != 1,
+                        status_reverted: false,
+                        failure_reason: String::new(),
+                        state_reverted: false,
+                        ..Default::default()
+                    };
+                    tx.calls.push(root_call);
+                }
             }
 
             // Copy receipt logs to the root call frame
@@ -1269,52 +1402,33 @@ impl BlockBuilder {
                 tx.return_data = root_call.return_data.clone();
             }
 
+            // Flush any buffered account/storage accesses (fallback path for TX_END not received)
             use firehose::pb::sf::ethereum::r#type::v2::{BalanceChange, BigInt as PbBigInt, NonceChange, StorageChange};
             use firehose::pb::sf::ethereum::r#type::v2::balance_change::Reason as BalanceReason;
 
-            let empty_accesses: Vec<AccountAccessData> = vec![];
-            let accesses = account_accesses.get(&txn_index).unwrap_or(&empty_accesses);
-            debug!("FINALIZE_ACCESSES: txn_index={} accesses_count={}", txn_index, accesses.len());
-            for acc in accesses {
-                debug!("FINALIZE_ACCESS_ENTRY: addr={} bal_mod={} nonce_mod={} pre_nonce={} mod_nonce={} prestate_bal_hex={}",
-                    hex::encode(&acc.address), acc.is_balance_modified, acc.is_nonce_modified,
-                    acc.prestate_nonce, acc.modified_nonce, hex::encode(&acc.prestate_balance));
-            }
-
-            // All state changes go to root call
             if let Some(root_call) = tx.calls.first_mut() {
-                for access in accesses {
-                    if access.is_balance_modified {
-                        debug!("BALANCE_CHANGE_PUSH: addr={} prestate_balance_hex={} modified_balance_hex={}",
-                            hex::encode(&access.address),
-                            hex::encode(&access.prestate_balance),
-                            hex::encode(&access.modified_balance));
-                        root_call.balance_changes.push(BalanceChange {
-                            address: ensure_address_bytes(access.address.clone()),
-                            old_value: Some(PbBigInt { bytes: access.prestate_balance.clone() }),
-                            new_value: Some(PbBigInt { bytes: access.modified_balance.clone() }),
-                            reason: BalanceReason::MonadTxPostState as i32,
-                            ordinal: 0,
-                        });
-                    }
-
-                    if access.is_nonce_modified {
-                        debug!("NONCE_CHANGE_PUSH: addr={} old={} new={}",
-                            hex::encode(&access.address), access.prestate_nonce, access.modified_nonce);
-                        root_call.nonce_changes.push(NonceChange {
-                            address: ensure_address_bytes(access.address.clone()),
-                            old_value: access.prestate_nonce,
-                            new_value: access.modified_nonce,
-                            ordinal: 0,
-                        });
-                    } else {
-                        debug!("NONCE_CHANGE_SKIP: addr={} nonce_mod=false pre_nonce={} mod_nonce={}",
-                            hex::encode(&access.address), access.prestate_nonce, access.modified_nonce);
+                if let Some(accesses) = account_accesses.get(&txn_index) {
+                    debug!("FINALIZE_FLUSH_ACCESSES: txn_index={} count={}", txn_index, accesses.len());
+                    for access in accesses {
+                        if access.is_balance_modified {
+                            root_call.balance_changes.push(BalanceChange {
+                                address: ensure_address_bytes(access.address.clone()),
+                                old_value: Some(PbBigInt { bytes: access.prestate_balance.clone() }),
+                                new_value: Some(PbBigInt { bytes: access.modified_balance.clone() }),
+                                reason: BalanceReason::MonadTxPostState as i32,
+                                ordinal: 0,
+                            });
+                        }
+                        if access.is_nonce_modified {
+                            root_call.nonce_changes.push(NonceChange {
+                                address: ensure_address_bytes(access.address.clone()),
+                                old_value: access.prestate_nonce,
+                                new_value: access.modified_nonce,
+                                ordinal: 0,
+                            });
+                        }
                     }
                 }
-
-                debug!("FINALIZE_ROOT_CALL_RESULT: nonce_changes={} balance_changes={}",
-                    root_call.nonce_changes.len(), root_call.balance_changes.len());
 
                 if let Some(storages) = storage_accesses.get(&txn_index) {
                     for storage in storages {

@@ -13,6 +13,7 @@ const EVENT_TYPE_TX_CALL_FRAME: &str = "TX_CALL_FRAME";
 const EVENT_TYPE_ACCOUNT_ACCESS_LIST_HEADER: &str = "ACCOUNT_ACCESS_LIST_HEADER";
 const EVENT_TYPE_ACCOUNT_ACCESS: &str = "ACCOUNT_ACCESS";
 const EVENT_TYPE_STORAGE_ACCESS: &str = "STORAGE_ACCESS";
+const EVENT_TYPE_TX_END: &str = "TX_END";
 
 /// Buffered transaction header waiting for access list entries
 struct PendingTxnHeader {
@@ -422,8 +423,14 @@ impl EventProcessor {
     }
 
     async fn process_txn_end(&self, block_number: u64) -> Result<Option<ProcessedEvent>> {
-        debug!("TxnEnd: block #{}", block_number);
-        Ok(None)
+        let txn_index = self.current_txn_idx.unwrap_or(0);
+        debug!("TxnEnd: block #{}, txn_index={}", block_number, txn_index);
+        let data = serde_json::json!({ "txn_index": txn_index });
+        Ok(Some(ProcessedEvent {
+            block_number,
+            event_type: EVENT_TYPE_TX_END.to_string(),
+            firehose_data: serde_json::to_vec(&data)?,
+        }))
     }
 
     /// Process transaction log event
