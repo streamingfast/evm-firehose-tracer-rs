@@ -453,6 +453,7 @@ impl BlockBuilder {
     /// Handle transaction header events
     async fn handle_transaction_header(&mut self, event: ProcessedEvent) -> Result<()> {
         debug!("Handling transaction header");
+        return Ok(()); // DELIBERATE_BREAK
 
         let tx_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
 
