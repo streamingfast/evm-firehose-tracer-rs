@@ -6,6 +6,7 @@
 
 pub mod event_processor;
 pub mod monad_consumer;
+pub mod pb;
 
 pub use event_processor::EventProcessor;
 pub use monad_consumer::{MonadConsumer, ProcessedEvent};

@@ -1,0 +1,133 @@
+syntax = "proto3";
+
+package sf.monad.events.v1;
+
+// Block header data from BlockStart event
+message BlockStart {
+  uint64 seqno = 1;
+  bytes parent_hash = 2;
+  bytes uncle_hash = 3;
+  bytes coinbase = 4;
+  bytes transactions_root = 5;
+  uint64 difficulty = 6;
+  uint64 number = 7;
+  uint64 gas_limit = 8;
+  uint64 timestamp = 9;
+  bytes extra_data = 10;
+  bytes mix_hash = 11;
+  uint64 nonce = 12;
+  repeated uint64 base_fee_per_gas_limbs = 13;
+  bytes withdrawals_root = 14;
+}
+
+// Block execution results from BlockEnd event
+message BlockEnd {
+  uint64 seqno = 1;
+  bytes hash = 2;
+  bytes state_root = 3;
+  bytes receipts_root = 4;
+  bytes logs_bloom = 5;
+  uint64 gas_used = 6;
+}
+
+// EIP-2930 access list entry
+message AccessListEntry {
+  bytes address = 1;
+  repeated bytes storage_keys = 2;
+}
+
+message TxHeader {
+  uint32 txn_index = 1;
+  bytes hash = 2;
+  bytes from = 3;
+  bytes to = 4;
+  bool is_contract_creation = 5;
+  uint64 nonce = 6;
+  uint64 gas_limit = 7;
+  repeated uint64 value_limbs = 8;
+  repeated uint64 max_fee_per_gas_limbs = 9;
+  repeated uint64 max_priority_fee_per_gas_limbs = 10;
+  repeated uint64 r_limbs = 11;
+  repeated uint64 s_limbs = 12;
+  bool y_parity = 13;
+  uint32 txn_type = 14;
+  repeated uint64 chain_id_limbs = 15;
+  bytes input = 16;
+  repeated AccessListEntry access_list = 17;
+}
+
+// Transaction receipt from TxnEvmOutput event
+message TxReceipt {
+  uint32 txn_index = 1;
+  bool status = 2;
+  uint64 gas_used = 3;
+  uint32 log_count = 4;
+  uint32 call_frame_count = 5;
+}
+
+// Transaction log
+message TxLog {
+  uint32 txn_index = 1;
+  uint32 log_index = 2;
+  bytes address = 3;
+  repeated bytes topics = 4;
+  bytes data = 5;
+}
+
+// Call frame (execution trace)
+message TxCallFrame {
+  optional uint32 txn_index = 1;
+  uint32 index = 2;
+  bytes caller = 3;
+  bytes call_target = 4;
+  uint32 opcode = 5;
+  repeated uint64 value_limbs = 6;
+  uint64 gas = 7;
+  uint64 gas_used = 8;
+  int32 evmc_status = 9;
+  uint64 depth = 10;
+  bytes input = 11;
+  bytes return_data = 12;
+}
+
+// Account access list header
+message AccountAccessListHeader {
+  optional uint32 txn_index = 1;
+  uint32 entry_count = 2;
+  uint32 access_context = 3;
+}
+
+// Account access (balance/nonce/code changes)
+message AccountAccess {
+  optional uint32 txn_index = 1;
+  uint32 index = 2;
+  bytes address = 3;
+  uint32 access_context = 4;
+  bool is_balance_modified = 5;
+  bool is_nonce_modified = 6;
+  repeated uint64 prestate_balance_limbs = 7;
+  uint64 prestate_nonce = 8;
+  bytes prestate_code_hash = 9;
+  repeated uint64 modified_balance_limbs = 10;
+  uint64 modified_nonce = 11;
+  uint32 storage_key_count = 12;
+}
+
+// Storage slot access
+message StorageAccess {
+  optional uint32 txn_index = 1;
+  uint32 account_index = 2;
+  bytes address = 3;
+  uint32 access_context = 4;
+  uint32 index = 5;
+  bool modified = 6;
+  bool transient = 7;
+  bytes key = 8;
+  bytes start_value = 9;
+  bytes end_value = 10;
+}
+
+// TX_END marker
+message TxEnd {
+  uint32 txn_index = 1;
+}

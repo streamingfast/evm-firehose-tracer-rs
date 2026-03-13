@@ -12,3 +12,4 @@ hex = { workspace = true }
 serde_json = { workspace = true }
 monad-exec-events = { workspace = true }
 monad-event-ring  = { workspace = true }
+prost = { workspace = true }

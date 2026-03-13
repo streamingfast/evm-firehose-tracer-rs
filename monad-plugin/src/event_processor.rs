@@ -1,7 +1,8 @@
 use crate::monad_consumer::{EventMeta, ProcessedEvent};
+use crate::pb::sf::monad::events::v1 as pb;
 use eyre::Result;
 use monad_exec_events::ExecEvent;
-use serde_json;
+use prost::Message;
 use tracing::debug;
 
 const EVENT_TYPE_BLOCK_START: &str = "BLOCK_START";
@@ -32,7 +33,7 @@ pub struct EventProcessor {
     current_block: Option<u64>,
     event_count: u64,
     current_txn_idx: Option<usize>,
-    pending_access_lists: std::collections::HashMap<usize, Vec<serde_json::Value>>,
+    pending_access_lists: std::collections::HashMap<usize, Vec<pb::AccessListEntry>>,
     pending_txn_headers: std::collections::HashMap<usize, PendingTxnHeader>,
     current_account_idx: u64,
 }
@@ -86,80 +87,46 @@ impl EventProcessor {
                 blob_bytes,
             } => {
                 self.current_txn_idx = Some(txn_index);
-                self.process_txn_header(
-                    txn_header_start,
-                    data_bytes,
-                    blob_bytes,
-                    txn_index,
-                    block_number,
-                )
-                .await
+                self.process_txn_header(txn_header_start, data_bytes, blob_bytes, txn_index, block_number).await
             }
             ExecEvent::TxnAccessListEntry {
                 txn_index,
                 txn_access_list_entry,
                 storage_key_bytes,
             } => {
-                self.process_txn_access_list_entry(
-                    txn_index,
-                    txn_access_list_entry,
-                    storage_key_bytes,
-                )
-                .await
+                self.process_txn_access_list_entry(txn_index, txn_access_list_entry, storage_key_bytes).await
             }
             ExecEvent::TxnEvmOutput { txn_index, output } => {
                 self.current_txn_idx = Some(txn_index);
-                self.process_txn_evm_output(output, txn_index, block_number)
-                    .await
+                self.process_txn_evm_output(output, txn_index, block_number).await
             }
             ExecEvent::TxnEnd => {
                 self.process_txn_end(block_number).await
             }
-            ExecEvent::TxnLog {
-                txn_index,
-                txn_log,
-                topic_bytes,
-                data_bytes,
-            } => {
-                self.process_txn_log(txn_log, topic_bytes, data_bytes, txn_index, block_number)
-                    .await
+            ExecEvent::TxnLog { txn_index, txn_log, topic_bytes, data_bytes } => {
+                self.process_txn_log(txn_log, topic_bytes, data_bytes, txn_index, block_number).await
             }
             ExecEvent::BlockQC(qc) => self.process_block_qc(qc, block_number).await,
             ExecEvent::BlockFinalized(finalized) => {
                 self.process_block_finalized(finalized, block_number).await
             }
-            ExecEvent::TxnCallFrame {
-                txn_index,
-                txn_call_frame,
-                input_bytes,
-                return_bytes,
-            } => {
-                self.process_txn_call_frame(
-                    txn_call_frame,
-                    input_bytes,
-                    return_bytes,
-                    txn_index,
-                    block_number,
-                )
-                .await
+            ExecEvent::TxnCallFrame { txn_index, txn_call_frame, input_bytes, return_bytes } => {
+                self.process_txn_call_frame(txn_call_frame, input_bytes, return_bytes, txn_index, block_number).await
             }
             ExecEvent::AccountAccessListHeader(header) => {
                 let txn_index = self.current_txn_idx;
                 self.current_account_idx = 0;
-                self.process_account_access_list_header(header, txn_index, block_number)
-                    .await
+                self.process_account_access_list_header(header, txn_index, block_number).await
             }
             ExecEvent::AccountAccess(account_access) => {
                 let txn_index = self.current_txn_idx;
                 self.current_account_idx = account_access.index as u64;
-                self.process_account_access(account_access, txn_index, block_number)
-                    .await
+                self.process_account_access(account_access, txn_index, block_number).await
             }
             ExecEvent::StorageAccess(storage_access) => {
                 let txn_index = self.current_txn_idx;
                 let account_index = self.current_account_idx;
-                self.process_storage_access(storage_access, txn_index, account_index, block_number)
-                    .await
+                self.process_storage_access(storage_access, txn_index, account_index, block_number).await
             }
             _ => {
                 debug!("Skipping event type: {:?}", exec_event);
@@ -168,81 +135,75 @@ impl EventProcessor {
         }
     }
 
-    /// Process BlockStart event, contains block header information
     async fn process_block_start(
         &self,
         block_start: monad_exec_events::ffi::monad_exec_block_start,
         seqno: u64,
         block_number: u64,
     ) -> Result<Option<ProcessedEvent>> {
-        let parent_hash_hex = hex::encode(block_start.parent_eth_hash.bytes);
         debug!(
             "BlockStart: block #{}, timestamp={}, parent_hash={}",
-            block_number, block_start.eth_block_input.timestamp, parent_hash_hex
+            block_number,
+            block_start.eth_block_input.timestamp,
+            hex::encode(block_start.parent_eth_hash.bytes)
         );
 
         let nonce = u64::from_le_bytes(block_start.eth_block_input.nonce.bytes);
+        let extra_data_len = block_start.eth_block_input.extra_data_length as usize;
 
-        let block_data = serde_json::json!({
-            "seqno": seqno,
-            "parent_hash": parent_hash_hex,
-            "uncle_hash": hex::encode(block_start.eth_block_input.ommers_hash.bytes),
-            "coinbase": hex::encode(block_start.eth_block_input.beneficiary.bytes),
-            "transactions_root": hex::encode(block_start.eth_block_input.transactions_root.bytes),
-            "difficulty": block_start.eth_block_input.difficulty,
-            "number": block_start.eth_block_input.number,
-            "gas_limit": block_start.eth_block_input.gas_limit,
-            "timestamp": block_start.eth_block_input.timestamp,
-            "extra_data": hex::encode(&block_start.eth_block_input.extra_data.bytes[..block_start.eth_block_input.extra_data_length as usize]),
-            "mix_hash": hex::encode(block_start.eth_block_input.prev_randao.bytes),
-            "nonce": nonce,
-            "base_fee_per_gas": {
-                "limbs": block_start.eth_block_input.base_fee_per_gas.limbs.to_vec()
-            },
-            "withdrawals_root": hex::encode(block_start.eth_block_input.withdrawals_root.bytes),
-        });
-
-        let firehose_data = serde_json::to_vec(&block_data)?;
+        let msg = pb::BlockStart {
+            seqno,
+            parent_hash: block_start.parent_eth_hash.bytes.to_vec(),
+            uncle_hash: block_start.eth_block_input.ommers_hash.bytes.to_vec(),
+            coinbase: block_start.eth_block_input.beneficiary.bytes.to_vec(),
+            transactions_root: block_start.eth_block_input.transactions_root.bytes.to_vec(),
+            difficulty: block_start.eth_block_input.difficulty,
+            number: block_start.eth_block_input.number,
+            gas_limit: block_start.eth_block_input.gas_limit,
+            timestamp: block_start.eth_block_input.timestamp,
+            extra_data: block_start.eth_block_input.extra_data.bytes[..extra_data_len].to_vec(),
+            mix_hash: block_start.eth_block_input.prev_randao.bytes.to_vec(),
+            nonce,
+            base_fee_per_gas_limbs: block_start.eth_block_input.base_fee_per_gas.limbs.to_vec(),
+            withdrawals_root: block_start.eth_block_input.withdrawals_root.bytes.to_vec(),
+        };
 
         Ok(Some(ProcessedEvent {
             block_number,
             event_type: EVENT_TYPE_BLOCK_START.to_string(),
-            firehose_data,
+            firehose_data: msg.encode_to_vec(),
         }))
     }
 
-    /// Process BlockEnd event, contains execution results
     async fn process_block_end(
         &self,
         block_end: monad_exec_events::ffi::monad_exec_block_end,
         seqno: u64,
         block_number: u64,
     ) -> Result<Option<ProcessedEvent>> {
-        let block_hash_hex = hex::encode(block_end.eth_block_hash.bytes);
         debug!(
             "BlockEnd: block #{}, gas_used={}, block_hash={}",
-            block_number, block_end.exec_output.gas_used, block_hash_hex
+            block_number,
+            block_end.exec_output.gas_used,
+            hex::encode(block_end.eth_block_hash.bytes)
         );
 
-        let block_data = serde_json::json!({
-            "seqno": seqno,
-            "hash": block_hash_hex,
-            "state_root": hex::encode(block_end.exec_output.state_root.bytes),
-            "receipts_root": hex::encode(block_end.exec_output.receipts_root.bytes),
-            "logs_bloom": hex::encode(block_end.exec_output.logs_bloom.bytes),
-            "gas_used": block_end.exec_output.gas_used,
-        });
-
-        let firehose_data = serde_json::to_vec(&block_data)?;
+        let msg = pb::BlockEnd {
+            seqno,
+            hash: block_end.eth_block_hash.bytes.to_vec(),
+            state_root: block_end.exec_output.state_root.bytes.to_vec(),
+            receipts_root: block_end.exec_output.receipts_root.bytes.to_vec(),
+            logs_bloom: block_end.exec_output.logs_bloom.bytes.to_vec(),
+            gas_used: block_end.exec_output.gas_used,
+        };
 
         Ok(Some(ProcessedEvent {
             block_number,
             event_type: EVENT_TYPE_BLOCK_END.to_string(),
-            firehose_data,
+            firehose_data: msg.encode_to_vec(),
         }))
     }
 
-    /// Process transaction header event - buffers header until access list is complete
     async fn process_txn_header(
         &mut self,
         txn_header: monad_exec_events::ffi::monad_exec_txn_header_start,
@@ -253,7 +214,6 @@ impl EventProcessor {
     ) -> Result<Option<ProcessedEvent>> {
         let expected_access_list_count = txn_header.txn_header.access_list_count;
 
-        // Buffer the transaction header - we'll emit it later when all access list entries arrive
         self.pending_txn_headers.insert(
             txn_index,
             PendingTxnHeader {
@@ -271,11 +231,9 @@ impl EventProcessor {
             return self.try_emit_txn_header(txn_index);
         }
 
-        // Otherwise wait for access list entries
         Ok(None)
     }
 
-    /// Emit a buffered transaction header if ready (all access list entries collected)
     fn try_emit_txn_header(&mut self, txn_index: usize) -> Result<Option<ProcessedEvent>> {
         let pending = match self.pending_txn_headers.get(&txn_index) {
             Some(p) => p,
@@ -288,66 +246,40 @@ impl EventProcessor {
             .map(|list| list.len())
             .unwrap_or(0);
 
-        // Check if we have all expected access list entries
         if collected_count < pending.expected_access_list_count as usize {
-            return Ok(None); // Not ready yet
+            return Ok(None);
         }
 
-        // Remove the pending header and access list
-        let pending = self
-            .pending_txn_headers
-            .remove(&txn_index)
-            .expect("pending transaction header must exist after count validation");
-        let access_list = self
-            .pending_access_lists
-            .remove(&txn_index)
-            .unwrap_or_default();
+        let pending = self.pending_txn_headers.remove(&txn_index).unwrap();
+        let access_list = self.pending_access_lists.remove(&txn_index).unwrap_or_default();
 
-        let event_type = EVENT_TYPE_TX_HEADER;
-
-        let tx_data = serde_json::json!({
-            "txn_index": txn_index,
-            "hash": hex::encode(pending.txn_header.txn_hash.bytes),
-            "from": hex::encode(pending.txn_header.sender.bytes),
-            "to": hex::encode(pending.txn_header.txn_header.to.bytes),
-            "is_contract_creation": pending.txn_header.txn_header.is_contract_creation,
-            "nonce": pending.txn_header.txn_header.nonce,
-            "gas_limit": pending.txn_header.txn_header.gas_limit,
-            "value": {
-                "limbs": pending.txn_header.txn_header.value.limbs.to_vec()
-            },
-            "max_fee_per_gas": {
-                "limbs": pending.txn_header.txn_header.max_fee_per_gas.limbs.to_vec()
-            },
-            "max_priority_fee_per_gas": {
-                "limbs": pending.txn_header.txn_header.max_priority_fee_per_gas.limbs.to_vec()
-            },
-            "r": {
-                "limbs": pending.txn_header.txn_header.r.limbs.to_vec()
-            },
-            "s": {
-                "limbs": pending.txn_header.txn_header.s.limbs.to_vec()
-            },
-            "y_parity": pending.txn_header.txn_header.y_parity,
-            "txn_type": pending.txn_header.txn_header.txn_type,
-            "chain_id": {
-                "limbs": pending.txn_header.txn_header.chain_id.limbs.to_vec()
-            },
-            "input": hex::encode(&*pending.data_bytes),
-            "access_list_count": pending.txn_header.txn_header.access_list_count,
-            "access_list": access_list,
-        });
-
-        let firehose_data = serde_json::to_vec(&tx_data)?;
+        let msg = pb::TxHeader {
+            txn_index: txn_index as u32,
+            hash: pending.txn_header.txn_hash.bytes.to_vec(),
+            from: pending.txn_header.sender.bytes.to_vec(),
+            to: pending.txn_header.txn_header.to.bytes.to_vec(),
+            is_contract_creation: pending.txn_header.txn_header.is_contract_creation,
+            nonce: pending.txn_header.txn_header.nonce,
+            gas_limit: pending.txn_header.txn_header.gas_limit,
+            value_limbs: pending.txn_header.txn_header.value.limbs.to_vec(),
+            max_fee_per_gas_limbs: pending.txn_header.txn_header.max_fee_per_gas.limbs.to_vec(),
+            max_priority_fee_per_gas_limbs: pending.txn_header.txn_header.max_priority_fee_per_gas.limbs.to_vec(),
+            r_limbs: pending.txn_header.txn_header.r.limbs.to_vec(),
+            s_limbs: pending.txn_header.txn_header.s.limbs.to_vec(),
+            y_parity: pending.txn_header.txn_header.y_parity,
+            txn_type: pending.txn_header.txn_header.txn_type as u32,
+            chain_id_limbs: pending.txn_header.txn_header.chain_id.limbs.to_vec(),
+            input: pending.data_bytes.to_vec(),
+            access_list,
+        };
 
         Ok(Some(ProcessedEvent {
             block_number: pending.block_number,
-            event_type: event_type.to_string(),
-            firehose_data,
+            event_type: EVENT_TYPE_TX_HEADER.to_string(),
+            firehose_data: msg.encode_to_vec(),
         }))
     }
 
-    /// Process transaction EVM output event (receipt data)
     async fn process_txn_evm_output(
         &self,
         output: monad_exec_events::ffi::monad_exec_txn_evm_output,
@@ -359,27 +291,21 @@ impl EventProcessor {
             block_number, txn_index, output.receipt.status, output.receipt.gas_used
         );
 
-        let event_type = EVENT_TYPE_TX_RECEIPT;
-
-        // Serialize receipt data
-        let receipt_data = serde_json::json!({
-            "txn_index": txn_index,
-            "status": output.receipt.status,
-            "gas_used": output.receipt.gas_used,
-            "log_count": output.receipt.log_count,
-            "call_frame_count": output.call_frame_count,
-        });
-
-        let firehose_data = serde_json::to_vec(&receipt_data)?;
+        let msg = pb::TxReceipt {
+            txn_index: txn_index as u32,
+            status: output.receipt.status,
+            gas_used: output.receipt.gas_used,
+            log_count: output.receipt.log_count,
+            call_frame_count: output.call_frame_count,
+        };
 
         Ok(Some(ProcessedEvent {
             block_number,
-            event_type: event_type.to_string(),
-            firehose_data,
+            event_type: EVENT_TYPE_TX_RECEIPT.to_string(),
+            firehose_data: msg.encode_to_vec(),
         }))
     }
 
-    /// Process transaction access list entry event
     async fn process_txn_access_list_entry(
         &mut self,
         txn_index: usize,
@@ -391,49 +317,37 @@ impl EventProcessor {
             txn_index, txn_access_list_entry.index, txn_access_list_entry.entry.storage_key_count
         );
 
-        // Parse address
-        let address = hex::encode(txn_access_list_entry.entry.address.bytes);
-
-        // Parse storage keys (each is 32 bytes)
         let mut storage_keys = Vec::new();
-        let key_size = 32;
         for i in 0..txn_access_list_entry.entry.storage_key_count as usize {
-            let start = i * key_size;
-            let end = start + key_size;
+            let start = i * 32;
+            let end = start + 32;
             if end <= storage_key_bytes.len() {
-                let key = hex::encode(&storage_key_bytes[start..end]);
-                storage_keys.push(key);
+                storage_keys.push(storage_key_bytes[start..end].to_vec());
             }
         }
 
-        // Create access list entry JSON
-        let entry = serde_json::json!({
-            "address": address,
-            "storage_keys": storage_keys
-        });
+        let entry = pb::AccessListEntry {
+            address: txn_access_list_entry.entry.address.bytes.to_vec(),
+            storage_keys,
+        };
 
-        // Add to pending access list for this transaction
-        self.pending_access_lists
-            .entry(txn_index)
-            .or_default()
-            .push(entry);
-
-        // Try to emit the TX_HEADER if we now have all access list entries
+        self.pending_access_lists.entry(txn_index).or_default().push(entry);
         self.try_emit_txn_header(txn_index)
     }
 
     async fn process_txn_end(&self, block_number: u64) -> Result<Option<ProcessedEvent>> {
         let txn_index = self.current_txn_idx.unwrap_or(0);
         debug!("TxnEnd: block #{}, txn_index={}", block_number, txn_index);
-        let data = serde_json::json!({ "txn_index": txn_index });
+
+        let msg = pb::TxEnd { txn_index: txn_index as u32 };
+
         Ok(Some(ProcessedEvent {
             block_number,
             event_type: EVENT_TYPE_TX_END.to_string(),
-            firehose_data: serde_json::to_vec(&data)?,
+            firehose_data: msg.encode_to_vec(),
         }))
     }
 
-    /// Process transaction log event
     async fn process_txn_log(
         &self,
         log: monad_exec_events::ffi::monad_exec_txn_log,
@@ -447,24 +361,22 @@ impl EventProcessor {
             let start = i * 32;
             let end = start + 32;
             if end <= topic_bytes.len() {
-                topics.push(hex::encode(&topic_bytes[start..end]));
+                topics.push(topic_bytes[start..end].to_vec());
             }
         }
 
-        let log_data = serde_json::json!({
-            "txn_index": txn_index,
-            "log_index": log.index,
-            "address": hex::encode(log.address.bytes),
-            "topics": topics,
-            "data": hex::encode(&*data_bytes),
-        });
-
-        let firehose_data = serde_json::to_vec(&log_data)?;
+        let msg = pb::TxLog {
+            txn_index: txn_index as u32,
+            log_index: log.index,
+            address: log.address.bytes.to_vec(),
+            topics,
+            data: data_bytes.to_vec(),
+        };
 
         Ok(Some(ProcessedEvent {
             block_number,
             event_type: EVENT_TYPE_TX_LOG.to_string(),
-            firehose_data,
+            firehose_data: msg.encode_to_vec(),
         }))
     }
 
@@ -486,7 +398,6 @@ impl EventProcessor {
         Ok(None)
     }
 
-    /// Process transaction call frame event - execution trace data
     async fn process_txn_call_frame(
         &self,
         call_frame: monad_exec_events::ffi::monad_exec_txn_call_frame,
@@ -501,37 +412,31 @@ impl EventProcessor {
                 idx, call_frame.depth, call_frame.opcode, call_frame.gas, call_frame.evmc_status
             );
         } else {
-            let input_hex = hex::encode(&*input_bytes);
-            let target_hex = hex::encode(call_frame.call_target.bytes);
             debug!(
-                "CallFrame (system call): depth={}, opcode={:#x}, gas={}, status={}, target={}, input={}",
-                call_frame.depth, call_frame.opcode, call_frame.gas, call_frame.evmc_status, target_hex, input_hex
+                "CallFrame (system): depth={}, opcode={:#x}, target={}",
+                call_frame.depth, call_frame.opcode, hex::encode(call_frame.call_target.bytes)
             );
         }
 
-        let call_frame_data = serde_json::json!({
-            "txn_index": txn_index,
-            "index": call_frame.index,
-            "caller": hex::encode(call_frame.caller.bytes),
-            "call_target": hex::encode(call_frame.call_target.bytes),
-            "opcode": call_frame.opcode,
-            "value": {
-                "limbs": call_frame.value.limbs.to_vec()
-            },
-            "gas": call_frame.gas,
-            "gas_used": call_frame.gas_used,
-            "evmc_status": call_frame.evmc_status,
-            "depth": call_frame.depth,
-            "input": hex::encode(&*input_bytes),
-            "return_data": hex::encode(&*return_bytes),
-        });
-
-        let firehose_data = serde_json::to_vec(&call_frame_data)?;
+        let msg = pb::TxCallFrame {
+            txn_index: txn_index.map(|i| i as u32),
+            index: call_frame.index,
+            caller: call_frame.caller.bytes.to_vec(),
+            call_target: call_frame.call_target.bytes.to_vec(),
+            opcode: call_frame.opcode as u32,
+            value_limbs: call_frame.value.limbs.to_vec(),
+            gas: call_frame.gas,
+            gas_used: call_frame.gas_used,
+            evmc_status: call_frame.evmc_status,
+            depth: call_frame.depth,
+            input: input_bytes.to_vec(),
+            return_data: return_bytes.to_vec(),
+        };
 
         Ok(Some(ProcessedEvent {
             block_number,
             event_type: EVENT_TYPE_TX_CALL_FRAME.to_string(),
-            firehose_data,
+            firehose_data: msg.encode_to_vec(),
         }))
     }
 
@@ -546,18 +451,16 @@ impl EventProcessor {
             txn_index, header.entry_count, header.access_context
         );
 
-        let header_data = serde_json::json!({
-            "txn_index": txn_index,
-            "entry_count": header.entry_count,
-            "access_context": header.access_context,
-        });
-
-        let firehose_data = serde_json::to_vec(&header_data)?;
+        let msg = pb::AccountAccessListHeader {
+            txn_index: txn_index.map(|i| i as u32),
+            entry_count: header.entry_count,
+            access_context: header.access_context as u32,
+        };
 
         Ok(Some(ProcessedEvent {
             block_number,
             event_type: EVENT_TYPE_ACCOUNT_ACCESS_LIST_HEADER.to_string(),
-            firehose_data,
+            firehose_data: msg.encode_to_vec(),
         }))
     }
 
@@ -568,44 +471,33 @@ impl EventProcessor {
         block_number: u64,
     ) -> Result<Option<ProcessedEvent>> {
         debug!(
-            "AccountAccess: tx {:?}, index={}, addr={}, balance_mod={}, nonce_mod={}, pre_bal_limbs={:?}, mod_bal_limbs={:?}",
+            "AccountAccess: tx {:?}, index={}, addr={}, balance_mod={}, nonce_mod={}",
             txn_index,
             account_access.index,
             hex::encode(&account_access.address.bytes[..8]),
             account_access.is_balance_modified,
             account_access.is_nonce_modified,
-            account_access.prestate.balance.limbs,
-            account_access.modified_balance.limbs,
         );
 
-        let access_data = serde_json::json!({
-            "txn_index": txn_index,
-            "index": account_access.index,
-            "address": hex::encode(account_access.address.bytes),
-            "access_context": account_access.access_context,
-            "is_balance_modified": account_access.is_balance_modified,
-            "is_nonce_modified": account_access.is_nonce_modified,
-            "prestate": {
-                "balance": {
-                    "limbs": account_access.prestate.balance.limbs.to_vec()
-                },
-                "nonce": account_access.prestate.nonce,
-                "code_hash": hex::encode(account_access.prestate.code_hash.bytes),
-            },
-            "modified_balance": {
-                "limbs": account_access.modified_balance.limbs.to_vec()
-            },
-            "modified_nonce": account_access.modified_nonce,
-            "storage_key_count": account_access.storage_key_count,
-            "transient_count": account_access.transient_count,
-        });
-
-        let firehose_data = serde_json::to_vec(&access_data)?;
+        let msg = pb::AccountAccess {
+            txn_index: txn_index.map(|i| i as u32),
+            index: account_access.index,
+            address: account_access.address.bytes.to_vec(),
+            access_context: account_access.access_context as u32,
+            is_balance_modified: account_access.is_balance_modified,
+            is_nonce_modified: account_access.is_nonce_modified,
+            prestate_balance_limbs: account_access.prestate.balance.limbs.to_vec(),
+            prestate_nonce: account_access.prestate.nonce,
+            prestate_code_hash: account_access.prestate.code_hash.bytes.to_vec(),
+            modified_balance_limbs: account_access.modified_balance.limbs.to_vec(),
+            modified_nonce: account_access.modified_nonce,
+            storage_key_count: account_access.storage_key_count,
+        };
 
         Ok(Some(ProcessedEvent {
             block_number,
             event_type: EVENT_TYPE_ACCOUNT_ACCESS.to_string(),
-            firehose_data,
+            firehose_data: msg.encode_to_vec(),
         }))
     }
 
@@ -625,25 +517,23 @@ impl EventProcessor {
             storage_access.transient
         );
 
-        let storage_data = serde_json::json!({
-            "txn_index": txn_index,
-            "account_index": account_index,
-            "address": hex::encode(storage_access.address.bytes),
-            "access_context": storage_access.access_context,
-            "index": storage_access.index,
-            "modified": storage_access.modified,
-            "transient": storage_access.transient,
-            "key": hex::encode(storage_access.key.bytes),
-            "start_value": hex::encode(storage_access.start_value.bytes),
-            "end_value": hex::encode(storage_access.end_value.bytes),
-        });
-
-        let firehose_data = serde_json::to_vec(&storage_data)?;
+        let msg = pb::StorageAccess {
+            txn_index: txn_index.map(|i| i as u32),
+            account_index: account_index as u32,
+            address: storage_access.address.bytes.to_vec(),
+            access_context: storage_access.access_context as u32,
+            index: storage_access.index,
+            modified: storage_access.modified,
+            transient: storage_access.transient,
+            key: storage_access.key.bytes.to_vec(),
+            start_value: storage_access.start_value.bytes.to_vec(),
+            end_value: storage_access.end_value.bytes.to_vec(),
+        };
 
         Ok(Some(ProcessedEvent {
             block_number,
             event_type: EVENT_TYPE_STORAGE_ACCESS.to_string(),
-            firehose_data,
+            firehose_data: msg.encode_to_vec(),
         }))
     }
 }

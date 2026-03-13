@@ -2,7 +2,8 @@ use crate::{Block, BlockHeader, ProcessedEvent, TransactionTrace};
 use firehose::pb::sf::ethereum::r#type::v2::{block, BigInt, AccessTuple, CodeChange};
 use alloy_primitives::{Bloom, BloomInput, keccak256};
 use eyre::Result;
-use serde_json;
+use monad_plugin::pb::sf::monad::events::v1 as pb;
+use prost::Message;
 use tracing::debug;
 
 // Constants for Monad-specific values
@@ -18,41 +19,11 @@ fn encode_v_bytes(v_value: u64) -> Vec<u8> {
     bytes
 }
 
-fn parse_u256_limbs_raw(json: &serde_json::Value, field: &str) -> Vec<u64> {
-    json[field]["limbs"]
-        .as_array()
-        .map(|arr| arr.iter().map(|v| v.as_u64().unwrap_or(0)).collect())
-        .unwrap_or_else(|| vec![0u64; 4])
-}
-
-fn parse_u256_limbs(json: &serde_json::Value, field: &str) -> Vec<u8> {
-    u256_limbs_to_bytes(&parse_u256_limbs_raw(json, field))
-}
-
-fn parse_hex_field(json: &serde_json::Value, field: &str) -> Vec<u8> {
-    hex::decode(json[field].as_str().unwrap_or("")).unwrap_or_default()
-}
-
-fn parse_access_list(tx_data: &serde_json::Value) -> Vec<AccessTuple> {
-    tx_data.get("access_list")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter().filter_map(|entry| {
-                let address = entry.get("address")?.as_str()?;
-                let storage_keys = entry.get("storage_keys")?.as_array()?;
-
-                let address_bytes = hex::decode(address.trim_start_matches("0x")).ok()?;
-                let storage_keys_bytes = storage_keys.iter()
-                    .filter_map(|k| k.as_str().and_then(|s| hex::decode(s.trim_start_matches("0x")).ok()))
-                    .collect();
-
-                Some(AccessTuple {
-                    address: address_bytes,
-                    storage_keys: storage_keys_bytes,
-                })
-            }).collect()
-        })
-        .unwrap_or_default()
+fn pb_access_list_to_tuples(entries: Vec<pb::AccessListEntry>) -> Vec<AccessTuple> {
+    entries.into_iter().map(|e| AccessTuple {
+        address: e.address,
+        storage_keys: e.storage_keys,
+    }).collect()
 }
 
 /// Convert U256 limbs (4x u64 in little-endian) to big-endian bytes with leading zero compaction
@@ -371,51 +342,21 @@ impl BlockBuilder {
     async fn handle_block_start(&mut self, event: ProcessedEvent) -> Result<()> {
         debug!("Handling block start for block {}", event.block_number);
 
-        let block_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
+        let msg = pb::BlockStart::decode(&*event.firehose_data)?;
 
-        // Extract all header fields
-        if let Some(parent_hash) = block_data["parent_hash"].as_str() {
-            debug!("BLOCK_START parent_hash for block {}: {}", event.block_number, parent_hash);
-            self.parent_hash = ensure_hash_bytes(hex::decode(parent_hash).unwrap_or_default());
-        } else {
-            debug!("BLOCK_START has no parent_hash field for block {}", event.block_number);
-        }
-        if let Some(uncle_hash) = block_data["uncle_hash"].as_str() {
-            self.uncle_hash = ensure_hash_bytes(hex::decode(uncle_hash).unwrap_or_default());
-        }
-        if let Some(coinbase) = block_data["coinbase"].as_str() {
-            self.coinbase = ensure_address_bytes(hex::decode(coinbase).unwrap_or_default());
-        }
-        if let Some(transactions_root) = block_data["transactions_root"].as_str() {
-            self.transactions_root = ensure_hash_bytes(hex::decode(transactions_root).unwrap_or_default());
-        }
-        if let Some(difficulty) = block_data["difficulty"].as_u64() {
-            self.difficulty = difficulty;
-        }
-        if let Some(gas_limit) = block_data["gas_limit"].as_u64() {
-            self.gas_limit = gas_limit;
-        }
-        if let Some(timestamp) = block_data["timestamp"].as_u64() {
-            self.timestamp = timestamp;
-        }
-        if let Some(extra_data) = block_data["extra_data"].as_str() {
-            self.extra_data = hex::decode(extra_data).unwrap_or_default();
-        }
-        if let Some(mix_hash) = block_data["mix_hash"].as_str() {
-            self.mix_hash = ensure_hash_bytes(hex::decode(mix_hash).unwrap_or_default());
-        }
-        if let Some(nonce) = block_data["nonce"].as_u64() {
-            self.nonce = nonce;
-        }
-        if let Some(base_fee_limbs) = block_data["base_fee_per_gas"]["limbs"].as_array() {
-            self.base_fee_per_gas = base_fee_limbs
-                .iter()
-                .map(|v| v.as_u64().unwrap_or(0))
-                .collect();
-        }
-        if let Some(withdrawals_root) = block_data["withdrawals_root"].as_str() {
-            self.withdrawals_root = ensure_hash_bytes(hex::decode(withdrawals_root).unwrap_or_default());
-        }
+        debug!("BLOCK_START parent_hash for block {}: {}", event.block_number, hex::encode(&msg.parent_hash));
+        self.parent_hash = ensure_hash_bytes(msg.parent_hash);
+        self.uncle_hash = ensure_hash_bytes(msg.uncle_hash);
+        self.coinbase = ensure_address_bytes(msg.coinbase);
+        self.transactions_root = ensure_hash_bytes(msg.transactions_root);
+        self.difficulty = msg.difficulty;
+        self.gas_limit = msg.gas_limit;
+        self.timestamp = msg.timestamp;
+        self.extra_data = msg.extra_data;
+        self.mix_hash = ensure_hash_bytes(msg.mix_hash);
+        self.nonce = msg.nonce;
+        self.base_fee_per_gas = msg.base_fee_per_gas_limbs;
+        self.withdrawals_root = ensure_hash_bytes(msg.withdrawals_root);
 
         Ok(())
     }
@@ -423,26 +364,14 @@ impl BlockBuilder {
     async fn handle_block_end(&mut self, event: ProcessedEvent) -> Result<()> {
         debug!("Handling block end for block {}", event.block_number);
 
-        let block_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
+        let msg = pb::BlockEnd::decode(&*event.firehose_data)?;
 
-        if let Some(hash) = block_data["hash"].as_str() {
-            debug!("BLOCK_END hash for block {}: {}", event.block_number, hash);
-            self.block_hash = ensure_hash_bytes(hex::decode(hash).unwrap_or_default());
-        } else {
-            debug!("BLOCK_END has no hash field for block {}", event.block_number);
-        }
-        if let Some(state_root) = block_data["state_root"].as_str() {
-            self.state_root = ensure_hash_bytes(hex::decode(state_root).unwrap_or_default());
-        }
-        if let Some(receipts_root) = block_data["receipts_root"].as_str() {
-            self.receipts_root = ensure_hash_bytes(hex::decode(receipts_root).unwrap_or_default());
-        }
-        if let Some(logs_bloom) = block_data["logs_bloom"].as_str() {
-            self.logs_bloom = hex::decode(logs_bloom).unwrap_or_else(|_| vec![0u8; 256]);
-        }
-        if let Some(gas_used) = block_data["gas_used"].as_u64() {
-            self.gas_used = gas_used;
-        }
+        debug!("BLOCK_END hash for block {}: {}", event.block_number, hex::encode(&msg.hash));
+        self.block_hash = ensure_hash_bytes(msg.hash);
+        self.state_root = ensure_hash_bytes(msg.state_root);
+        self.receipts_root = ensure_hash_bytes(msg.receipts_root);
+        self.logs_bloom = if msg.logs_bloom.is_empty() { vec![0u8; 256] } else { msg.logs_bloom };
+        self.gas_used = msg.gas_used;
 
         // Monad's RPC always returns 0x30f (783) for block size its not actually calculated per block
         self.size = MONAD_BLOCK_SIZE;
@@ -454,33 +383,30 @@ impl BlockBuilder {
     async fn handle_transaction_header(&mut self, event: ProcessedEvent) -> Result<()> {
         debug!("Handling transaction header");
 
-        let tx_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
+        let msg = pb::TxHeader::decode(&*event.firehose_data)?;
 
-        let txn_index = tx_data["txn_index"].as_u64().unwrap_or(0) as usize;
+        let txn_index = msg.txn_index as usize;
+        let txn_type = msg.txn_type;
 
-        let access_list_entries = parse_access_list(&tx_data);
-        let hash = ensure_hash_bytes(parse_hex_field(&tx_data, "hash"));
-        let from = ensure_address_bytes(parse_hex_field(&tx_data, "from"));
-        let to = match tx_data["to"].as_str() {
-            Some(s) if !s.is_empty() => ensure_address_bytes(hex::decode(s).unwrap_or_default()),
-            _ => vec![],
-        };
-        let nonce = tx_data["nonce"].as_u64().unwrap_or(0);
-        let gas_limit = tx_data["gas_limit"].as_u64().unwrap_or(0);
-        let input = parse_hex_field(&tx_data, "input");
-        let txn_type = tx_data["txn_type"].as_u64().unwrap_or(2) as u32;
+        let access_list_entries = pb_access_list_to_tuples(msg.access_list);
+        let hash = ensure_hash_bytes(msg.hash);
+        let from = ensure_address_bytes(msg.from);
+        let to = if msg.to.is_empty() { vec![] } else { ensure_address_bytes(msg.to) };
+        let nonce = msg.nonce;
+        let gas_limit = msg.gas_limit;
+        let input = msg.input;
 
-        let value = parse_u256_limbs(&tx_data, "value");
-        let max_fee_limbs = parse_u256_limbs_raw(&tx_data, "max_fee_per_gas");
-        let max_priority_fee_limbs = parse_u256_limbs_raw(&tx_data, "max_priority_fee_per_gas");
+        let value = u256_limbs_to_bytes(&msg.value_limbs);
+        let max_fee_limbs = msg.max_fee_per_gas_limbs;
+        let max_priority_fee_limbs = msg.max_priority_fee_per_gas_limbs;
 
         let gas_price = self.calculate_effective_gas_price(&max_fee_limbs, &max_priority_fee_limbs, txn_type);
 
-        let r = parse_u256_limbs(&tx_data, "r");
-        let s = parse_u256_limbs(&tx_data, "s");
-        let chain_id = parse_u256_limbs_raw(&tx_data, "chain_id")[0];
+        let r = u256_limbs_to_bytes(&msg.r_limbs);
+        let s = u256_limbs_to_bytes(&msg.s_limbs);
+        let chain_id = msg.chain_id_limbs.first().copied().unwrap_or(0);
 
-        let y_parity = tx_data["y_parity"].as_bool().unwrap_or(false);
+        let y_parity = msg.y_parity;
 
         // Calculate proper v based on transaction type
         let v = match txn_type {
@@ -547,11 +473,11 @@ impl BlockBuilder {
     async fn handle_transaction_receipt(&mut self, event: ProcessedEvent) -> Result<()> {
         debug!("Handling transaction receipt");
 
-        let receipt_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
+        let msg = pb::TxReceipt::decode(&*event.firehose_data)?;
 
-        let txn_index = receipt_data["txn_index"].as_u64().unwrap_or(0) as usize;
-        let status = receipt_data["status"].as_bool().unwrap_or(false);
-        let gas_used = receipt_data["gas_used"].as_u64().unwrap_or(0);
+        let txn_index = msg.txn_index as usize;
+        let status = msg.status;
+        let gas_used = msg.gas_used;
 
         self.cumulative_gas_used += gas_used;
 
@@ -574,19 +500,12 @@ impl BlockBuilder {
     async fn handle_transaction_log(&mut self, event: ProcessedEvent) -> Result<()> {
         debug!("Handling transaction log");
 
-        let log_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
+        let msg = pb::TxLog::decode(&*event.firehose_data)?;
 
-        let txn_index = log_data["txn_index"].as_u64().unwrap_or(0) as usize;
-        let address = ensure_address_bytes(hex::decode(log_data["address"].as_str().unwrap_or("")).unwrap_or_default());
-        let topics = log_data["topics"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| hex::decode(v.as_str().unwrap_or("")).ok().map(ensure_hash_bytes))
-                    .collect::<Vec<Vec<u8>>>()
-            })
-            .unwrap_or_default();
-        let data = hex::decode(log_data["data"].as_str().unwrap_or("")).unwrap_or_default();
+        let txn_index = msg.txn_index as usize;
+        let address = ensure_address_bytes(msg.address);
+        let topics: Vec<Vec<u8>> = msg.topics.into_iter().map(ensure_hash_bytes).collect();
+        let data = msg.data;
 
         // This counter tracks all logs across all transactions in the block
         let log_index = self.total_log_count as u32;
@@ -614,40 +533,30 @@ impl BlockBuilder {
     async fn handle_call_frame(&mut self, event: ProcessedEvent) -> Result<()> {
         debug!("Handling call frame");
 
-        let call_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
+        let msg = pb::TxCallFrame::decode(&*event.firehose_data)?;
 
-        let value_limbs = call_data["value"]["limbs"]
-            .as_array()
-            .map(|arr| arr.iter().map(|v| v.as_u64().unwrap_or(0)).collect::<Vec<u64>>())
-            .unwrap_or_else(|| vec![0u64; 4]);
-
-        // Debug log for system calls
-        if call_data["txn_index"].is_null() {
-            debug!("System call frame raw data - input field: {:?}", call_data["input"]);
-            debug!("System call frame raw data - call_target: {:?}", call_data["call_target"]);
+        if msg.txn_index.is_none() {
+            debug!("System call frame raw data - input: {} bytes, call_target: {}", msg.input.len(), hex::encode(&msg.call_target));
         }
 
         let call_frame = CallFrameData {
-            index: call_data["index"].as_u64().unwrap_or(0) as u32,
-            caller: hex::decode(call_data["caller"].as_str().unwrap_or("")).unwrap_or_default(),
-            call_target: hex::decode(call_data["call_target"].as_str().unwrap_or("")).unwrap_or_default(),
-            opcode: call_data["opcode"].as_u64().unwrap_or(0) as u8,
-            value: u256_limbs_to_bytes(&value_limbs),
-            gas: call_data["gas"].as_u64().unwrap_or(0),
-            gas_used: call_data["gas_used"].as_u64().unwrap_or(0),
-            evmc_status: call_data["evmc_status"].as_i64().unwrap_or(0) as i32,
-            depth: call_data["depth"].as_u64().unwrap_or(0),
-            input: hex::decode(call_data["input"].as_str().unwrap_or("")).unwrap_or_default(),
-            return_data: hex::decode(call_data["return_data"].as_str().unwrap_or("")).unwrap_or_default(),
+            index: msg.index,
+            caller: msg.caller,
+            call_target: msg.call_target,
+            opcode: msg.opcode as u8,
+            value: u256_limbs_to_bytes(&msg.value_limbs),
+            gas: msg.gas,
+            gas_used: msg.gas_used,
+            evmc_status: msg.evmc_status,
+            depth: msg.depth,
+            input: msg.input,
+            return_data: msg.return_data,
         };
 
         // Check if this is a system call (BLOCK_PROLOGUE) by checking if txn_index is present
-        // System calls from our C++ changes are block-level events without a txn_index
-        if let Some(txn_index) = call_data["txn_index"].as_u64() {
-            // Regular transaction call frame
+        if let Some(txn_index) = msg.txn_index {
             self.call_frames.entry(txn_index as usize).or_default().push(call_frame);
         } else {
-            // System call frame (BLOCK_PROLOGUE) - store separately
             debug!("BLOCK_PROLOGUE call frame detected for address: {}", hex::encode(&call_frame.call_target));
             self.system_calls_call_frames.push(call_frame);
         }
@@ -657,8 +566,8 @@ impl BlockBuilder {
 
     /// Handle TX_END event, build call tree so account/storage accesses can push to calls[0]
     async fn handle_tx_end(&mut self, event: ProcessedEvent) -> Result<()> {
-        let tx_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
-        let txn_index = tx_data["txn_index"].as_u64().unwrap_or(0) as usize;
+        let msg = pb::TxEnd::decode(&*event.firehose_data)?;
+        let txn_index = msg.txn_index as usize;
 
         debug!("TX_END: building call tree eagerly for tx #{}", txn_index);
 
@@ -743,64 +652,30 @@ impl BlockBuilder {
     async fn handle_account_access(&mut self, event: ProcessedEvent) -> Result<()> {
         debug!("Handling account access");
 
-        let access_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
+        let msg = pb::AccountAccess::decode(&*event.firehose_data)?;
 
-        // DEBUG: Log raw account access data
-        debug!("Raw account access data: {}", serde_json::to_string_pretty(&access_data).unwrap_or_default());
+        let txn_index = msg.txn_index.map(|i| i as usize).unwrap_or(0);
 
-        // txn_index is Option<usize> from the event
-        // If None, these are block-level changes (associate with transaction 0)
-        let txn_index = access_data["txn_index"].as_u64().map(|i| i as usize).unwrap_or(0);
+        let prestate_balance_bytes = u256_limbs_to_bytes(&msg.prestate_balance_limbs);
+        let modified_balance_bytes = u256_limbs_to_bytes(&msg.modified_balance_limbs);
 
-        let prestate_balance_limbs = access_data["prestate"]["balance"]["limbs"]
-            .as_array()
-            .map(|arr| arr.iter().map(|v| v.as_u64().unwrap_or(0)).collect::<Vec<u64>>())
-            .unwrap_or_else(|| vec![0u64; 4]);
-
-        let modified_balance_limbs = access_data["modified_balance"]["limbs"]
-            .as_array()
-            .map(|arr| arr.iter().map(|v| v.as_u64().unwrap_or(0)).collect::<Vec<u64>>())
-            .unwrap_or_else(|| vec![0u64; 4]);
-
-        debug!("Parsed balance limbs - prestate: {:?}, modified: {:?}", prestate_balance_limbs, modified_balance_limbs);
-
-        let prestate_balance_bytes = u256_limbs_to_bytes(&prestate_balance_limbs);
-        let modified_balance_bytes = u256_limbs_to_bytes(&modified_balance_limbs);
-
-        debug!("Balance bytes - prestate: {} bytes, modified: {} bytes",
-               prestate_balance_bytes.len(), modified_balance_bytes.len());
-        if !prestate_balance_bytes.is_empty() {
-            debug!("  prestate hex: {}", hex::encode(&prestate_balance_bytes));
-        }
-        if !modified_balance_bytes.is_empty() {
-            debug!("  modified hex: {}", hex::encode(&modified_balance_bytes));
-        }
-
-        let prestate_code_hash = hex::decode(
-            access_data["prestate"]["code_hash"].as_str().unwrap_or("")
-        ).unwrap_or_default();
+        debug!("Balance bytes - prestate: {} bytes ({}), modified: {} bytes ({})",
+               prestate_balance_bytes.len(), hex::encode(&prestate_balance_bytes),
+               modified_balance_bytes.len(), hex::encode(&modified_balance_bytes));
 
         let account_access = AccountAccessData {
-            // index: access_data["index"].as_u64().unwrap_or(0) as u32,
-            address: hex::decode(access_data["address"].as_str().unwrap_or("")).unwrap_or_default(),
-            access_context: access_data["access_context"].as_u64().unwrap_or(1) as u8,
-            is_balance_modified: access_data["is_balance_modified"].as_bool().unwrap_or(false),
-            is_nonce_modified: access_data["is_nonce_modified"].as_bool().unwrap_or(false),
+            address: msg.address,
+            access_context: msg.access_context as u8,
+            is_balance_modified: msg.is_balance_modified,
+            is_nonce_modified: msg.is_nonce_modified,
             prestate_balance: prestate_balance_bytes,
-            prestate_nonce: access_data["prestate"]["nonce"].as_u64().unwrap_or(0),
-            prestate_code_hash,
+            prestate_nonce: msg.prestate_nonce,
+            prestate_code_hash: msg.prestate_code_hash,
             modified_balance: modified_balance_bytes,
-            modified_nonce: access_data["modified_nonce"].as_u64().unwrap_or(0),
-            // storage_key_count: access_data["storage_key_count"].as_u64().unwrap_or(0) as u32,
+            modified_nonce: msg.modified_nonce,
         };
 
-        debug!("ACCOUNT_ACCESS_CREATED: addr={} ctx={} bal_mod={} prestate_bal_hex={} modified_bal_hex={}",
-               hex::encode(&account_access.address),
-               account_access.access_context,
-               account_access.is_balance_modified,
-               hex::encode(&account_access.prestate_balance),
-               hex::encode(&account_access.modified_balance));
-        debug!("Created AccountAccessData - address: {}, access_context: {}, balance_modified: {}, nonce_modified: {}",
+        debug!("ACCOUNT_ACCESS_CREATED: addr={} ctx={} bal_mod={} nonce_mod={}",
                hex::encode(&account_access.address),
                account_access.access_context,
                account_access.is_balance_modified,
@@ -851,21 +726,19 @@ impl BlockBuilder {
     async fn handle_storage_access(&mut self, event: ProcessedEvent) -> Result<()> {
         debug!("Handling storage access");
 
-        let storage_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
+        let msg = pb::StorageAccess::decode(&*event.firehose_data)?;
 
-        // txn_index is Option<usize> from the event
-        // If None, these are block-level changes (associate with transaction 0)
-        let txn_index = storage_data["txn_index"].as_u64().map(|i| i as usize).unwrap_or(0);
+        let txn_index = msg.txn_index.map(|i| i as usize).unwrap_or(0);
         // access_context: 0=BLOCK_PROLOGUE, 1=TRANSACTION, 2=BLOCK_EPILOGUE
-        let access_context = storage_data["access_context"].as_u64().unwrap_or(1) as u8;
+        let access_context = msg.access_context as u8;
 
         let storage_access = StorageAccessData {
-            address: hex::decode(storage_data["address"].as_str().unwrap_or("")).unwrap_or_default(),
-            modified: storage_data["modified"].as_bool().unwrap_or(false),
-            transient: storage_data["transient"].as_bool().unwrap_or(false),
-            key: hex::decode(storage_data["key"].as_str().unwrap_or("")).unwrap_or_default(),
-            start_value: hex::decode(storage_data["start_value"].as_str().unwrap_or("")).unwrap_or_default(),
-            end_value: hex::decode(storage_data["end_value"].as_str().unwrap_or("")).unwrap_or_default(),
+            address: msg.address,
+            modified: msg.modified,
+            transient: msg.transient,
+            key: msg.key,
+            start_value: msg.start_value,
+            end_value: msg.end_value,
         };
 
         // BLOCK_PROLOGUE (context = 0) storage accesses are system call related
