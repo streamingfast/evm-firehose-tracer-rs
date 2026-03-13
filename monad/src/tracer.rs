@@ -64,8 +64,8 @@ impl FirehoseTracer {
 
         info!("Tracer started, processing events...");
 
-        while let Some((seqno, event)) = event_stream.next().await {
-            if let Err(e) = self.process_event(seqno, event).await {
+        while let Some((_seqno, event)) = event_stream.next().await {
+            if let Err(e) = self.process_event(event).await {
                 error!("Failed to process event: {}", e);
                 if !self.config.debug {
                     continue;
@@ -82,15 +82,20 @@ impl FirehoseTracer {
         Ok(())
     }
 
-    async fn process_event(&mut self, seqno: u64, event: ExecEvent) -> Result<()> {
+    async fn process_event(&mut self, event: ExecEvent) -> Result<()> {
         if self.config.no_op {
-            info!("NO-OP: seqno={}", seqno);
+            let block_num = if let ExecEvent::BlockStart(ref bs) = event {
+                bs.eth_block_input.number
+            } else {
+                self.current_head
+            };
+            info!("NO-OP: block={}", block_num);
             return Ok(());
         }
 
         let start = Instant::now();
 
-        if let Some(block) = self.event_mapper.process_event(seqno, event).await? {
+        if let Some(block) = self.event_mapper.process_event(event).await? {
             let elapsed = start.elapsed();
 
             // Update HEAD block number

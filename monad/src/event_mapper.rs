@@ -1324,8 +1324,7 @@ impl EventMapper {
     }
 
     /// Process a raw event and potentially return a completed block.
-    /// `seqno` is used to determine block number for events that don't carry it explicitly.
-    pub async fn process_event(&mut self, seqno: u64, event: ExecEvent) -> Result<Option<Box<Block>>> {
+    pub async fn process_event(&mut self, event: ExecEvent) -> Result<Option<Box<Block>>> {
         // Determine block number from BlockStart events; otherwise use current
         let block_num = if let ExecEvent::BlockStart(ref bs) = event {
             let num = bs.eth_block_input.number;
@@ -1337,7 +1336,7 @@ impl EventMapper {
 
         let is_block_end = matches!(event, ExecEvent::BlockEnd(_));
 
-        debug!("Processing event seqno={} block={}", seqno, block_num);
+        debug!("Processing event block={}", block_num);
 
         let builder = self.blocks.entry(block_num).or_insert_with(|| BlockBuilder::new(block_num));
         builder.add_event(event)?;
