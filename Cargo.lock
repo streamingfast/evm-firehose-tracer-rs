@@ -1741,21 +1741,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "monad-plugin"
-version = "0.1.0"
-dependencies = [
- "eyre",
- "hex",
- "monad-event-ring",
- "monad-exec-events",
- "prost",
- "serde_json",
- "tokio",
- "tokio-stream",
- "tracing",
-]
-
-[[package]]
 name = "monad-tracer"
 version = "0.1.0"
 dependencies = [
@@ -1770,7 +1755,6 @@ dependencies = [
  "hex",
  "monad-event-ring",
  "monad-exec-events",
- "monad-plugin",
  "prost",
  "prost-types",
  "serde",

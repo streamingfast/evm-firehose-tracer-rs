@@ -1,10 +1,11 @@
 //! Main Firehose tracer implementation
 
-use crate::{EventMapper, MonadConsumer, ProcessedEvent, TracerConfig};
+use crate::{EventMapper, MonadConsumer, TracerConfig};
 use eyre::Result;
 use firehose::{FinalityStatus, PROTOCOL_VERSION};
 use firehose::printer::{print_block_to_firehose, print_to_firehose};
 use futures_util::StreamExt;
+use monad_exec_events::ExecEvent;
 use std::io::stdout;
 use std::time::Instant;
 use tracing::{error, info, warn};
@@ -17,19 +18,15 @@ pub struct FirehoseTracer {
     event_mapper: EventMapper,
     finality: FinalityStatus,
     consumer: Option<MonadConsumer>,
-    /// Current HEAD block number for LIB calculation
     current_head: u64,
     lib_delta: u64,
 }
 
 impl FirehoseTracer {
-    /// Create a new Firehose tracer
     pub fn new(config: TracerConfig) -> Self {
-        let event_mapper = EventMapper::new();
-
         Self {
             config,
-            event_mapper,
+            event_mapper: EventMapper::new(),
             finality: FinalityStatus::default(),
             consumer: None,
             current_head: 0,
@@ -37,25 +34,18 @@ impl FirehoseTracer {
         }
     }
 
-    /// Set the Monad consumer
     pub fn with_consumer(mut self, consumer: MonadConsumer) -> Self {
         self.consumer = Some(consumer);
         self
     }
 
-    /// Get the tracer configuration
     pub fn config(&self) -> &TracerConfig {
         &self.config
     }
 
-    /// Start the tracer
     pub async fn start(&mut self) -> Result<()> {
-        info!(
-            "Starting Firehose tracer for network: {}",
-            self.config.network_name
-        );
+        info!("Starting Firehose tracer for network: {}", self.config.network_name);
 
-        // Print the FIRE INIT message
         print_to_firehose(
             &mut stdout(),
             "FIRE INIT",
@@ -65,20 +55,17 @@ impl FirehoseTracer {
         );
         info!("Printed FIRE INIT message");
 
-        // Get the consumer
         let consumer = self
             .consumer
             .take()
             .ok_or_else(|| eyre::eyre!("No consumer configured"))?;
 
-        // Start consuming events
         let mut event_stream = consumer.start_consuming().await?;
 
         info!("Tracer started, processing events...");
 
-        // Main event processing loop
-        while let Some(event) = event_stream.next().await {
-            if let Err(e) = self.process_event(event).await {
+        while let Some((seqno, event)) = event_stream.next().await {
+            if let Err(e) = self.process_event(seqno, event).await {
                 error!("Failed to process event: {}", e);
                 if !self.config.debug {
                     continue;
@@ -88,7 +75,6 @@ impl FirehoseTracer {
 
         warn!("Event stream ended");
 
-        // Finalize any pending block
         if let Some(block) = self.event_mapper.finalize_pending()? {
             print_block_to_firehose(&mut stdout(), *block, &self.finality);
         }
@@ -96,18 +82,15 @@ impl FirehoseTracer {
         Ok(())
     }
 
-    /// Process a single event
-    async fn process_event(&mut self, event: ProcessedEvent) -> Result<()> {
-        // If no-op mode is enabled, only log the block number and skip processing
+    async fn process_event(&mut self, seqno: u64, event: ExecEvent) -> Result<()> {
         if self.config.no_op {
-            info!("NO-OP: Seen block {}", event.block_number);
+            info!("NO-OP: seqno={}", seqno);
             return Ok(());
         }
 
         let start = Instant::now();
 
-        // Process the event through the mapper
-        if let Some(block) = self.event_mapper.process_event(event).await? {
+        if let Some(block) = self.event_mapper.process_event(seqno, event).await? {
             let elapsed = start.elapsed();
 
             // Update HEAD block number
