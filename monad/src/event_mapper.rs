@@ -146,10 +146,14 @@ struct PendingTxnHeader {
     expected_access_list_count: u32,
 }
 
-// Per-tx live state; pending_calls moves into trace.calls at TxnEnd
+// Per-tx live state, pending_* fields are flushed into trace.calls at TxnEnd
 struct TxState {
     trace: TransactionTrace,
     pending_calls: Vec<firehose::pb::sf::ethereum::r#type::v2::Call>,
+    // Buffered state changes, applied to root call at TxnEnd
+    pending_balance_changes: Vec<firehose::pb::sf::ethereum::r#type::v2::BalanceChange>,
+    pending_nonce_changes: Vec<firehose::pb::sf::ethereum::r#type::v2::NonceChange>,
+    pending_storage_changes: Vec<firehose::pb::sf::ethereum::r#type::v2::StorageChange>,
 }
 
 struct BlockBuilder {
@@ -176,8 +180,11 @@ struct BlockBuilder {
     total_log_count: usize,
     next_ordinal: u64,
     txns: std::collections::HashMap<usize, TxState>,
-    // System calls span the whole block, assembled at BlockEnd
+    // System call frames (txn_index=None)
     system_calls_calls: Vec<firehose::pb::sf::ethereum::r#type::v2::Call>,
+    // System account/storage accesses buffered as raw data, applied to system_calls at finalize
+    system_calls_account_accesses: Vec<(Vec<u8>, bool, Vec<u8>, Vec<u8>, bool, u64, u64)>,
+    system_calls_storage_accesses: Vec<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)>,
     // TxnHeaderStart arrives before TxnAccessListEntry
     pending_txn_headers: std::collections::HashMap<usize, PendingTxnHeader>,
     pending_access_lists: std::collections::HashMap<usize, Vec<AccessTuple>>,
@@ -213,6 +220,8 @@ impl BlockBuilder {
             next_ordinal: 0,
             txns: std::collections::HashMap::new(),
             system_calls_calls: Vec::new(),
+            system_calls_account_accesses: Vec::new(),
+            system_calls_storage_accesses: Vec::new(),
             pending_txn_headers: std::collections::HashMap::new(),
             pending_access_lists: std::collections::HashMap::new(),
             current_txn_idx: None,
@@ -449,6 +458,9 @@ impl BlockBuilder {
         self.txns.insert(txn_index, TxState {
             trace,
             pending_calls: Vec::new(),
+            pending_balance_changes: Vec::new(),
+            pending_nonce_changes: Vec::new(),
+            pending_storage_changes: Vec::new(),
         });
         Ok(())
     }
@@ -701,6 +713,15 @@ impl BlockBuilder {
             }
         }
 
+        // Flush pending state changes onto root call
+        if !tx.pending_balance_changes.is_empty() || !tx.pending_nonce_changes.is_empty() || !tx.pending_storage_changes.is_empty() {
+            if let Some(root_call) = tx.trace.calls.first_mut() {
+                root_call.balance_changes.extend(std::mem::take(&mut tx.pending_balance_changes));
+                root_call.nonce_changes.extend(std::mem::take(&mut tx.pending_nonce_changes));
+                root_call.storage_changes.extend(std::mem::take(&mut tx.pending_storage_changes));
+            }
+        }
+
         if let Some(root_call) = tx.trace.calls.first() {
             use firehose::pb::sf::ethereum::r#type::v2::TransactionTraceStatus;
             if tx.trace.status != TransactionTraceStatus::Succeeded as i32 {
@@ -733,10 +754,16 @@ impl BlockBuilder {
                account_access.is_balance_modified, account_access.is_nonce_modified);
 
         if account_access.access_context as u8 == 0 {
-            // BLOCK_PROLOGUE — push onto matching system call entry
-            self.buffer_system_account_access(address, prestate_balance, modified_balance,
-                account_access.is_balance_modified, account_access.is_nonce_modified,
-                account_access.prestate.nonce, account_access.modified_nonce);
+            // BLOCK_PROLOGUE — buffer for finalize
+            self.system_calls_account_accesses.push((
+                address,
+                account_access.is_balance_modified,
+                prestate_balance,
+                modified_balance,
+                account_access.is_nonce_modified,
+                account_access.prestate.nonce,
+                account_access.modified_nonce,
+            ));
             return Ok(());
         }
 
@@ -761,6 +788,25 @@ impl BlockBuilder {
                         ordinal: 0,
                     });
                 }
+            } else {
+                // Call tree not built yet, buffer until TxnEnd
+                if account_access.is_balance_modified {
+                    tx.pending_balance_changes.push(BalanceChange {
+                        address: address.clone(),
+                        old_value: Some(PbBigInt { bytes: prestate_balance }),
+                        new_value: Some(PbBigInt { bytes: modified_balance }),
+                        reason: BalanceReason::MonadTxPostState as i32,
+                        ordinal: 0,
+                    });
+                }
+                if account_access.is_nonce_modified {
+                    tx.pending_nonce_changes.push(NonceChange {
+                        address,
+                        old_value: account_access.prestate.nonce,
+                        new_value: account_access.modified_nonce,
+                        ordinal: 0,
+                    });
+                }
             }
         }
 
@@ -778,15 +824,14 @@ impl BlockBuilder {
         let address = ensure_address_bytes(storage_access.address.bytes.to_vec());
 
         if access_context == 0 {
-            // System call storage — buffer for finalize
-            self.buffer_system_storage_access(
-                address,
-                storage_access.modified,
-                storage_access.transient,
-                storage_access.key.bytes.to_vec(),
-                storage_access.start_value.bytes.to_vec(),
-                storage_access.end_value.bytes.to_vec(),
-            );
+            if storage_access.modified && !storage_access.transient {
+                self.system_calls_storage_accesses.push((
+                    address,
+                    storage_access.key.bytes.to_vec(),
+                    storage_access.start_value.bytes.to_vec(),
+                    storage_access.end_value.bytes.to_vec(),
+                ));
+            }
             return Ok(());
         }
 
@@ -797,80 +842,21 @@ impl BlockBuilder {
         let txn_index = txn_index.unwrap_or(0);
 
         if let Some(tx) = self.txns.get_mut(&txn_index) {
+            let change = StorageChange {
+                address,
+                key: ensure_hash_bytes(storage_access.key.bytes.to_vec()),
+                old_value: ensure_hash_bytes(storage_access.start_value.bytes.to_vec()),
+                new_value: ensure_hash_bytes(storage_access.end_value.bytes.to_vec()),
+                ordinal: 0,
+            };
             if let Some(root_call) = tx.trace.calls.first_mut() {
-                root_call.storage_changes.push(StorageChange {
-                    address,
-                    key: ensure_hash_bytes(storage_access.key.bytes.to_vec()),
-                    old_value: ensure_hash_bytes(storage_access.start_value.bytes.to_vec()),
-                    new_value: ensure_hash_bytes(storage_access.end_value.bytes.to_vec()),
-                    ordinal: 0,
-                });
+                root_call.storage_changes.push(change);
+            } else {
+                tx.pending_storage_changes.push(change);
             }
         }
 
         Ok(())
-    }
-
-    fn buffer_system_account_access(
-        &mut self,
-        address: Vec<u8>,
-        prestate_balance: Vec<u8>,
-        modified_balance: Vec<u8>,
-        is_balance_modified: bool,
-        is_nonce_modified: bool,
-        prestate_nonce: u64,
-        modified_nonce: u64,
-    ) {
-        use firehose::pb::sf::ethereum::r#type::v2::{BalanceChange, BigInt as PbBigInt, NonceChange};
-        use firehose::pb::sf::ethereum::r#type::v2::balance_change::Reason as BalanceReason;
-
-        let call = self.system_calls_calls.iter_mut().find(|c| c.address == address);
-        if let Some(call) = call {
-            if is_balance_modified {
-                call.balance_changes.push(BalanceChange {
-                    address: address.clone(),
-                    old_value: Some(PbBigInt { bytes: prestate_balance }),
-                    new_value: Some(PbBigInt { bytes: modified_balance }),
-                    reason: BalanceReason::MonadTxPostState as i32,
-                    ordinal: 0,
-                });
-            }
-            if is_nonce_modified {
-                call.nonce_changes.push(NonceChange {
-                    address,
-                    old_value: prestate_nonce,
-                    new_value: modified_nonce,
-                    ordinal: 0,
-                });
-            }
-        }
-    }
-
-    fn buffer_system_storage_access(
-        &mut self,
-        address: Vec<u8>,
-        modified: bool,
-        transient: bool,
-        key: Vec<u8>,
-        start_value: Vec<u8>,
-        end_value: Vec<u8>,
-    ) {
-        use firehose::pb::sf::ethereum::r#type::v2::StorageChange;
-
-        if !modified || transient {
-            return;
-        }
-
-        let call = self.system_calls_calls.iter_mut().find(|c| c.address == address);
-        if let Some(call) = call {
-            call.storage_changes.push(StorageChange {
-                address: ensure_address_bytes(address),
-                key: ensure_hash_bytes(key),
-                old_value: ensure_hash_bytes(start_value),
-                new_value: ensure_hash_bytes(end_value),
-                ordinal: 0,
-            });
-        }
     }
 
     fn calculate_effective_gas_price(
@@ -956,6 +942,47 @@ impl BlockBuilder {
 
             tx.end_ordinal = self.next_ordinal;
             self.next_ordinal += 1;
+        }
+
+        // Apply system account/storage accesses to matching system calls
+        {
+            use firehose::pb::sf::ethereum::r#type::v2::{BalanceChange, BigInt as PbBigInt, NonceChange, StorageChange};
+            use firehose::pb::sf::ethereum::r#type::v2::balance_change::Reason as BalanceReason;
+
+            for (addr, bal_mod, pre_bal, mod_bal, nonce_mod, pre_nonce, mod_nonce) in self.system_calls_account_accesses.drain(..) {
+                let call = self.system_calls_calls.iter_mut().find(|c| c.address == addr);
+                if let Some(call) = call {
+                    if bal_mod {
+                        call.balance_changes.push(BalanceChange {
+                            address: addr.clone(),
+                            old_value: Some(PbBigInt { bytes: pre_bal }),
+                            new_value: Some(PbBigInt { bytes: mod_bal }),
+                            reason: BalanceReason::MonadTxPostState as i32,
+                            ordinal: 0,
+                        });
+                    }
+                    if nonce_mod {
+                        call.nonce_changes.push(NonceChange {
+                            address: addr,
+                            old_value: pre_nonce,
+                            new_value: mod_nonce,
+                            ordinal: 0,
+                        });
+                    }
+                }
+            }
+            for (addr, key, start, end) in self.system_calls_storage_accesses.drain(..) {
+                let call = self.system_calls_calls.iter_mut().find(|c| c.address == addr);
+                if let Some(call) = call {
+                    call.storage_changes.push(StorageChange {
+                        address: ensure_address_bytes(addr),
+                        key: ensure_hash_bytes(key),
+                        old_value: ensure_hash_bytes(start),
+                        new_value: ensure_hash_bytes(end),
+                        ordinal: 0,
+                    });
+                }
+            }
         }
 
         // Re-index system calls
