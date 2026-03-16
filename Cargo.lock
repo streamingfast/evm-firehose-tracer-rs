@@ -1201,7 +1201,7 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "firehose"
-version = "0.1.0"
+version = "4.0.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -1222,7 +1222,7 @@ dependencies = [
 
 [[package]]
 name = "firehose-test"
-version = "0.1.0"
+version = "4.0.0"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -1731,7 +1731,7 @@ dependencies = [
 
 [[package]]
 name = "monad-plugin"
-version = "0.1.0"
+version = "4.0.0"
 dependencies = [
  "eyre",
  "hex",
@@ -1745,7 +1745,7 @@ dependencies = [
 
 [[package]]
 name = "monad-tracer"
-version = "0.1.0"
+version = "4.0.0"
 dependencies = [
  "alloy-primitives",
  "base64",
@@ -1933,7 +1933,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "pb"
-version = "0.1.0"
+version = "4.0.0"
 dependencies = [
  "alloy-primitives",
  "prost",
