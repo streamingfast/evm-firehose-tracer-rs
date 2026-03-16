@@ -3,35 +3,13 @@ members = ["pb", "firehose", "firehose-test", "monad", "monad-plugin"]
 resolver = "2"
 
 [workspace.package]
-version = "4.0.0"
+version = "4.0.3"
 edition = "2021"
 
 [workspace.dependencies]
 # Internal workspace crates
-pb = { version = "4.0.0", path = "pb" }
-firehose = { version = "4.0.0", path = "firehose" }
-shared = { version = "4.0.0", path = "shared" }
-
-# # Reth eth dependencies
-# reth = { path = "../reth/bin/reth" }
-# reth-exex = { path = "../reth/crates/exex/exex" }
-# reth-node-ethereum = { path = "../reth/crates/ethereum/node" }
-# reth-tracing = { path = "../reth/crates/tracing" }
-# reth-cli-util = { path = "../reth/crates/cli/util" }
-# reth-revm = { path = "../reth/crates/revm" }
-# reth-evm = { path = "../reth/crates/evm/evm" }
-
-# # Reth OP dependencies
-# reth-optimism-cli = { path = "../reth/crates/optimism/cli" }
-# reth-optimism-node = { path = "../reth/crates/optimism/node" }
-# reth-optimism-chainspec = { path = "../reth/crates/optimism/chainspec" }
-# reth-optimism-flashblocks = { path = "../reth/crates/optimism/flashblocks" }
-# reth-optimism-primitives = { path = "../reth/crates/optimism/primitives" }
-
-# # Reth shared dependencies
-# reth-node-api = { path = "../reth/crates/node/api" }
-# reth-node-builder = { path = "../reth/crates/node/builder" }
-# reth-provider = { path = "../reth/crates/storage/provider" }
+pb = { version = "4.0.3", path = "pb" }
+firehose = { version = "4.0.3", path = "firehose" }
 
 # Alloy dependencies (compatible with rustc 1.89)
 alloy-primitives = "=1.5.2"

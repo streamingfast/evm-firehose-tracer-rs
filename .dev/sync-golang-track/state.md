@@ -9,16 +9,17 @@ The Golang version is the source of truth. This Rust version was originally port
 
 ## Current State
 
-- **Last synced Golang commit**: `7750eb7a7baeb40296088a624b1d95343fdebbb9`
-- **Last synced Golang commit (short)**: `7750eb7`
+- **Last synced Golang commit**: `a96a67760c9e0a796f9297e95a9d3c7da20c6cf4`
+- **Last synced Golang commit (short)**: `a96a677`
 - **Sync date**: 2026-03-16
-- **Rust repo version**: `4.0.0` (aligned with Golang v4.0.0)
+- **Rust repo version**: `4.0.3` (aligned with Golang v4.0.3)
 
 ## Sync History
 
 | Run | Golang From | Golang To | Status | Date |
 |-----|-------------|-----------|--------|------|
 | 1 | `7744bb7` | `7750eb7` | Completed | 2026-03-16 |
+| 2 | `7750eb7` | `a96a677` | Completed | 2026-03-16 |
 
 ## Notes
 
@@ -31,3 +32,15 @@ for them is not present in the Rust version:
 - **Concurrent block flushing**: `ConcurrentFlushQueue`, `Config#ConcurrentBufferSize`
 
 Any commits related to these features are skipped during sync.
+
+### Protocol Version History
+
+- **v4 (BLOCK_VERSION=4)**: Initial version
+- **v5 (BLOCK_VERSION=5)**: Removed GasChange tracking (run 2)
+
+### Not ported to Rust (proto limitation)
+
+- `Block.Withdrawals` array field: The protobuf Block struct in this Rust version
+  does not have a `withdrawals` field. As of v5, withdrawals are always recorded
+  (no SkipWithdrawals config) in the Golang version. The Rust version never had
+  SkipWithdrawals either.

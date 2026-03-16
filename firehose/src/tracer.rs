@@ -280,7 +280,7 @@ impl Tracer {
             hash: block_data.hash.0.to_vec(),
             number: block_data.number,
             header: Some(self.new_block_header_from_block_data(&event.block)),
-            ver: 4, // Protocol version 4 (without backward compatibility)
+            ver: 5, // Protocol version 5
             size: block_data.size,
             ..Default::default()
         });
@@ -301,10 +301,9 @@ impl Tracer {
             self.block_base_fee = Some(base_fee);
         }
 
-        // Note: The protobuf Block currently doesn't have a withdrawals array field.
-        // Withdrawals root hash is set in the block header during finalize_block.
-        // Individual withdrawal data would need to be added to the protobuf schema
-        // to match the Golang version's block.Withdrawals field.
+        // Note: Block withdrawals (EIP-4895) are always recorded in v5 when present.
+        // The protobuf Block does not yet have a withdrawals array field in this Rust version.
+        // Withdrawals root hash is set in the block header (see new_block_header_from_block_data).
 
         // Populate finality status
         if let Some(finalized) = event.finalized {
@@ -1102,45 +1101,13 @@ impl Tracer {
         }
     }
 
-    /// OnGasChange is called when gas is consumed
-    /// Note: The chain implementation should filter out:
-    ///   - GasChangeCallOpCode: Gas changes due to call opcodes (handled separately)
-    ///   - GasChangeIgnored: Gas changes that should not be recorded
-    pub fn on_gas_change(
-        &mut self,
-        old_gas: u64,
-        new_gas: u64,
-        reason: pb::sf::ethereum::r#type::v2::gas_change::Reason,
-    ) {
-        self.ensure_in_block_and_in_trx();
-
-        // No change in gas - ignore
-        if old_gas == new_gas {
-            return;
-        }
-
-        // Ignore UNKNOWN reasons (filtered by caller in chain implementation)
-        if reason == pb::sf::ethereum::r#type::v2::gas_change::Reason::Unknown {
-            return;
-        }
-
-        let change = self.new_gas_change(old_gas, new_gas, reason);
-
-        // Initial gas consumption happens before call starts - defer it
-        if let Some(active_call) = self.call_stack.peek_mut() {
-            active_call.gas_changes.push(change);
-        } else {
-            self.deferred_call_state.add_gas_change(change);
-        }
-    }
-
     /// OnOpcode is called for each opcode executed
     pub fn on_opcode(
         &mut self,
         _pc: u64,
         op: u8,
-        gas: u64,
-        cost: u64,
+        _gas: u64,
+        _cost: u64,
         _data: &[u8],
         _depth: i32,
         err: Option<&dyn std::error::Error>,
@@ -1149,7 +1116,7 @@ impl Tracer {
             return;
         }
 
-        // Set ExecutedCode to true (non-backward-compatible mode)
+        // Set ExecutedCode to true
         if let Some(active_call) = self.call_stack.peek_mut() {
             active_call.executed_code = true;
         }
@@ -1157,16 +1124,6 @@ impl Tracer {
         // The rest of the logic expects that a call succeeded
         if err.is_some() {
             return;
-        }
-
-        // Record gas change for specific opcodes
-        if cost > 0 {
-            if let Some(reason) = Self::opcode_to_gas_change_reason(op) {
-                let change = self.new_gas_change(gas, gas - cost, reason);
-                if let Some(active_call) = self.call_stack.peek_mut() {
-                    active_call.gas_changes.push(change);
-                }
-            }
         }
 
         // Mark SELFDESTRUCT opcode
@@ -1242,52 +1199,6 @@ impl Tracer {
     // ============================================================================
     // Helper Methods
     // ============================================================================
-
-    fn new_gas_change(
-        &mut self,
-        old_value: u64,
-        new_value: u64,
-        reason: pb::sf::ethereum::r#type::v2::gas_change::Reason,
-    ) -> pb::sf::ethereum::r#type::v2::GasChange {
-        tracing::trace!(
-            "gas consumed (before={} after={} reason={:?})",
-            old_value,
-            new_value,
-            reason
-        );
-
-        pb::sf::ethereum::r#type::v2::GasChange {
-            old_value,
-            new_value,
-            reason: reason.into(),
-            ordinal: self.block_ordinal.next(),
-        }
-    }
-
-    /// Maps opcodes to their gas change reasons
-    fn opcode_to_gas_change_reason(
-        op: u8,
-    ) -> Option<pb::sf::ethereum::r#type::v2::gas_change::Reason> {
-        use pb::sf::ethereum::r#type::v2::gas_change::Reason;
-
-        match op {
-            OP_CREATE => Some(Reason::ContractCreation),
-            OP_CREATE2 => Some(Reason::ContractCreation2),
-            OP_CALL => Some(Reason::Call),
-            OP_STATICCALL => Some(Reason::StaticCall),
-            OP_CALLCODE => Some(Reason::CallCode),
-            OP_DELEGATECALL => Some(Reason::DelegateCall),
-            OP_RETURN => Some(Reason::Return),
-            OP_REVERT => Some(Reason::Revert),
-            OP_LOG0 | OP_LOG1 | OP_LOG2 | OP_LOG3 | OP_LOG4 => Some(Reason::EventLog),
-            OP_SELFDESTRUCT => Some(Reason::SelfDestruct),
-            OP_CALLDATACOPY => Some(Reason::CallDataCopy),
-            OP_CODECOPY => Some(Reason::CodeCopy),
-            OP_EXTCODECOPY => Some(Reason::ExtCodeCopy),
-            OP_RETURNDATACOPY => Some(Reason::ReturnDataCopy),
-            _ => None,
-        }
-    }
 
     fn new_block_header_from_block_data(
         &self,
@@ -1468,23 +1379,12 @@ const TX_TYPE_BLOB: u8 = 3; // EIP-4844 blob transaction
 const TX_TYPE_SET_CODE: u8 = 4; // EIP-7702 set code transaction
 
 // EVM Opcode constants (from Ethereum Yellow Paper)
-const OP_CALLDATACOPY: u8 = 0x37;
-const OP_CODECOPY: u8 = 0x39;
-const OP_EXTCODECOPY: u8 = 0x3c;
-const OP_RETURNDATACOPY: u8 = 0x3e;
-const OP_LOG0: u8 = 0xa0;
-const OP_LOG1: u8 = 0xa1;
-const OP_LOG2: u8 = 0xa2;
-const OP_LOG3: u8 = 0xa3;
-const OP_LOG4: u8 = 0xa4;
 const OP_CREATE: u8 = 0xf0;
 const OP_CALL: u8 = 0xf1;
 const OP_CALLCODE: u8 = 0xf2;
-const OP_RETURN: u8 = 0xf3;
 const OP_DELEGATECALL: u8 = 0xf4;
 const OP_CREATE2: u8 = 0xf5;
 const OP_STATICCALL: u8 = 0xfa;
-const OP_REVERT: u8 = 0xfd;
 const OP_SELFDESTRUCT: u8 = 0xff;
 
 fn compute_effective_gas_price(event: &TxEvent, base_fee: Option<U256>) -> U256 {

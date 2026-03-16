@@ -56,10 +56,6 @@ name = "tracer_call_test"
 path = "tests/tracer_call_test.rs"
 
 [[test]]
-name = "tracer_gas_test"
-path = "tests/tracer_gas_test.rs"
-
-[[test]]
 name = "tracer_calls_test"
 path = "tests/tracer_calls_test.rs"
 
@@ -106,10 +102,6 @@ path = "tests/tracer_trx_types_test.rs"
 [[test]]
 name = "tracer_skipped_block_test"
 path = "tests/tracer_skipped_block_test.rs"
-
-[[test]]
-name = "tracer_opcode_gas_test"
-path = "tests/tracer_opcode_gas_test.rs"
 
 [[test]]
 name = "tracer_receipt_logs_test"

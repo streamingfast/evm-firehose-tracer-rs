@@ -659,16 +659,6 @@ impl TracerTester {
         self
     }
 
-    pub fn gas_change(
-        &mut self,
-        old_gas: u64,
-        new_gas: u64,
-        reason: pbeth::gas_change::Reason,
-    ) -> &mut Self {
-        self.tracer.on_gas_change(old_gas, new_gas, reason);
-        self
-    }
-
     // ========================================================================
     // Events & Operations
     // ========================================================================
