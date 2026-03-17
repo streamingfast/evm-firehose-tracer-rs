@@ -18,6 +18,7 @@ Here the steps that must be taken:
 - Implement the work items ensuring that all tests passes and they are ported faithfully keep the `.dev/sync-golang-track` with latest state at all time, as this will be used on restart to continue where we left off.
 - Implement as faithfully as possible keeping the intent of the Golang version but adapted to Rust code. Stay focus on commits to port and nothing else.
 - Also take into consideration versioning and tags, updating versioning in Rust to follow Golang major version of the module. Create tags for releases when they need to be performed. DO NOT care about releases, we will deal with that thing later on, tags should be enough for now.
+- For every Golang commit that touches `CHANGELOG.md`, copy the corresponding entries into the Rust `CHANGELOG.md`, adapting Go naming conventions to Rust (e.g. `OnGasChange` → `on_gas_change`, `Config.SkipWithdrawals` → `Config.skip_withdrawals`, method signatures adapted to Rust style). This must be done as part of porting each commit, not deferred.
 
 ### Extra Instructions
 
