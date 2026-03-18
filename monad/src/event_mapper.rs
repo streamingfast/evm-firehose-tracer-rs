@@ -217,7 +217,7 @@ impl BlockBuilder {
             gas_limit: DEFAULT_GAS_LIMIT,
             cumulative_gas_used: 0,
             total_log_count: 0,
-            next_ordinal: 0,
+            next_ordinal: 1,
             txns: std::collections::HashMap::new(),
             system_calls_calls: Vec::new(),
             system_calls_account_accesses: Vec::new(),
