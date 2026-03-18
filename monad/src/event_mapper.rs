@@ -582,8 +582,10 @@ impl BlockBuilder {
         let return_data = if is_successful_create { vec![] } else { return_bytes.to_vec() };
         let code_changes = if is_successful_create {
             let target_addr = ensure_address_bytes(call_frame.call_target.bytes.to_vec());
+            // old_hash is always the empty code hash (keccak256 of empty bytes) for a new contract
+            let empty_code_hash = hex::decode("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470").unwrap();
             vec![CodeChange {
-                old_hash: vec![],
+                old_hash: empty_code_hash,
                 new_hash: keccak256(return_bytes).to_vec(),
                 new_code: return_bytes.to_vec(),
                 address: target_addr,
