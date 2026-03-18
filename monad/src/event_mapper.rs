@@ -904,39 +904,42 @@ impl BlockBuilder {
             tx.begin_ordinal = self.next_ordinal;
             self.next_ordinal += 1;
 
-            for call in &mut tx.calls {
-                call.begin_ordinal = self.next_ordinal;
+            // Assign call begin/end ordinals in execution order
+            let n = tx.calls.len();
+            let mut open: Vec<usize> = Vec::new();
+            for i in 0..n {
+                let depth = tx.calls[i].depth;
+                while open.last().map(|&j| tx.calls[j].depth >= depth).unwrap_or(false) {
+                    let j = open.pop().unwrap();
+                    tx.calls[j].end_ordinal = self.next_ordinal;
+                    self.next_ordinal += 1;
+                }
+                tx.calls[i].begin_ordinal = self.next_ordinal;
                 self.next_ordinal += 1;
-
-                for gas_change in &mut call.gas_changes {
-                    gas_change.ordinal = self.next_ordinal;
-                    self.next_ordinal += 1;
-                }
-                for nonce_change in &mut call.nonce_changes {
-                    nonce_change.ordinal = self.next_ordinal;
-                    self.next_ordinal += 1;
-                }
-                for balance_change in &mut call.balance_changes {
-                    balance_change.ordinal = self.next_ordinal;
-                    self.next_ordinal += 1;
-                }
-                for storage_change in &mut call.storage_changes {
-                    storage_change.ordinal = self.next_ordinal;
-                    self.next_ordinal += 1;
-                }
-                for log in &mut call.logs {
-                    log.ordinal = self.next_ordinal;
-                    self.next_ordinal += 1;
-                }
-
-                call.end_ordinal = self.next_ordinal;
+                open.push(i);
+            }
+            while let Some(j) = open.pop() {
+                tx.calls[j].end_ordinal = self.next_ordinal;
                 self.next_ordinal += 1;
             }
 
-            if let Some(ref mut receipt) = tx.receipt {
-                for log in &mut receipt.logs {
+            // Assign log ordinals in emission order (log.index is deterministic)
+            if let Some(root_call) = tx.calls.first_mut() {
+                root_call.logs.sort_by_key(|l| l.index);
+                for log in &mut root_call.logs {
                     log.ordinal = self.next_ordinal;
                     self.next_ordinal += 1;
+                }
+            }
+
+            // Receipt logs share ordinals with their matching call logs
+            if let Some(ref mut receipt) = tx.receipt {
+                for rlog in &mut receipt.logs {
+                    if let Some(root_call) = tx.calls.first() {
+                        if let Some(clog) = root_call.logs.iter().find(|l| l.index == rlog.index) {
+                            rlog.ordinal = clog.ordinal;
+                        }
+                    }
                 }
             }
 
