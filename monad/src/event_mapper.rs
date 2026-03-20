@@ -919,10 +919,15 @@ impl BlockBuilder {
                 self.next_ordinal += 1;
                 open.push(i);
             }
-            while let Some(j) = open.pop() {
+            // Close all inner calls (depth > 0) root call stays open until after state changes
+            while open.last().map(|&j| tx.calls[j].depth > 0).unwrap_or(false) {
+                let j = open.pop().unwrap();
                 tx.calls[j].end_ordinal = self.next_ordinal;
                 self.next_ordinal += 1;
             }
+
+            // depth-0 call, end ordinal assigned after state changes
+            let root_call_idx = open.pop();
 
             // Assign log ordinals in emission order (log.index is deterministic)
             if let Some(root_call) = tx.calls.first_mut() {
@@ -942,6 +947,28 @@ impl BlockBuilder {
                         }
                     }
                 }
+            }
+
+            // Assign ordinals to state changes on root call
+            if let Some(root_call) = tx.calls.first_mut() {
+                for change in &mut root_call.balance_changes {
+                    change.ordinal = self.next_ordinal;
+                    self.next_ordinal += 1;
+                }
+                for change in &mut root_call.nonce_changes {
+                    change.ordinal = self.next_ordinal;
+                    self.next_ordinal += 1;
+                }
+                for change in &mut root_call.storage_changes {
+                    change.ordinal = self.next_ordinal;
+                    self.next_ordinal += 1;
+                }
+            }
+
+            // Close root call after state changes
+            if let Some(idx) = root_call_idx {
+                tx.calls[idx].end_ordinal = self.next_ordinal;
+                self.next_ordinal += 1;
             }
 
             tx.end_ordinal = self.next_ordinal;
