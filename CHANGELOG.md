@@ -3,6 +3,12 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+* SetCode authorization `r` and `s` signature fields now serialize as empty bytes when zero, matching production behavior of the native tracer.
+
 ## v5.0.0
 
 ### Changed

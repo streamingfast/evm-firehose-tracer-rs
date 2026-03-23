@@ -130,3 +130,15 @@ path = "tests/tracer_create_nonce_test.rs"
 [[test]]
 name = "tracer_transaction_edge_cases_test"
 path = "tests/tracer_transaction_edge_cases_test.rs"
+
+[[test]]
+name = "tracer_genesis_test"
+path = "tests/tracer_genesis_test.rs"
+
+[[test]]
+name = "tracer_setcode_test"
+path = "tests/tracer_setcode_test.rs"
+
+[[test]]
+name = "tracer_delegation_test"
+path = "tests/tracer_delegation_test.rs"

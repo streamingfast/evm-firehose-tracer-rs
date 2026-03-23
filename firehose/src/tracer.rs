@@ -423,8 +423,8 @@ impl Tracer {
                     address: auth.address.0.to_vec(),
                     nonce: auth.nonce,
                     v: auth.v,
-                    r: auth.r.0.to_vec(),
-                    s: auth.s.0.to_vec(),
+                    r: utils::normalize_signature_point(&auth.r.0).unwrap_or_default(),
+                    s: utils::normalize_signature_point(&auth.s.0).unwrap_or_default(),
                     authority,
                     ..Default::default() // discarded will be set during validation
                 }

@@ -1,3 +1,4 @@
+use alloy_primitives::B256;
 use firehose_test::eip7702::*;
 use firehose_test::testing_helpers::*;
 use firehose_test::tracer_tester::{test_set_code_trx_with_auth, TracerTester};
@@ -596,6 +597,52 @@ fn test_setcode_with_access_list() {
             assert_eq!(
                 alice_addr().as_slice(),
                 auth_result.authority.as_ref().unwrap().as_slice()
+            );
+        });
+}
+
+#[test]
+fn test_zero_r_s_signature_serializes_as_empty() {
+    // Production (native tracer) behavior: when R and S are zero (e.g., an
+    // all-zero/unset signature), they must serialize as empty bytes ("" in JSON),
+    // not as 32 zero bytes ("AAAA...AAA=" in base64).
+    //
+    // The native tracer uses big.Int.Bytes() which returns []byte{} for zero, then
+    // normalizeSignaturePoint maps that to nil. The shared tracer must do the same.
+    let auth = firehose::types::SetCodeAuthorization {
+        chain_id: B256::from([
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 1,
+        ]),
+        address: charlie_addr(),
+        nonce: 0,
+        v: 0,
+        r: B256::ZERO, // all zeros
+        s: B256::ZERO, // all zeros
+    };
+
+    let mut tester = TracerTester::new_prague();
+    tester
+        .start_block_trx(test_set_code_trx_with_auth(vec![auth]))
+        .start_call(alice_addr(), bob_addr(), big_int(100), 21000, vec![])
+        .end_call(vec![], 21000)
+        .end_block_trx(Some(success_receipt(21000)), None, None)
+        .validate_with_category("tracer_setcode", |block| {
+            let trx = &block.transaction_traces[0];
+            assert_eq!(1, trx.set_code_authorizations.len());
+
+            let auth_result = &trx.set_code_authorizations[0];
+
+            // R and S must be empty (not 32 zero bytes).
+            // This matches production native tracer behavior where zero big.Int.Bytes()
+            // → empty slice → normalize_signature_point → empty.
+            assert!(
+                auth_result.r.is_empty(),
+                "R should be empty (not 32 zero bytes) for zero signature"
+            );
+            assert!(
+                auth_result.s.is_empty(),
+                "S should be empty (not 32 zero bytes) for zero signature"
             );
         });
 }
