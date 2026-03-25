@@ -5,7 +5,10 @@
 //! The integration layer (client code) is responsible for converting from
 //! client-specific types to these tracer types.
 
+use std::fmt::Display;
+
 use alloy_primitives::{Address, Bloom, Bytes, TxHash, B256, U256};
+use num_enum::TryFromPrimitive;
 
 /// BlockEvent contains the data needed for OnBlockStart
 #[derive(Debug, Clone, Default)]
@@ -141,7 +144,7 @@ pub struct SetCodeAuthorization {
 /// TxEvent contains the data needed for OnTxStart
 #[derive(Debug, Clone, Default)]
 pub struct TxEvent {
-    pub tx_type: u8,
+    pub tx_type: TxType,
     pub hash: TxHash,
     pub from: Address,
     pub to: Option<Address>, // None for contract creation
@@ -172,20 +175,68 @@ pub struct TxEvent {
     pub set_code_authorizations: Vec<SetCodeAuthorization>,
 }
 
-/// CallType represents the EVM opcode type for call operations
-/// These values match the actual EVM opcodes for the respective call types
-/// NOTE: This is different from pb::sf::ethereum::r#type::v2::CallType which uses different numbering
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// TxType represents Ethereum transaction types (EIP-2718 envelope types).
+///
+/// Values match the type byte in the transaction envelope, as defined by each EIP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
 #[repr(u8)]
-pub enum CallType {
-    Create = 0xf0,       // CREATE opcode
-    Call = 0xf1,         // CALL opcode
-    CallCode = 0xf2,     // CALLCODE opcode
-    DelegateCall = 0xf4, // DELEGATECALL opcode
-    Create2 = 0xf5,      // CREATE2 opcode
-    StaticCall = 0xfa,   // STATICCALL opcode
-    SelfDestruct = 0xff, // SELFDESTRUCT opcode
+pub enum TxType {
+    Legacy = 0,     // Pre-EIP-2718 legacy transaction
+    AccessList = 1, // EIP-2930 access list transaction
+    DynamicFee = 2, // EIP-1559 dynamic fee transaction
+    Blob = 3,       // EIP-4844 blob transaction
+    SetCode = 4,    // EIP-7702 set code transaction
 }
+
+impl Default for TxType {
+    fn default() -> Self {
+        TxType::Legacy
+    }
+}
+
+impl Display for TxType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let type_str = match self {
+            TxType::Legacy => "TrxLegacy",
+            TxType::AccessList => "TrxAccessList",
+            TxType::DynamicFee => "TrxDynamicFee",
+            TxType::Blob => "TrxBlob",
+            TxType::SetCode => "TrxSetCode",
+        };
+        write!(f, "{}", type_str)
+    }
+}
+
+/// Opcode represents EVM opcodes used by Firehose tracing hooks.
+///
+/// This enum is not exhaustive — it only includes opcodes that are directly
+/// referenced by Firehose tracer hooks (call/create/selfdestruct boundaries and
+/// the opcode step hook). All values match the Ethereum Yellow Paper opcode table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+#[repr(u8)]
+pub enum Opcode {
+    Create = 0xf0,
+    Call = 0xf1,
+    CallCode = 0xf2,
+    DelegateCall = 0xf4,
+    Create2 = 0xf5,
+    StaticCall = 0xfa,
+    SelfDestruct = 0xff,
+}
+
+/// A simple error type wrapping a string message, used when passing failure
+/// reasons from EVM execution into the `&dyn std::error::Error` slots of the
+/// tracer hooks (e.g. `on_call_exit`).
+#[derive(Debug)]
+pub struct StringError(pub String);
+
+impl std::fmt::Display for StringError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for StringError {}
 
 /// ReceiptData contains transaction receipt data
 #[derive(Debug, Clone)]
@@ -258,15 +309,8 @@ pub trait StateReader {
     /// Returns empty bytes if the account has no code
     fn get_code(&self, address: Address) -> Bytes;
 
-    /// Returns the code hash for the given address
-    /// Returns empty hash if the account has no code
-    fn get_code_hash(&self, address: Address) -> B256;
-
-    /// Returns the balance for the given address
-    fn get_balance(&self, address: Address) -> U256;
-
-    /// Returns the storage value at the given key for the given address
-    fn get_storage(&self, address: Address, key: B256) -> B256;
+    /// Returns if the account exists for the given address
+    fn exists(&self, address: Address) -> bool;
 }
 
 impl BlockEvent {
@@ -288,7 +332,7 @@ impl BlockEvent {
 impl TxEvent {
     /// Creates a new TxEvent with minimal required fields
     pub fn new(
-        tx_type: u8,
+        tx_type: TxType,
         hash: TxHash,
         from: Address,
         to: Option<Address>,
@@ -379,7 +423,7 @@ mod tests {
     #[test]
     fn test_tx_event_is_create() {
         let tx = TxEvent::new(
-            0,
+            TxType::Legacy,
             TxHash::default(),
             Address::default(),
             None,
@@ -393,7 +437,7 @@ mod tests {
         assert!(tx.is_create());
 
         let tx_with_to = TxEvent::new(
-            0,
+            TxType::Legacy,
             TxHash::default(),
             Address::default(),
             Some(Address::default()),

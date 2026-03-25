@@ -165,7 +165,7 @@ impl Tracer {
         let zero_hash = B256::ZERO;
 
         let tx_event = TxEvent {
-            tx_type: 0,
+            tx_type: TxType::Legacy,
             hash: zero_hash,
             from: zero_addr,
             to: Some(zero_addr),
@@ -380,12 +380,12 @@ impl Tracer {
 
         // Convert transaction type to protobuf enum
         use pb::sf::ethereum::r#type::v2::transaction_trace::Type;
-        let tx_type = match event.tx_type {
-            0 => Type::TrxTypeLegacy as i32,
-            1 => Type::TrxTypeAccessList as i32,
-            2 => Type::TrxTypeDynamicFee as i32,
-            3 => Type::TrxTypeBlob as i32,
-            4 => Type::TrxTypeSetCode as i32,
+        let tx_type = match TxType::try_from(event.tx_type) {
+            Ok(TxType::Legacy) => Type::TrxTypeLegacy as i32,
+            Ok(TxType::AccessList) => Type::TrxTypeAccessList as i32,
+            Ok(TxType::DynamicFee) => Type::TrxTypeDynamicFee as i32,
+            Ok(TxType::Blob) => Type::TrxTypeBlob as i32,
+            Ok(TxType::SetCode) => Type::TrxTypeSetCode as i32,
             _ => Type::TrxTypeLegacy as i32, // Default to legacy for unknown types
         };
 
@@ -809,7 +809,7 @@ impl Tracer {
         );
 
         // Handle SELFDESTRUCT specially
-        if typ == OP_SELFDESTRUCT {
+        if typ == Opcode::SelfDestruct as u8 {
             // SELFDESTRUCT opcode
             self.latest_call_enter_suicided = true;
             self.latest_call_enter_suicided_depth = depth;
@@ -1132,7 +1132,7 @@ impl Tracer {
         }
 
         // Mark SELFDESTRUCT opcode
-        if op == OP_SELFDESTRUCT {
+        if op == Opcode::SelfDestruct as u8 {
             if let Some(active_call) = self.call_stack.peek_mut() {
                 active_call.suicide = true;
             }
@@ -1306,15 +1306,14 @@ impl Tracer {
     fn opcode_to_call_type(&self, opcode: u8) -> i32 {
         use pb::sf::ethereum::r#type::v2::CallType;
 
-        match opcode {
-            OP_CREATE => CallType::Create as i32,
-            OP_CALL => CallType::Call as i32,
-            OP_CALLCODE => CallType::Callcode as i32,
-            OP_DELEGATECALL => CallType::Delegate as i32,
-            OP_CREATE2 => CallType::Create as i32, // CREATE2 maps to CREATE
-            OP_STATICCALL => CallType::Static as i32,
-            OP_SELFDESTRUCT => CallType::Unspecified as i32, // SELFDESTRUCT is not a call type
-            _ => CallType::Unspecified as i32,               // Unknown
+        match opcode.try_into() {
+            Ok(Opcode::Create) => CallType::Create as i32,
+            Ok(Opcode::Create2) => CallType::Create as i32, // CREATE2 maps to CREATE
+            Ok(Opcode::Call) => CallType::Call as i32,
+            Ok(Opcode::CallCode) => CallType::Callcode as i32,
+            Ok(Opcode::DelegateCall) => CallType::Delegate as i32,
+            Ok(Opcode::StaticCall) => CallType::Static as i32,
+            _ => CallType::Unspecified as i32, // Unknown
         }
     }
 
@@ -1377,28 +1376,17 @@ impl Tracer {
 ///   - If base_fee is None: use max_fee_per_gas (or fallback to gas_price)
 ///   - If base_fee is Some: use min(max_priority_fee_per_gas + base_fee, max_fee_per_gas)
 // Transaction type constants (from Ethereum specification)
-const TX_TYPE_LEGACY: u8 = 0; // Pre-EIP-2718 legacy transaction
-const TX_TYPE_ACCESS_LIST: u8 = 1; // EIP-2930 access list transaction
-const TX_TYPE_DYNAMIC_FEE: u8 = 2; // EIP-1559 dynamic fee transaction
-const TX_TYPE_BLOB: u8 = 3; // EIP-4844 blob transaction
-const TX_TYPE_SET_CODE: u8 = 4; // EIP-7702 set code transaction
+use crate::types::TxType;
 
-// EVM Opcode constants (from Ethereum Yellow Paper)
-const OP_CREATE: u8 = 0xf0;
-const OP_CALL: u8 = 0xf1;
-const OP_CALLCODE: u8 = 0xf2;
-const OP_DELEGATECALL: u8 = 0xf4;
-const OP_CREATE2: u8 = 0xf5;
-const OP_STATICCALL: u8 = 0xfa;
-const OP_SELFDESTRUCT: u8 = 0xff;
+use crate::types::Opcode;
 
 fn compute_effective_gas_price(event: &TxEvent, base_fee: Option<U256>) -> U256 {
     match event.tx_type {
-        TX_TYPE_LEGACY | TX_TYPE_ACCESS_LIST => {
+        TxType::Legacy | TxType::AccessList => {
             // Legacy, AccessList
             event.gas_price
         }
-        TX_TYPE_DYNAMIC_FEE | TX_TYPE_BLOB | TX_TYPE_SET_CODE => {
+        _ => {
             // DynamicFee, Blob, SetCode (EIP-1559 transactions)
             if base_fee.is_none() {
                 // If baseFee is nil, use MaxFeePerGas
@@ -1420,10 +1408,6 @@ fn compute_effective_gas_price(event: &TxEvent, base_fee: Option<U256>) -> U256 
                     event.gas_price
                 }
             }
-        }
-        _ => {
-            // Unknown type, use GasPrice
-            event.gas_price
         }
     }
 }

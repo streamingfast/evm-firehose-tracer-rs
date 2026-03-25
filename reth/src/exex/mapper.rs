@@ -3,8 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use crate::prelude::*;
 use alloy_consensus::{
     transaction::{RlpEcdsaEncodableTx, TxHashRef},
-    BlockHeader as ConsensusBlockHeader,
-    EthereumTxEnvelope,
+    BlockHeader as ConsensusBlockHeader, EthereumTxEnvelope,
 };
 use alloy_genesis::Genesis;
 use alloy_primitives::{Address, Bytes, Sealable, U256};
@@ -14,7 +13,7 @@ use firehose::{
     BlockData, UncleData, WithdrawalData,
 };
 use reth::api::BlockBody;
-use reth_provider::ProviderResult;
+use reth_provider::{AccountReader, ProviderResult};
 
 pub fn to_genesis_alloc(genesis: &Genesis) -> GenesisAlloc {
     genesis
@@ -195,7 +194,13 @@ where
 {
     let (r, s, v) = tx.signature_fields();
     TxEvent {
-        tx_type: tx.ty(),
+        // FIXME: That is not true, what about Optimism specialized transaction types? We might
+        // to have a special mapper that knows the chain and as such is aware of some types
+        // that could not exists anywhere else. We will need to deal with this.
+        tx_type: tx
+            .ty()
+            .try_into()
+            .expect("All transaction types handled for now"),
         hash: *tx.tx_hash(),
         from: signer,
         to: tx.to(),
@@ -234,6 +239,31 @@ where
             .authorization_list()
             .map(|auths| auths.iter().map(map_signed_authorization).collect())
             .unwrap_or_default(),
+    }
+}
+
+/// Wraps a StateProviderBox to implement the firehose StateReader trait.
+///
+/// StateProviderBox is Box<dyn StateProvider + Send + 'static>, so StateReaderAdapter
+/// is automatically Send + 'static, satisfying the Box<dyn StateReader + Send> bound.
+pub struct StateReaderAdapter(pub StateProviderBox);
+
+impl firehose::types::StateReader for StateReaderAdapter {
+    fn get_nonce(&self, address: Address) -> u64 {
+        self.0.account_nonce(&address).ok().flatten().unwrap_or(0)
+    }
+
+    fn get_code(&self, address: Address) -> Bytes {
+        self.0
+            .account_code(&address)
+            .ok()
+            .flatten()
+            .map(|bytecode| bytecode.0.original_bytes())
+            .unwrap_or_default()
+    }
+
+    fn exists(&self, address: Address) -> bool {
+        self.0.basic_account(&address).ok().flatten().is_some()
     }
 }
 

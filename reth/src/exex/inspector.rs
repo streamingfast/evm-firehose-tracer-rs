@@ -1,10 +1,11 @@
 use alloy_primitives::{Address, Log as AlloyLog, U256};
-use pb::sf::ethereum::r#type::v2::CallType;
+use firehose::{Opcode, StringError};
 use reth::api::FullNodeComponents;
-use reth::revm::revm::context_interface::ContextTr;
+use reth::revm::revm::context_interface::{ContextTr, JournalTr};
 use reth::revm::revm::inspector::Inspector;
 use reth::revm::revm::interpreter::{
-    interpreter::EthInterpreter, CallInputs, CallOutcome, CreateInputs, CreateOutcome, Interpreter,
+    interpreter::EthInterpreter, interpreter_types::Jumps, CallInputs, CallOutcome, CreateInputs,
+    CreateOutcome, Interpreter,
 };
 
 /// FirehoseInspector captures execution traces for the Firehose format
@@ -22,15 +23,25 @@ impl<'a, Node: FullNodeComponents> Firehose<'a, Node> {
         }
     }
 
-    /// Map EVM call scheme to Firehose CallType
-    fn map_call_type(scheme: &reth::revm::revm::interpreter::CallScheme) -> CallType {
+    /// Map EVM call scheme to Firehose call type opcode
+    fn map_call_type_opcode(scheme: &reth::revm::revm::interpreter::CallScheme) -> u8 {
         use reth::revm::revm::interpreter::CallScheme;
         match scheme {
-            CallScheme::Call => CallType::Call,
-            CallScheme::CallCode => CallType::Callcode,
-            CallScheme::DelegateCall => CallType::Delegate,
-            CallScheme::StaticCall => CallType::Static,
+            CallScheme::Call => Opcode::Call as u8,
+            CallScheme::CallCode => Opcode::CallCode as u8,
+            CallScheme::DelegateCall => Opcode::DelegateCall as u8,
+            CallScheme::StaticCall => Opcode::StaticCall as u8,
         }
+    }
+
+    /// Format EVM execution failure reason to match Geth's format
+    fn failure_reason(result: reth::revm::revm::interpreter::InstructionResult) -> StringError {
+        use reth::revm::revm::interpreter::InstructionResult;
+        StringError(match result {
+            InstructionResult::Revert => "execution reverted".to_string(),
+            InstructionResult::InvalidFEOpcode => "invalid opcode: INVALID".to_string(),
+            other => format!("{:?}", other),
+        })
     }
 }
 
@@ -39,22 +50,28 @@ where
     CTX: ContextTr,
     CTX::Journal: reth::revm::revm::inspector::JournalExt,
 {
-    /// Called after each step of EVM execution (AFTER opcode executes)
-    fn step_end(&mut self, _interp: &mut Interpreter<EthInterpreter>, _context: &mut CTX) {
-        // FIXME: Re-implement correct mapping, also check if in Geth the on_opcode hook is called after opcode
-        // execution (which would mean using step_end) or before (which would mean using step)
-        // self.tracer.on_opcode(interp, context);
+    /// Called before each opcode executes (equivalent to Geth's OnOpcode hook)
+    fn step(&mut self, interp: &mut Interpreter<EthInterpreter>, context: &mut CTX) {
+        let pc = interp.bytecode.pc() as u64;
+        let op = interp.bytecode.opcode();
+        let gas = interp.gas.remaining();
+        let depth = context.journal().depth() as i32;
+
+        self.tracer.on_opcode(pc, op, gas, 0, &[], depth, None);
+
+        // FIXME: Implement on_keccak_preimage by checking for KECCAK256 opcode and
+        // peeking into the stack for the preimage recomputing it. This was possible
+        // in Geth as we had access to memory, hopefully Interpreter exposes memory...
     }
 
     /// CALL, CALLCODE, DELEGATECALL, or STATICCALL is made
     fn call(&mut self, context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
-        let call_type = Self::map_call_type(&inputs.scheme);
+        let depth = context.journal().depth() as i32;
+        let call_type = Self::map_call_type_opcode(&inputs.scheme);
 
         self.tracer.on_call_enter(
-            // FIXME: We might need to deal with depth here (depth++, depth--) on call/call_end (and probably mixed with create/create_end)
-            0,
-            // FIXME: Maps to OPCODE as it was shared tracer expect here
-            call_type as u8,
+            depth,
+            call_type,
             inputs.caller,
             inputs.target_address,
             inputs.input.bytes(context).as_ref(),
@@ -66,50 +83,57 @@ where
     }
 
     /// CALL* operation completes
-    fn call_end(&mut self, _context: &mut CTX, _inputs: &CallInputs, outcome: &mut CallOutcome) {
+    fn call_end(&mut self, context: &mut CTX, _inputs: &CallInputs, outcome: &mut CallOutcome) {
         use reth::revm::revm::interpreter::InstructionResult;
 
+        let depth = context.journal().depth() as i32;
         let success = outcome.result.is_ok();
-        let (is_revert, _failure_reason) = if success {
+        let (is_revert, err): (bool, Option<StringError>) = if success {
             (false, None)
         } else {
-            // Only REVERT instruction is considered a revert
             let is_revert = matches!(outcome.result.result, InstructionResult::Revert);
-
-            // Format failure reason to match Geth's format
-            let reason = match outcome.result.result {
-                InstructionResult::Revert => "execution reverted".to_string(),
-                InstructionResult::InvalidFEOpcode => "invalid opcode: INVALID".to_string(),
-                other => format!("{:?}", other),
-            };
-            (is_revert, Some(reason))
+            (is_revert, Some(Self::failure_reason(outcome.result.result)))
         };
 
         self.tracer.on_call_exit(
-            // FIXME: We might need to deal with depth here (depth++, depth--) on call/call_end (and probably mixed with create/create_end)
-            0,
+            depth,
             outcome.result.output.as_ref(),
             outcome.result.gas.spent(),
-            // FIXME: We need to fix the error it should be the failure_reason wrapped so that it fits in a &dyn StdError
-            None,
+            err.as_ref().map(|e| e as &dyn std::error::Error),
             is_revert,
         );
     }
 
     /// CREATE or CREATE2 is made
-    fn create(&mut self, _context: &mut CTX, _inputs: &mut CreateInputs) -> Option<CreateOutcome> {
-        // FIXME: Re-implement correct mapping based on call(...) implementation
-        // use reth::revm::revm::interpreter::CreateScheme;
-        // let is_create2 = matches!(inputs.scheme, CreateScheme::Create2 { .. });
-        // let call_type = Self::map_create_type(is_create2);
+    fn create(&mut self, context: &mut CTX, inputs: &mut CreateInputs) -> Option<CreateOutcome> {
+        use reth::revm::revm::context_interface::CreateScheme;
 
-        // self.tracer.on_create_enter(
-        //     inputs.caller,
-        //     inputs.init_code.clone(),
-        //     inputs.gas_limit,
-        //     inputs.value,
-        //     call_type as i32,
-        // );
+        let depth = context.journal().depth() as i32;
+        let (call_type, created_address) = match inputs.scheme() {
+            CreateScheme::Create2 { .. } => {
+                // CREATE2 address is deterministic, no nonce needed
+                (Opcode::Create2 as u8, inputs.created_address(0))
+            }
+            _ => {
+                // CREATE address requires caller nonce
+                let nonce = context
+                    .journal_mut()
+                    .load_account(inputs.caller())
+                    .map(|acc| acc.info.nonce)
+                    .unwrap_or(0);
+                (Opcode::Create as u8, inputs.created_address(nonce))
+            }
+        };
+
+        self.tracer.on_call_enter(
+            depth,
+            call_type,
+            inputs.caller(),
+            created_address,
+            inputs.init_code(),
+            inputs.gas_limit(),
+            inputs.value(),
+        );
 
         None
     }
@@ -117,39 +141,28 @@ where
     /// CREATE* operation completes
     fn create_end(
         &mut self,
-        _context: &mut CTX,
+        context: &mut CTX,
         _inputs: &CreateInputs,
         outcome: &mut CreateOutcome,
     ) {
         use reth::revm::revm::interpreter::InstructionResult;
 
-        let created_address = outcome.address.unwrap_or_default();
+        let depth = context.journal().depth() as i32;
         let success = outcome.result.is_ok();
-        let (is_revert, failure_reason) = if success {
-            (false, String::new())
+        let (is_revert, err): (bool, Option<StringError>) = if success {
+            (false, None)
         } else {
-            // Only REVERT instruction is considered a revert
             let is_revert = matches!(outcome.result.result, InstructionResult::Revert);
-
-            // Format failure reason to match Geth's format
-            let reason = match outcome.result.result {
-                InstructionResult::Revert => "execution reverted".to_string(),
-                InstructionResult::InvalidFEOpcode => "invalid opcode: INVALID".to_string(),
-                other => format!("{:?}", other),
-            };
-            (is_revert, reason)
+            (is_revert, Some(Self::failure_reason(outcome.result.result)))
         };
 
-        // FIXME: Re-implement correct mapping based on call_end(...) implementation
-        let _ = (created_address, success, is_revert, failure_reason);
-        // self.tracer.on_create_exit(
-        //     outcome.result.output.clone(),
-        //     outcome.result.gas.spent(),
-        //     success,
-        //     created_address,
-        //     is_revert,
-        //     failure_reason,
-        // );
+        self.tracer.on_call_exit(
+            depth,
+            outcome.result.output.as_ref(),
+            outcome.result.gas.spent(),
+            err.as_ref().map(|e| e as &dyn std::error::Error),
+            is_revert,
+        );
     }
 
     /// LOG operation is executed
@@ -164,8 +177,20 @@ where
     }
 
     /// SELFDESTRUCT is executed
-    fn selfdestruct(&mut self, _contract: Address, _target: Address, _value: U256) {
-        // FIXME: Re-implement correct mapping
-        // self.tracer.on_selfdestruct(contract, target, value);
+    fn selfdestruct(&mut self, contract: Address, target: Address, value: U256) {
+        // In Geth's tracer, SELFDESTRUCT is modelled as a nested call at depth+1.
+        // on_call_enter with OP_SELFDESTRUCT sets the `latest_call_enter_suicided` flag
+        // and on_call_exit immediately clears it (no-op on call stack).
+        // Depth doesn't affect SELFDESTRUCT handling so we use 1 (any non-zero value).
+        self.tracer.on_call_enter(
+            1,
+            Opcode::SelfDestruct as u8,
+            contract,
+            target,
+            &[],
+            0,
+            value,
+        );
+        self.tracer.on_call_exit(1, &[], 0, None, false);
     }
 }

@@ -1,8 +1,6 @@
 use alloy_primitives::{Address, Bloom, Bytes, B256, U256};
 use base64::Engine;
-use firehose::{
-    BlockData, BlockEvent, CallType, ChainConfig, Config, ReceiptData, Tracer, TxEvent,
-};
+use firehose::{BlockData, BlockEvent, ChainConfig, Config, Opcode, ReceiptData, Tracer, TxEvent};
 use pb::sf::ethereum::r#type::v2 as pbeth;
 use prost::Message;
 use std::io::{BufRead, BufReader, Write};
@@ -78,7 +76,7 @@ pub fn test_block() -> BlockEvent {
 /// TestLegacyTrx provides a legacy (type 0) test transaction
 pub fn test_legacy_trx() -> TxEvent {
     TxEvent {
-        tx_type: 0, // Legacy
+        tx_type: firehose::TxType::Legacy, // Legacy
         hash: B256::ZERO,
         from: alice_addr(),
         to: Some(bob_addr()),
@@ -103,7 +101,7 @@ pub fn test_legacy_trx() -> TxEvent {
 /// TestAccessListTrx provides an EIP-2930 access list (type 1) test transaction
 pub fn test_access_list_trx() -> TxEvent {
     TxEvent {
-        tx_type: 1, // EIP-2930
+        tx_type: firehose::TxType::AccessList, // EIP-2930
         hash: B256::from([
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 1,
@@ -137,7 +135,7 @@ pub fn test_access_list_trx() -> TxEvent {
 /// TestDynamicFeeTrx provides an EIP-1559 dynamic fee (type 2) test transaction
 pub fn test_dynamic_fee_trx() -> TxEvent {
     TxEvent {
-        tx_type: 2, // EIP-1559
+        tx_type: firehose::TxType::DynamicFee, // EIP-1559
         hash: B256::from([
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 2,
@@ -171,7 +169,7 @@ pub fn test_dynamic_fee_trx() -> TxEvent {
 /// TestBlobTrx provides an EIP-4844 blob (type 3) test transaction
 pub fn test_blob_trx() -> TxEvent {
     TxEvent {
-        tx_type: 3, // EIP-4844
+        tx_type: firehose::TxType::Blob, // EIP-4844
         hash: B256::from([
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 3,
@@ -226,7 +224,7 @@ pub fn test_set_code_trx() -> TxEvent {
     ]);
 
     TxEvent {
-        tx_type: 4, // EIP-7702
+        tx_type: firehose::TxType::SetCode, // EIP-7702
         hash: B256::from([
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 4,
@@ -262,7 +260,7 @@ pub fn test_set_code_trx_with_auth(
     authorizations: Vec<firehose::types::SetCodeAuthorization>,
 ) -> TxEvent {
     TxEvent {
-        tx_type: 4, // EIP-7702
+        tx_type: firehose::TxType::SetCode, // EIP-7702
         hash: B256::from([
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 4,
@@ -516,7 +514,7 @@ impl TracerTester {
         gas: u64,
         input: Vec<u8>,
     ) -> &mut Self {
-        self.start_call_raw(CallType::Call as u8, from, to, input, gas, value)
+        self.start_call_raw(Opcode::Call, from, to, input, gas, value)
     }
 
     pub fn start_static_call(
@@ -526,7 +524,7 @@ impl TracerTester {
         gas: u64,
         input: Vec<u8>,
     ) -> &mut Self {
-        self.start_call_raw(CallType::StaticCall as u8, from, to, input, gas, U256::ZERO)
+        self.start_call_raw(Opcode::StaticCall, from, to, input, gas, U256::ZERO)
     }
 
     pub fn start_create_call(
@@ -537,7 +535,7 @@ impl TracerTester {
         gas: u64,
         input: Vec<u8>,
     ) -> &mut Self {
-        self.start_call_raw(CallType::Create as u8, from, to, input, gas, value)
+        self.start_call_raw(Opcode::Create, from, to, input, gas, value)
     }
 
     pub fn start_create2_call(
@@ -548,7 +546,7 @@ impl TracerTester {
         gas: u64,
         input: Vec<u8>,
     ) -> &mut Self {
-        self.start_call_raw(CallType::Create as u8, from, to, input, gas, value)
+        self.start_call_raw(Opcode::Create2, from, to, input, gas, value)
     }
 
     pub fn start_delegate_call(
@@ -559,7 +557,7 @@ impl TracerTester {
         gas: u64,
         input: Vec<u8>,
     ) -> &mut Self {
-        self.start_call_raw(CallType::DelegateCall as u8, from, to, input, gas, value)
+        self.start_call_raw(Opcode::DelegateCall, from, to, input, gas, value)
     }
 
     pub fn start_call_code(
@@ -570,12 +568,12 @@ impl TracerTester {
         gas: u64,
         input: Vec<u8>,
     ) -> &mut Self {
-        self.start_call_raw(CallType::CallCode as u8, from, to, input, gas, value)
+        self.start_call_raw(Opcode::CallCode, from, to, input, gas, value)
     }
 
     fn start_call_raw(
         &mut self,
-        typ: u8,
+        typ: Opcode,
         from: Address,
         to: Address,
         input: Vec<u8>,
@@ -583,7 +581,7 @@ impl TracerTester {
         value: U256,
     ) -> &mut Self {
         self.tracer
-            .on_call_enter(self.depth, typ, from, to, &input, gas, value);
+            .on_call_enter(self.depth, typ as u8, from, to, &input, gas, value);
         self.depth += 1;
         self
     }
@@ -791,7 +789,7 @@ impl TracerTester {
     ) -> &mut Self {
         self.tracer.on_system_call_start();
         self.tracer
-            .on_call_enter(0, CallType::Call as u8, from, to, &input, gas, U256::ZERO);
+            .on_call_enter(0, Opcode::Call as u8, from, to, &input, gas, U256::ZERO);
         self.tracer.on_call_exit(0, &output, gas_used, None, false);
         self.tracer.on_system_call_end();
         self
@@ -960,7 +958,7 @@ mod tests {
     #[test]
     fn test_test_legacy_trx() {
         let trx = test_legacy_trx();
-        assert_eq!(trx.tx_type, 0);
+        assert_eq!(trx.tx_type, firehose::TxType::Legacy);
         assert_eq!(trx.from, alice_addr());
         assert_eq!(trx.to, Some(bob_addr()));
     }

@@ -18,6 +18,7 @@ base64.workspace = true
 eyre.workspace = true
 hex.workspace = true
 k256 = { version = "0.13", features = ["ecdsa"] }
+num_enum.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 serde.workspace = true

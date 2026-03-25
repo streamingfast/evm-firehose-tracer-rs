@@ -3189,6 +3189,7 @@ dependencies = [
  "eyre",
  "hex",
  "k256",
+ "num_enum",
  "pb",
  "prost",
  "prost-types",

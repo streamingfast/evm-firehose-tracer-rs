@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, Bytes, B256, U256};
+use alloy_primitives::{Address, Bytes};
 use firehose::types::StateReader;
 use std::collections::HashMap;
 
@@ -11,10 +11,6 @@ pub struct MockStateDB {
     code: HashMap<Address, Bytes>,
     /// Account nonce storage
     nonces: HashMap<Address, u64>,
-    /// Account balance storage
-    balances: HashMap<Address, U256>,
-    /// Account storage
-    storage: HashMap<(Address, B256), B256>,
     /// Account existence flags
     exists: HashMap<Address, bool>,
 }
@@ -33,16 +29,6 @@ impl MockStateDB {
     /// Sets the nonce for an address
     pub fn set_nonce(&mut self, address: Address, nonce: u64) {
         self.nonces.insert(address, nonce);
-    }
-
-    /// Sets the balance for an address
-    pub fn set_balance(&mut self, address: Address, balance: U256) {
-        self.balances.insert(address, balance);
-    }
-
-    /// Sets a storage value for an address
-    pub fn set_storage(&mut self, address: Address, key: B256, value: B256) {
-        self.storage.insert((address, key), value);
     }
 
     /// Sets whether an address exists
@@ -65,22 +51,8 @@ impl StateReader for MockStateDB {
         self.code.get(&address).cloned().unwrap_or_default()
     }
 
-    fn get_code_hash(&self, address: Address) -> B256 {
-        match self.code.get(&address) {
-            Some(code) if !code.is_empty() => alloy_primitives::keccak256(code),
-            _ => B256::ZERO,
-        }
-    }
-
-    fn get_balance(&self, address: Address) -> U256 {
-        self.balances.get(&address).copied().unwrap_or(U256::ZERO)
-    }
-
-    fn get_storage(&self, address: Address, key: B256) -> B256 {
-        self.storage
-            .get(&(address, key))
-            .copied()
-            .unwrap_or(B256::ZERO)
+    fn exists(&self, address: Address) -> bool {
+        self.exist(address)
     }
 }
 
@@ -95,7 +67,6 @@ mod tests {
 
         assert_eq!(db.get_nonce(addr), 0);
         assert_eq!(db.get_code(addr), Bytes::default());
-        assert_eq!(db.get_code_hash(addr), B256::ZERO);
         assert!(!db.exist(addr));
     }
 
@@ -108,7 +79,6 @@ mod tests {
         db.set_code(addr, code.clone());
 
         assert_eq!(db.get_code(addr), Bytes::from(code.clone()));
-        assert_eq!(db.get_code_hash(addr), alloy_primitives::keccak256(&code));
     }
 
     #[test]

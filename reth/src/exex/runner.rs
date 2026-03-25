@@ -110,6 +110,13 @@ where
         .zip(receipts.iter())
         .enumerate()
     {
+        // Create a fresh state provider for the StateReader on each transaction.
+        // This is cheap (lazy DB access) and gives on_tx_start an owned Send + 'static value.
+        let state_reader_provider = ctx
+            .provider()
+            .state_by_block_hash(parent_hash)
+            .wrap_err_with(|| format!("Failed to get state reader for transaction {tx_index}"))?;
+
         trace_transaction::<Node>(
             &mut tracer,
             block,
@@ -117,6 +124,7 @@ where
             recovered_tx,
             receipt,
             &state_provider,
+            state_reader_provider,
             &evm_config,
             &mut prev_cumulative_gas,
             &mut log_index,
@@ -137,6 +145,7 @@ pub fn trace_transaction<Node: FullNodeComponents>(
     recovered_tx: reth::primitives::Recovered<&SignedTx<Node>>,
     receipt: &Receipt<Node>,
     state_provider: &StateProviderBox,
+    state_reader_provider: StateProviderBox,
     evm_config: &Node::Evm,
     prev_cumulative_gas: &mut u64,
     log_index: &mut u32,
@@ -148,7 +157,8 @@ where
 
     let tx: &SignedTx<Node> = &**recovered_tx;
     let tx_event = mapper::signed_tx_to_tx_event(tx, recovered_tx.signer(), tx_index);
-    tracer.on_tx_start(tx_event, None);
+    let state_reader = Box::new(mapper::StateReaderAdapter(state_reader_provider));
+    tracer.on_tx_start(tx_event, Some(state_reader));
 
     execute_transaction_with_tracing::<Node>(tracer, block, tx_index, state_provider, evm_config)
         .wrap_err_with(|| format!("Failed to execute transaction {tx_index}"))?;
@@ -178,6 +188,10 @@ pub fn execute_transaction_with_tracing<Node: FullNodeComponents>(
 ) -> eyre::Result<()> {
     use reth::revm::db::CacheDB;
 
+    // FIXME: That is very poor creating an exponential series of states. Instead, we should
+    // execute + tracer + commit each transaction one after the other, enabling building
+    // up the state as we good avoid the two pass approach below.
+
     // Create database from state provider
     let mut db = CacheDB::new(StateProviderDatabase::new(state_provider));
     let evm_env = evm_config.evm_env(block.header())?;
@@ -193,7 +207,7 @@ pub fn execute_transaction_with_tracing<Node: FullNodeComponents>(
 
             // Execute and commit previous transactions to build correct state
             let tx_env = evm_config.tx_env(recovered_tx);
-            evm.transact(tx_env)?;
+            evm.transact_commit(tx_env)?;
         }
     }
 

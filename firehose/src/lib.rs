@@ -17,8 +17,8 @@ pub use config::{ChainConfig, Config, Rules};
 pub use logging::HexView;
 pub use tracer::Tracer;
 pub use types::{
-    BlockData, BlockEvent, CallType, FinalizedBlockRef, LogData, ReceiptData, TxEvent, UncleData,
-    WithdrawalData,
+    BlockData, BlockEvent, FinalizedBlockRef, LogData, Opcode, ReceiptData, StringError, TxEvent,
+    TxType, UncleData, WithdrawalData,
 };
 pub use version::{BLOCK_VERSION, PROTOCOL_VERSION};
 
