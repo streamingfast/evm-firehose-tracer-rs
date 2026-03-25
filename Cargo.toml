@@ -1,22 +1,21 @@
 [workspace]
-members = ["pb", "firehose", "firehose-test", "monad", "monad-plugin"]
+members = ["firehose", "firehose-test", "monad", "monad-plugin", "pb", "reth"]
 resolver = "2"
 
 [workspace.package]
-version = "5.0.0"
 edition = "2021"
 
 [workspace.dependencies]
 # Internal workspace crates
 pb = { version = "2.0.0", path = "pb" }
-firehose = { version = "5.0.0", path = "firehose" }
+firehose = { version = "5.0.0-rc.0", path = "firehose" }
 
-# Alloy dependencies (compatible with rustc 1.89)
-alloy-primitives = "=1.5.2"
-alloy-consensus = "=1.5.2"
-alloy-genesis = "=1.5.2"
-alloy-rlp = "=0.3.13"
-alloy-eips = "=1.5.2"
+# Alloy dependencies
+alloy-consensus = "1.5"
+alloy-eips = "1.5"
+alloy-genesis = "1.5"
+alloy-primitives = "1.5"
+alloy-rlp = "0.3"
 
 # Other dependencies
 base64 = "0.22"

@@ -1,6 +1,6 @@
 [package]
 name = "monad-plugin"
-version.workspace = true
+version = "0.1.0"        # Going away
 edition.workspace = true
 
 [dependencies]
@@ -11,4 +11,4 @@ tracing = { workspace = true }
 hex = { workspace = true }
 serde_json = { workspace = true }
 monad-exec-events = { workspace = true }
-monad-event-ring  = { workspace = true }
+monad-event-ring = { workspace = true }

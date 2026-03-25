@@ -8,13 +8,14 @@
 use alloy_primitives::{Address, Bloom, Bytes, TxHash, B256, U256};
 
 /// BlockEvent contains the data needed for OnBlockStart
+#[derive(Debug, Clone, Default)]
 pub struct BlockEvent {
     pub block: BlockData,
     pub finalized: Option<FinalizedBlockRef>,
 }
 
 /// BlockData contains the minimal block data needed by the tracer
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct BlockData {
     pub number: u64,
     pub hash: B256,
@@ -58,7 +59,7 @@ pub struct BlockData {
 }
 
 /// UncleData contains uncle block header data
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct UncleData {
     pub hash: B256,
     pub parent_hash: B256,
@@ -80,7 +81,7 @@ pub struct UncleData {
 }
 
 /// WithdrawalData contains withdrawal data
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct WithdrawalData {
     pub index: u64,
     pub validator_index: u64,
@@ -89,21 +90,21 @@ pub struct WithdrawalData {
 }
 
 /// FinalizedBlockRef contains information about the finalized block
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct FinalizedBlockRef {
     pub number: u64,
     pub hash: B256,
 }
 
 /// AccessTuple is a single entry in an EIP-2930 access list
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AccessTuple {
     pub address: Address,
     pub storage_keys: Vec<B256>,
 }
 
 /// SetCodeAuthorization represents EIP-7702 authorization
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SetCodeAuthorization {
     pub chain_id: B256, // Using B256 to match [32]byte in Go
     pub address: Address,
@@ -114,7 +115,7 @@ pub struct SetCodeAuthorization {
 }
 
 /// TxEvent contains the data needed for OnTxStart
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TxEvent {
     pub tx_type: u8,
     pub hash: TxHash,
@@ -176,8 +177,24 @@ pub struct ReceiptData {
     pub state_root: Option<Bytes>, // State root after transaction execution (for genesis blocks and pre-Byzantium)
 }
 
+impl Default for ReceiptData {
+    fn default() -> Self {
+        Self {
+            transaction_index: 0,
+            gas_used: 0,
+            status: 0,
+            logs: Vec::new(),
+            logs_bloom: [0u8; 256],
+            cumulative_gas_used: 0,
+            blob_gas_used: 0,
+            blob_gas_price: None,
+            state_root: None,
+        }
+    }
+}
+
 /// LogData contains log event data
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LogData {
     pub address: Address,
     pub topics: Vec<B256>,
@@ -187,7 +204,7 @@ pub struct LogData {
 
 /// GenesisAccount represents an account in the genesis block allocation
 /// This is a simplified version of go-ethereum's types.Account for tracer use
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct GenesisAccount {
     /// Code is the contract bytecode (if this is a contract account)
     pub code: Option<Bytes>,

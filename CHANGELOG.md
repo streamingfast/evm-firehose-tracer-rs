@@ -3,22 +3,25 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
-
-### Fixed
-
-* SetCode authorization `r` and `s` signature fields now serialize as empty bytes when zero, matching production behavior of the native tracer.
-
-## v5.0.0
+## Unreleased (v5.0.0)
 
 ### Changed
 
+* `ChainConfig` is now deferred to `on_blockchain_init` instead of being required at `Tracer::new` construction time, aligning with the Go implementation. `Tracer::new` and `Tracer::new_with_writer` no longer accept a `chain_config` argument; pass it as the third argument to `on_blockchain_init` instead.
+* `ChainConfig` has been removed from `Config`; it is now passed directly to `on_blockchain_init`.
+* `Config::new` no longer takes a `chain_config` argument.
 * Block withdrawals are now always recorded. The `Config.skip_withdrawals` flag has been removed; consumers that previously relied on it to suppress withdrawals should handle filtering on their side if needed.
 
 ### Removed
 
 * Gas changes tracking (`on_gas_change`, per-opcode gas recording) is no longer supported. The `gas_changes` field on calls will always be empty. Consumers that relied on this data must migrate to alternative gas accounting.
 * Remove `Config.skip_withdrawals` flag (see above).
+
+## v4.0.4
+
+### Fixed
+
+* SetCode authorization `r` and `s` signature fields now serialize as empty string (`""`) when zero, matching production behavior of the native tracer.
 
 ## v4.0.3
 

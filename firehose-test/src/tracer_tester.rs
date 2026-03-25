@@ -341,13 +341,8 @@ impl TracerTester {
     /// Creates a tester with a specific chain config
     pub fn new_with_config(chain_config: ChainConfig) -> Self {
         let output_buffer = InMemoryBuffer::new();
-        let config = Config::new(chain_config.clone());
 
-        let tracer = Tracer::new_with_writer(
-            config,
-            Arc::new(chain_config.clone()),
-            Box::new(output_buffer.clone()),
-        );
+        let tracer = Tracer::new_with_writer(Config::new(), Box::new(output_buffer.clone()));
 
         let mut tester = Self {
             tracer,
@@ -358,7 +353,9 @@ impl TracerTester {
         };
 
         // Initialize the tracer
-        tester.tracer.on_blockchain_init("test", "1.0.0");
+        tester
+            .tracer
+            .on_blockchain_init("test", "1.0.0", chain_config);
 
         tester
     }
@@ -451,14 +448,14 @@ impl TracerTester {
         self.block_log_index = 0;
 
         // Clone the mock state DB and wrap it in the expected type
-        let state_reader: Box<dyn firehose::types::StateReader> =
+        let state_reader: Box<dyn firehose::types::StateReader + Send> =
             Box::new(self.mock_state_db.clone());
         self.tracer.on_tx_start(tx, Some(state_reader));
         self
     }
 
     pub fn start_trx(&mut self, tx: TxEvent) -> &mut Self {
-        let state_reader: Box<dyn firehose::types::StateReader> =
+        let state_reader: Box<dyn firehose::types::StateReader + Send> =
             Box::new(self.mock_state_db.clone());
         self.tracer.on_tx_start(tx, Some(state_reader));
         self
@@ -670,7 +667,7 @@ impl TracerTester {
         data: Vec<u8>,
         block_index: u32,
     ) -> &mut Self {
-        self.tracer.on_log(addr, topics, &data, block_index);
+        self.tracer.on_log(addr, &topics, &data, block_index);
         self.block_log_index += 1;
         self
     }

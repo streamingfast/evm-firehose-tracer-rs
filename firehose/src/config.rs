@@ -160,10 +160,6 @@ impl Default for Rules {
 /// Config holds tracer runtime configuration
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
-    /// Chain configuration (fork activation rules)
-    #[serde(default)]
-    pub chain_config: ChainConfig,
-
     /// Feature flags
     /// Enable concurrent flushing of blocks
     #[serde(default)]
@@ -185,15 +181,9 @@ pub struct Config {
 }
 
 impl Config {
-    /// Create a new config with the given chain configuration
-    pub fn new(chain_config: ChainConfig) -> Self {
-        Self {
-            chain_config,
-            enable_concurrent_flushing: false,
-            concurrent_buffer_size: default_concurrent_buffer_size(),
-            output_path: None,
-            ignore_genesis_block: false,
-        }
+    /// Create a new config
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Builder method to enable concurrent flushing
@@ -250,7 +240,6 @@ impl Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            chain_config: ChainConfig::default(),
             enable_concurrent_flushing: false,
             concurrent_buffer_size: default_concurrent_buffer_size(),
             output_path: None,
@@ -335,8 +324,7 @@ mod tests {
 
     #[test]
     fn test_config_builder() {
-        let chain_config = ChainConfig::new(1);
-        let config = Config::new(chain_config)
+        let config = Config::new()
             .with_concurrent_flushing(true)
             .with_concurrent_buffer_size(200);
 
@@ -360,13 +348,6 @@ mod tests {
     #[test]
     fn test_config_serialization() {
         let config = Config {
-            chain_config: ChainConfig {
-                chain_id: 1,
-                shanghai_time: Some(1681338455),
-                cancun_time: Some(1710338135),
-                prague_time: None,
-                verkle_time: None,
-            },
             enable_concurrent_flushing: true,
             concurrent_buffer_size: 150,
             output_path: Some("/tmp/output.log".to_string()),
@@ -376,10 +357,6 @@ mod tests {
         let json = serde_json::to_string_pretty(&config).unwrap();
         let deserialized: Config = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(
-            config.chain_config.chain_id,
-            deserialized.chain_config.chain_id
-        );
         assert_eq!(
             config.enable_concurrent_flushing,
             deserialized.enable_concurrent_flushing

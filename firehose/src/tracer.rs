@@ -22,7 +22,7 @@ pub struct Tracer {
     output_writer: Box<dyn Write + Send>,
     init_sent: Arc<AtomicBool>,
     config: Config,
-    chain_config: Arc<ChainConfig>,
+    chain_config: Option<ChainConfig>,
 
     // Block state
     block: Option<Block>,
@@ -35,7 +35,7 @@ pub struct Tracer {
     // Transaction state
     transaction: Option<TransactionTrace>,
     transaction_log_index: u32,
-    transaction_state_reader: Option<Box<dyn StateReader>>,
+    transaction_state_reader: Option<Box<dyn StateReader + Send>>,
     in_system_call: bool,
 
     // Call state
@@ -48,23 +48,19 @@ pub struct Tracer {
 impl Tracer {
     /// Creates a new Firehose tracer with the given configuration.
     /// Output is written to stdout.
-    pub fn new(config: Config, chain_config: Arc<ChainConfig>) -> Self {
-        Self::new_with_writer(config, chain_config, Box::new(std::io::stdout()))
+    pub fn new(config: Config) -> Self {
+        Self::new_with_writer(config, Box::new(std::io::stdout()))
     }
 
     /// Creates a new Firehose tracer with a custom output writer.
     /// This is useful for testing where you want to capture output to a buffer.
-    pub fn new_with_writer(
-        config: Config,
-        chain_config: Arc<ChainConfig>,
-        output_writer: Box<dyn Write + Send>,
-    ) -> Self {
+    pub fn new_with_writer(config: Config, output_writer: Box<dyn Write + Send>) -> Self {
         Self {
             // Global state
             output_writer,
             init_sent: Arc::new(AtomicBool::new(false)),
             config,
-            chain_config,
+            chain_config: None,
 
             // Block state
             block: None,
@@ -115,7 +111,12 @@ impl Tracer {
     // ============================================================================
 
     /// OnBlockchainInit is called once when the blockchain is initialized
-    pub fn on_blockchain_init(&mut self, node_name: &str, node_version: &str) {
+    pub fn on_blockchain_init(
+        &mut self,
+        node_name: &str,
+        node_version: &str,
+        chain_config: ChainConfig,
+    ) {
         if self
             .init_sent
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -132,10 +133,8 @@ impl Tracer {
             panic!("OnBlockchainInit was called more than once");
         }
 
-        tracing::info!(
-            "tracer initialized (chain_id={})",
-            self.chain_config.chain_id
-        );
+        tracing::info!("tracer initialized (chain_id={})", chain_config.chain_id);
+        self.chain_config = Some(chain_config);
     }
 
     /// OnGenesisBlock is called for the genesis block
@@ -265,9 +264,11 @@ impl Tracer {
         let block_data = &event.block;
 
         // Compute block rules for this block (block-scoped fork flags)
-        self.block_rules =
-            self.chain_config
-                .rules(block_data.number, block_data.is_merge, block_data.time);
+        self.block_rules = self.chain_config.as_ref().unwrap().rules(
+            block_data.number,
+            block_data.is_merge,
+            block_data.time,
+        );
 
         tracing::info!(
             "block start (number={} hash={:?})",
@@ -364,7 +365,11 @@ impl Tracer {
     // ============================================================================
 
     /// OnTxStart is called at the beginning of transaction execution
-    pub fn on_tx_start(&mut self, event: TxEvent, state_reader: Option<Box<dyn StateReader>>) {
+    pub fn on_tx_start(
+        &mut self,
+        event: TxEvent,
+        state_reader: Option<Box<dyn StateReader + Send>>,
+    ) {
         tracing::info!("trx start (hash={:?} type={})", event.hash, event.tx_type);
 
         // Validate state: Must be in block, not in transaction, not in call
@@ -1076,7 +1081,7 @@ impl Tracer {
     // ============================================================================
 
     /// OnLog is called when a log event is emitted
-    pub fn on_log(&mut self, addr: Address, topics: Vec<B256>, data: &[u8], block_index: u32) {
+    pub fn on_log(&mut self, addr: Address, topics: &[B256], data: &[u8], block_index: u32) {
         self.ensure_in_block_and_in_trx_and_in_call();
 
         if let Some(active_call) = self.call_stack.peek_mut() {
@@ -1292,7 +1297,7 @@ impl Tracer {
     // ============================================================================
 
     fn ensure_blockchain_init(&self) {
-        if !self.init_sent.load(Ordering::SeqCst) {
+        if self.chain_config.is_none() {
             panic!("the OnBlockchainInit hook should have been called at this point");
         }
     }
