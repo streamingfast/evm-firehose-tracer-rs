@@ -8,7 +8,7 @@ pub use reth_exex::{ExExContext, ExExEvent, ExExNotification};
 pub use reth_node_api::{ConfigureEvm, FullNodeComponents};
 pub use reth_provider::{StateProviderBox, StateProviderFactory};
 pub use reth_revm::database::StateProviderDatabase;
-pub use reth_tracing::tracing::{debug, info};
+pub use reth_tracing::tracing::{debug, error, info, trace, warn};
 
 // Alloy types
 pub use alloy_consensus::{BlockHeader, Transaction};
@@ -33,3 +33,7 @@ pub type ChainSpec<Node> =
 /// Type alias for SignedTx from a Node primitives
 pub type SignedTx<Node> =
     <<<Node as reth_node_api::FullNodeTypes>::Types as reth_node_api::NodeTypes>::Primitives as reth_node_api::NodePrimitives>::SignedTx;
+
+/// Type alias for Receipt from a Node primitives
+pub type Receipt<Node> =
+    <<<Node as reth_node_api::FullNodeTypes>::Types as reth_node_api::NodeTypes>::Primitives as reth_node_api::NodePrimitives>::Receipt;

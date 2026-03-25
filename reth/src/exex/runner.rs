@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-
-use crate::{exex::inspector, prelude::*};
+use crate::{exex::inspector, exex::mapper, prelude::*};
+use eyre::Context;
 use firehose;
 use reth::chainspec::{EthChainSpec, EthereumHardforks};
+use reth_provider::BlockIdReader;
 
 /// Ethereum-specific firehose tracer
 pub async fn run_loop<Node: FullNodeComponents>(
@@ -11,6 +11,7 @@ pub async fn run_loop<Node: FullNodeComponents>(
 ) -> eyre::Result<()>
 where
     ChainSpec<Node>: EthereumHardforks + EthChainSpec,
+    SignedTx<Node>: mapper::SignatureFields,
 {
     info!(target: "firehose:tracer", "Launching Ethereum tracer");
 
@@ -32,89 +33,16 @@ where
     while let Some(notification) = ctx.notifications.try_next().await? {
         match &notification {
             ExExNotification::ChainCommitted { new } => {
-                // Iterate through blocks with their receipts
                 for (block, receipts) in new.blocks_and_receipts() {
-                    if block.number() == 1 {
-                        // FIXME: Re-implement using `ctx.config.chain.genesis()`
-                        tracer.on_genesis_block(
-                            firehose::BlockEvent {
-                                ..Default::default()
-                            },
-                            HashMap::new(),
-                        );
-                    } else {
-                        // FIXME: Implement correct population of BlockEvent fields from the block header and any other sources as needed
-                        // FIXME: Implement finality correctly (does ExEx have a way to query/report that?)
-                        tracer.on_block_start(firehose::BlockEvent {
-                            ..Default::default()
-                        });
-
-                        // Get state provider for the parent block to re-execute transactions
-                        let parent_hash = block.parent_hash();
-                        let state_provider = match ctx.provider().state_by_block_hash(parent_hash) {
-                            Ok(provider) => provider,
-                            Err(e) => {
-                                info!(target: "firehose:tracer", "Failed to get state provider for block {}: {}", block.number(), e);
-                                continue;
-                            }
-                        };
-
-                        // Execute system calls using shared helper
-                        if let Err(e) = execute_system_calls_with_tracing::<Node>(
-                            &mut tracer,
-                            block,
-                            &state_provider,
-                            &evm_config,
-                            &ctx.config.chain,
-                        ) {
-                            info!(target: "firehose:tracer", "Failed to execute system calls: {}", e);
-                        }
-
-                        // Process each transaction in the block with re-execution
-                        let recovered_txs: Vec<_> = block.transactions_recovered().collect();
-
-                        // FIXME: Receipt would need to be reported up back
-                        for (tx_index, (recovered_tx, _receipt)) in
-                            recovered_txs.iter().zip(receipts.iter()).enumerate()
-                        {
-                            let _tx: &SignedTx<Node> = &**recovered_tx;
-                            // FIXME: Implement correct population of TxEvent fields from the transaction and any other sources as needed
-                            // FIXME: Check how we can add support for StateReader implementation, normally we should be able to use
-                            // state_provider from above but maybe we will need to deal with some form of locking as we need to share it
-                            tracer.on_tx_start(
-                                firehose::TxEvent {
-                                    ..Default::default()
-                                },
-                                None,
-                            );
-
-                            // Re-execute the transaction using shared helper
-                            if let Err(e) = execute_transaction_with_tracing::<Node>(
-                                &mut tracer,
-                                block,
-                                tx_index,
-                                &state_provider,
-                                &evm_config,
-                            ) {
-                                // FIXME: This should be a hard error, all transactions should be replayable since they come
-                                // from a know block.
-                                info!(target: "firehose:tracer", "Failed to execute transaction: {}", e);
-                            }
-
-                            // FIXME: Fill in correct receipt information, probably that execute_transaction_with_tracing should return the receipt
-                            tracer.on_tx_end(None, None);
-                        }
-
-                        // Finalize and output the block
-                        tracer.on_block_end(None);
-                    }
+                    trace_block(&ctx, &mut tracer, &evm_config, block, receipts)
+                        .wrap_err("Firehose trace block")?;
                 }
             }
             ExExNotification::ChainReorged { old, new } => {
-                info!(from_chain = ?old.range(), to_chain = ?new.range(), "Received reorg");
+                error!(from_chain = ?old.range(), to_chain = ?new.range(), "Received reorg");
             }
             ExExNotification::ChainReverted { old } => {
-                info!(reverted_chain = ?old.range(), "Received revert");
+                error!(reverted_chain = ?old.range(), "Received revert");
             }
         };
 
@@ -123,6 +51,116 @@ where
                 .send(ExExEvent::FinishedHeight(committed_chain.tip().num_hash()))?;
         }
     }
+
+    Ok(())
+}
+
+pub fn trace_block<Node: FullNodeComponents>(
+    ctx: &ExExContext<Node>,
+    mut tracer: &mut firehose::Tracer,
+    evm_config: &Node::Evm,
+    block: &RecoveredBlock<Node>,
+    receipts: &Vec<Receipt<Node>>,
+) -> eyre::Result<()>
+where
+    ChainSpec<Node>: EthereumHardforks + EthChainSpec,
+    SignedTx<Node>: mapper::SignatureFields,
+{
+    if block.number() == 1 {
+        tracer.on_genesis_block(
+            firehose::BlockEvent {
+                block: mapper::to_block_data::<Node>(block),
+                finalized: None,
+            },
+            mapper::to_genesis_alloc(ctx.config.chain.genesis()),
+        );
+        return Ok(());
+    }
+
+    tracer.on_block_start(firehose::BlockEvent {
+        block: mapper::to_block_data::<Node>(block),
+        finalized: mapper::to_finalized_ref(ctx.provider().finalized_block_num_hash()),
+    });
+
+    // Get state provider for the parent block to re-execute transactions
+    let parent_hash = block.parent_hash();
+    let state_provider = ctx
+        .provider()
+        .state_by_block_hash(parent_hash)
+        .wrap_err(format!(
+            "Failed to get state provider for block {}",
+            block.number()
+        ))?;
+
+    // Execute system calls using shared helper
+    if let Err(e) = execute_system_calls_with_tracing::<Node>(
+        &mut tracer,
+        block,
+        &state_provider,
+        &evm_config,
+        &ctx.config.chain,
+    ) {
+        info!(target: "firehose:tracer", "Failed to execute system calls: {}", e);
+    }
+
+    let mut prev_cumulative_gas: u64 = 0;
+    let mut log_index: u32 = 0;
+    for (tx_index, (recovered_tx, receipt)) in block
+        .transactions_recovered()
+        .zip(receipts.iter())
+        .enumerate()
+    {
+        trace_transaction::<Node>(
+            &mut tracer,
+            block,
+            tx_index,
+            recovered_tx,
+            receipt,
+            &state_provider,
+            &evm_config,
+            &mut prev_cumulative_gas,
+            &mut log_index,
+        )
+        .wrap_err_with(|| format!("Firehose trace transaction {tx_index}"))?;
+    }
+
+    // Finalize and output the block
+    tracer.on_block_end(None);
+
+    Ok(())
+}
+
+pub fn trace_transaction<Node: FullNodeComponents>(
+    tracer: &mut firehose::Tracer,
+    block: &RecoveredBlock<Node>,
+    tx_index: usize,
+    recovered_tx: reth::primitives::Recovered<&SignedTx<Node>>,
+    receipt: &Receipt<Node>,
+    state_provider: &StateProviderBox,
+    evm_config: &Node::Evm,
+    prev_cumulative_gas: &mut u64,
+    log_index: &mut u32,
+) -> eyre::Result<()>
+where
+    SignedTx<Node>: mapper::SignatureFields,
+{
+    use alloy_consensus::TxReceipt;
+
+    let tx: &SignedTx<Node> = &**recovered_tx;
+    let tx_event = mapper::signed_tx_to_tx_event(tx, recovered_tx.signer(), tx_index);
+    tracer.on_tx_start(tx_event, None);
+
+    execute_transaction_with_tracing::<Node>(tracer, block, tx_index, state_provider, evm_config)
+        .wrap_err_with(|| format!("Failed to execute transaction {tx_index}"))?;
+
+    let cumulative_gas = receipt.cumulative_gas_used();
+    let gas_used = cumulative_gas - *prev_cumulative_gas;
+    let log_count = receipt.logs().len() as u32;
+    let receipt_data = mapper::to_receipt_data(receipt, tx_index as u32, gas_used, *log_index);
+    *prev_cumulative_gas = cumulative_gas;
+    *log_index += log_count;
+
+    tracer.on_tx_end(Some(&receipt_data), None);
 
     Ok(())
 }
@@ -155,7 +193,7 @@ pub fn execute_transaction_with_tracing<Node: FullNodeComponents>(
 
             // Execute and commit previous transactions to build correct state
             let tx_env = evm_config.tx_env(recovered_tx);
-            evm.transact_commit(tx_env)?;
+            evm.transact(tx_env)?;
         }
     }
 

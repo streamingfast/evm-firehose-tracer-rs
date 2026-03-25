@@ -57,7 +57,6 @@ fn test_skipped_block_preserves_coinbase() {
         uncles: vec![],
         size: 509,
         withdrawals: vec![],
-        is_merge: true,
         withdrawals_root: None,
         blob_gas_used: None,
         excess_blob_gas: None,

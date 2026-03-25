@@ -37,7 +37,6 @@ pub struct BlockData {
     pub uncles: Vec<UncleData>,
     pub size: u64,
     pub withdrawals: Vec<WithdrawalData>,
-    pub is_merge: bool,
 
     // EIP-4895: Shanghai withdrawals
     pub withdrawals_root: Option<B256>, // Root hash of withdrawals tree (None for pre-Shanghai blocks)
@@ -56,6 +55,13 @@ pub struct BlockData {
     // List of transaction indexes that are dependent on each other in the block
     // Used by Polygon's parallel execution engine (None for non-Polygon chains)
     pub tx_dependency: Option<Vec<Vec<u64>>>,
+}
+
+impl BlockData {
+    /// Returns true if this block is a merge (post-merge blocks have difficulty == 0)
+    pub fn is_merge(&self) -> bool {
+        self.difficulty == U256::ZERO
+    }
 }
 
 /// UncleData contains uncle block header data
@@ -93,7 +99,25 @@ pub struct WithdrawalData {
 #[derive(Debug, Clone, Default)]
 pub struct FinalizedBlockRef {
     pub number: u64,
-    pub hash: B256,
+    /// Hash may be None if the finalized block is not available (e.g., due to pruning), it's
+    /// optional because Firehose protocol only relies on the finalized block number for finality
+    /// notifications, the hash being used for logging purposes when available.
+    pub hash: Option<B256>,
+}
+
+impl FinalizedBlockRef {
+    /// Creates a new FinalizedBlockRef with the given number and no hash (hence the `minimal` name)
+    pub fn minimal(number: u64) -> Self {
+        Self { number, hash: None }
+    }
+
+    /// Creates a new FinalizedBlockRef with the given number and optional hash
+    pub fn new(number: u64, hash: B256) -> Self {
+        Self {
+            number,
+            hash: Some(hash),
+        }
+    }
 }
 
 /// AccessTuple is a single entry in an EIP-2930 access list

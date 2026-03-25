@@ -12,6 +12,7 @@ firehose.workspace = true
 pb.workspace = true
 
 alloy-consensus.workspace = true
+alloy-rlp.workspace = true
 alloy-eips.workspace = true
 alloy-genesis.workspace = true
 alloy-primitives.workspace = true

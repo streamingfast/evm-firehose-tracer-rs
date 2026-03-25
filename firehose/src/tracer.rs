@@ -266,7 +266,7 @@ impl Tracer {
         // Compute block rules for this block (block-scoped fork flags)
         self.block_rules = self.chain_config.as_ref().unwrap().rules(
             block_data.number,
-            block_data.is_merge,
+            block_data.is_merge(),
             block_data.time,
         );
 
