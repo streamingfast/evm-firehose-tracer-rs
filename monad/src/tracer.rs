@@ -290,10 +290,10 @@ impl FirehosePlugin {
                 }
             }
             ExecEvent::TxnCallFrame { txn_index, txn_call_frame, input_bytes, return_bytes } => {
-
-                // if !self.tracer.is_in_transaction() {
-                //     self.tracer.on_system_call_start();
-                // }
+                let in_system_call = !self.tracer.is_in_transaction();
+                if in_system_call {
+                    self.tracer.on_system_call_start();
+                }
 
                 let from = alloy_primitives::Address::from(txn_call_frame.caller.bytes);
                 let to = alloy_primitives::Address::from(txn_call_frame.call_target.bytes);
@@ -303,8 +303,9 @@ impl FirehosePlugin {
                 self.tracer.on_call_exit(txn_call_frame.depth as i32, &return_bytes, txn_call_frame.gas_used, None, txn_call_frame.evmc_status == 2);
             }
             ExecEvent::AccountAccessListHeader(header) => {
-
-                // self.tracer.on_system_call_end();
+                if self.tracer.is_in_system_call() {
+                    self.tracer.on_system_call_end();
+                }
             }
             ExecEvent::AccountAccess(account_access) => {
                 let addr = alloy_primitives::Address::from(account_access.address.bytes);
@@ -334,20 +335,18 @@ impl FirehosePlugin {
                 self.tracer.on_system_call_end();
             }
 
-            ExecEvent::RecordError(monad_event_record_error) => todo!(),
-            ExecEvent::BlockReject(_) => todo!(),
+            ExecEvent::RecordError(_) => {}
+            ExecEvent::BlockReject(_) => {}
             ExecEvent::BlockPerfEvmEnter => {}
             ExecEvent::BlockPerfEvmExit => {}
-            ExecEvent::BlockQC(monad_exec_block_qc) => todo!(),
-
-            // Consensus level finalized
-            ExecEvent::BlockFinalized(monad_exec_block_tag) => todo!(),
-            ExecEvent::BlockVerified(monad_exec_block_verified) => todo!(),
+            ExecEvent::BlockQC(_) => {}
+            ExecEvent::BlockFinalized(_) => {}
+            ExecEvent::BlockVerified(_) => {}
             ExecEvent::TxnHeaderEnd => {}
-            ExecEvent::TxnReject { txn_index, reject } => {}
+            ExecEvent::TxnReject { .. } => {}
             ExecEvent::TxnPerfEvmEnter => {}
             ExecEvent::TxnPerfEvmExit => {}
-            ExecEvent::EvmError(monad_exec_evm_error) => todo!(),
+            ExecEvent::EvmError(_) => {}
         }
         Ok(())
     }
