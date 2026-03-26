@@ -4,6 +4,8 @@
 /.claude
 /.firehose-data
 /.firehose-data-optimism
+/build
+/dist
 /target
 /op-data
 /.cargo

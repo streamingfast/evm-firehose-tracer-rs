@@ -14,7 +14,6 @@ fn test_create_with_value_transfer() {
     // CONTRACT CREATE with value transfer combines:
     // - Balance change (value transfer from caller to contract)
     // - Code change (contract deployment)
-    // - Potentially gas changes
 
     let deployed_code = vec![0x60, 0x80, 0x60, 0x40, 0x52]; // Simple contract bytecode
     let code_hash = hash32(123);
@@ -45,8 +44,6 @@ fn test_create_with_value_transfer() {
             vec![],
             deployed_code.clone(),
         )
-        // Gas consumption
-        .gas_change(200000, 150000, pbeth::gas_change::Reason::ContractCreation)
         .end_call(vec![], 150000)
         .end_block_trx(Some(success_receipt(200000)), None, None)
         .validate_with_category("multiplestatechanges", |block| {
@@ -60,12 +57,10 @@ fn test_create_with_value_transfer() {
                 "Should have 2 balance changes"
             );
             assert_eq!(1, call.code_changes.len(), "Should have 1 code change");
-            assert_eq!(1, call.gas_changes.len(), "Should have 1 gas change");
 
             // Verify ordinals are all increasing
             assert!(call.balance_changes[0].ordinal < call.balance_changes[1].ordinal);
             assert!(call.balance_changes[1].ordinal < call.code_changes[0].ordinal);
-            assert!(call.code_changes[0].ordinal < call.gas_changes[0].ordinal);
         });
 }
 
@@ -130,7 +125,6 @@ fn test_comprehensive_transaction_all_state_types() {
     // - Nonce change
     // - Code change
     // - Storage change
-    // - Gas change
     // - Log emission
 
     let deployed_code = vec![0x60, 0x02];
@@ -158,7 +152,6 @@ fn test_comprehensive_transaction_all_state_types() {
         .nonce_change(alice_addr(), 5, 6)
         .code_change(bob_addr(), prev_hash, code_hash, vec![], deployed_code)
         .storage_change(bob_addr(), storage_key, zero_val, storage_val)
-        .gas_change(300000, 250000, pbeth::gas_change::Reason::ContractCreation)
         .log(bob_addr(), log_topics, log_data.clone(), 0)
         .end_call(vec![], 250000)
         .end_block_trx(
@@ -178,7 +171,6 @@ fn test_comprehensive_transaction_all_state_types() {
             assert_eq!(1, call.nonce_changes.len(), "Should have nonce change");
             assert_eq!(1, call.code_changes.len(), "Should have code change");
             assert_eq!(1, call.storage_changes.len(), "Should have storage change");
-            assert_eq!(1, call.gas_changes.len(), "Should have gas change");
             assert_eq!(1, call.logs.len(), "Should have log");
 
             // Verify ordinals are strictly increasing across ALL types
@@ -187,7 +179,6 @@ fn test_comprehensive_transaction_all_state_types() {
             ordinals.push(call.nonce_changes[0].ordinal);
             ordinals.push(call.code_changes[0].ordinal);
             ordinals.push(call.storage_changes[0].ordinal);
-            ordinals.push(call.gas_changes[0].ordinal);
             ordinals.push(call.logs[0].ordinal);
 
             // Check strict ordering

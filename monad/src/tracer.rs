@@ -1,19 +1,16 @@
 //! Main Firehose tracer implementation
 
-use crate::{EventMapper, MonadConsumer, FirehosePluginConfig};
+use crate::{EventMapper, MonadConsumer, FirehosePluginConfig, TRACER_NAME, TRACER_VERSION};
 use alloy_primitives::B256;
 use eyre::Result;
-use firehose::{types::{AccessTuple, SetCodeAuthorization}, FinalityStatus, PROTOCOL_VERSION, Tracer};
-use firehose::printer::{print_block_to_firehose, print_to_firehose};
+use firehose::{types::{AccessTuple, SetCodeAuthorization, TxType}, FinalityStatus, Tracer};
+use firehose::printer::print_block_to_firehose;
 use futures_util::StreamExt;
 use monad_exec_events::ExecEvent;
 use std::collections::HashMap;
 use std::io::stdout;
-use std::sync::Arc;
 use std::time::Instant;
-use tracing::{debug, error, info, warn};
-
-use crate::{TRACER_NAME, TRACER_VERSION};
+use tracing::{error, info};
 
 /// Main Firehose tracer for Monad
 pub struct FirehosePlugin {
@@ -33,13 +30,12 @@ pub struct FirehosePlugin {
 
 impl FirehosePlugin {
     pub fn new(config: FirehosePluginConfig) -> Self {
-        let chain_config = firehose::ChainConfig::new(config.chain_id);
         Self {
             config,
             event_mapper: EventMapper::new(),
             finality: FinalityStatus::default(),
             consumer: None,
-            tracer: Tracer::new(firehose::Config::new(chain_config.clone()), Arc::new(chain_config)),
+            tracer: Tracer::new(firehose::Config::new()),
             current_head: 0,
             lib_delta: 10,
             tx_end_receipt: None,
@@ -51,13 +47,12 @@ impl FirehosePlugin {
     }
 
     pub fn new_with_writer(config: FirehosePluginConfig, writer: Box<dyn std::io::Write + Send>) -> Self {
-        let chain_config = firehose::ChainConfig::new(config.chain_id);
         Self {
             config,
             event_mapper: EventMapper::new(),
             finality: FinalityStatus::default(),
             consumer: None,
-            tracer: Tracer::new_with_writer(firehose::Config::new(chain_config.clone()), Arc::new(chain_config), writer),
+            tracer: Tracer::new_with_writer(firehose::Config::new(), writer),
             current_head: 0,
             lib_delta: 10,
             tx_end_receipt: None,
@@ -80,7 +75,8 @@ impl FirehosePlugin {
     }
 
     pub fn on_blockchain_init(&mut self, node_name: &str, node_version: &str) {
-        self.tracer.on_blockchain_init(node_name, node_version);
+        let chain_config = firehose::ChainConfig::new(self.config.chain_id);
+        self.tracer.on_blockchain_init(node_name, node_version, chain_config);
     }
 
     pub fn with_consumer(mut self, consumer: MonadConsumer) -> Self {
@@ -91,7 +87,8 @@ impl FirehosePlugin {
     pub async fn start(&mut self) -> Result<()> {
         info!("Starting Firehose tracer for network: {}", self.config.network_name);
 
-        self.tracer.on_blockchain_init(TRACER_NAME, TRACER_VERSION);
+        let chain_config = firehose::ChainConfig::new(self.config.chain_id);
+        self.tracer.on_blockchain_init(TRACER_NAME, TRACER_VERSION, chain_config);
 
         let consumer = self
             .consumer
@@ -154,7 +151,6 @@ impl FirehosePlugin {
                     uncles: vec![],
                     size: 0,
                     withdrawals: vec![],
-                    is_merge: true,
                     withdrawals_root: Some(B256::from(ei.withdrawals_root.bytes)),
                     blob_gas_used: None,
                     excess_blob_gas: None,
@@ -165,7 +161,7 @@ impl FirehosePlugin {
 
                 self.tracer.on_block_start(firehose::BlockEvent { block: block_data, finalized: Some(firehose::FinalizedBlockRef{
                     number: lib,
-                    hash: B256::ZERO
+                    hash: None
                 }) });
             }
             ExecEvent::BlockEnd(block_end) => {
@@ -181,7 +177,7 @@ impl FirehosePlugin {
                 let h = &txn_header_start.txn_header;
                 let blob_gas_fee_cap = alloy_primitives::U256::from_limbs(h.max_fee_per_blob_gas.limbs);
                 let tx_event = firehose::TxEvent {
-                    tx_type: h.txn_type as u8,
+                    tx_type: TxType::try_from(h.txn_type as u8).unwrap_or(TxType::Legacy),
                     hash: B256::from(txn_header_start.txn_hash.bytes),
                     from: alloy_primitives::Address::from(txn_header_start.sender.bytes),
                     to: if h.is_contract_creation { None } else { Some(alloy_primitives::Address::from(h.to.bytes)) },
@@ -290,7 +286,7 @@ impl FirehosePlugin {
                     panic!("TxnLog arrived but no transaction is active");
                 }
                 if self.tracer.is_in_call() {
-                    self.tracer.on_log(addr, topics, &data_bytes, txn_log.index);
+                    self.tracer.on_log(addr, &topics, &data_bytes, txn_log.index);
                 }
             }
             ExecEvent::TxnCallFrame { txn_index, txn_call_frame, input_bytes, return_bytes } => {

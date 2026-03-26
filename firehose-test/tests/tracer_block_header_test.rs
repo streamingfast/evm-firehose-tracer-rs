@@ -33,7 +33,6 @@ fn test_eip4895_withdrawals_root() {
             uncles: vec![],
             size: 1024,
             withdrawals: vec![],
-            is_merge: true,
             withdrawals_root: Some(withdrawals_root), // EIP-4895
             blob_gas_used: None,
             excess_blob_gas: None,
@@ -87,7 +86,6 @@ fn test_eip4844_blob_gas_fields() {
             uncles: vec![],
             size: 1024,
             withdrawals: vec![],
-            is_merge: true,
             withdrawals_root: None,
             blob_gas_used: Some(blob_gas_used),     // EIP-4844
             excess_blob_gas: Some(excess_blob_gas), // EIP-4844
@@ -139,7 +137,6 @@ fn test_eip4788_parent_beacon_root() {
             uncles: vec![],
             size: 1024,
             withdrawals: vec![],
-            is_merge: true,
             withdrawals_root: None,
             blob_gas_used: None,
             excess_blob_gas: None,
@@ -192,7 +189,6 @@ fn test_eip7685_requests_hash() {
             uncles: vec![],
             size: 1024,
             withdrawals: vec![],
-            is_merge: true,
             withdrawals_root: None,
             blob_gas_used: None,
             excess_blob_gas: None,
@@ -242,7 +238,6 @@ fn test_polygon_tx_dependency() {
             uncles: vec![],
             size: 1024,
             withdrawals: vec![],
-            is_merge: true,
             withdrawals_root: None,
             blob_gas_used: None,
             excess_blob_gas: None,
@@ -320,7 +315,6 @@ fn test_all_eip_fields_combined() {
             uncles: vec![],
             size: 1024,
             withdrawals: vec![],
-            is_merge: true,
             withdrawals_root: Some(withdrawals_root),
             blob_gas_used: Some(blob_gas_used),
             excess_blob_gas: Some(excess_blob_gas),
@@ -397,7 +391,6 @@ fn test_nil_eip_fields_pre_fork() {
             uncles: vec![],
             size: 1024,
             withdrawals: vec![],
-            is_merge: false, // Pre-merge
             // All EIP fields are None (pre-fork block)
             withdrawals_root: None,
             blob_gas_used: None,

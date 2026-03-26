@@ -421,69 +421,6 @@ fn test_storage_change_after_root_call() {
         });
 }
 
-// =============================================================================
-// Gas Changes - Deferred State
-// =============================================================================
-
-#[test]
-fn test_gas_change_before_root_call() {
-    // Gas change before call starts (intrinsic gas)
-    let mut tester = TracerTester::new();
-    tester
-        .start_block_trx(test_legacy_trx())
-        .gas_change(21000, 0, pbeth::gas_change::Reason::IntrinsicGas)
-        .start_call(
-            alice_addr(),
-            bob_addr(),
-            alloy_primitives::U256::from(100),
-            21000,
-            vec![],
-        )
-        .end_call(vec![], 21000)
-        .end_block_trx(Some(success_receipt(21000)), None, None)
-        .validate_with_category("deferredcallstate", |block| {
-            let trx = &block.transaction_traces[0];
-            let call = &trx.calls[0];
-
-            assert_eq!(1, call.gas_changes.len());
-            let gc = &call.gas_changes[0];
-            assert_eq!(21000, gc.old_value);
-            assert_eq!(0, gc.new_value);
-            assert_eq!(pbeth::gas_change::Reason::IntrinsicGas as i32, gc.reason);
-        });
-}
-
-#[test]
-fn test_gas_change_after_root_call() {
-    // Gas change after call ends (gas refund)
-    let mut tester = TracerTester::new();
-    tester
-        .start_block_trx(test_legacy_trx())
-        .start_call(
-            alice_addr(),
-            bob_addr(),
-            alloy_primitives::U256::from(100),
-            21000,
-            vec![],
-        )
-        .end_call(vec![], 21000)
-        .gas_change(0, 5000, pbeth::gas_change::Reason::RefundAfterExecution)
-        .end_block_trx(Some(success_receipt(21000)), None, None)
-        .validate_with_category("deferredcallstate", |block| {
-            let trx = &block.transaction_traces[0];
-            let call = &trx.calls[0];
-
-            assert_eq!(1, call.gas_changes.len());
-            let gc = &call.gas_changes[0];
-            assert_eq!(0, gc.old_value);
-            assert_eq!(5000, gc.new_value);
-            assert_eq!(
-                pbeth::gas_change::Reason::RefundAfterExecution as i32,
-                gc.reason
-            );
-        });
-}
-
 #[test]
 fn test_code_changes_mixed_before_during_after() {
     // Code changes: before, during, after call
@@ -556,53 +493,6 @@ fn test_code_changes_mixed_before_during_after() {
         });
 }
 
-#[test]
-fn test_gas_changes_mixed_before_during_after() {
-    // Gas changes: before, during, after call
-    let mut tester = TracerTester::new();
-    tester
-        .start_block_trx(test_legacy_trx())
-        // BEFORE: Intrinsic gas
-        .gas_change(50000, 29000, pbeth::gas_change::Reason::IntrinsicGas)
-        .start_call(
-            alice_addr(),
-            bob_addr(),
-            alloy_primitives::U256::from(100),
-            50000,
-            vec![],
-        )
-        // DURING: Call execution (using STATE_COLD_ACCESS as example of gas consumed during call)
-        .gas_change(29000, 8000, pbeth::gas_change::Reason::StateColdAccess)
-        .end_call(vec![], 8000)
-        // AFTER: Gas refund
-        .gas_change(8000, 13000, pbeth::gas_change::Reason::RefundAfterExecution)
-        .end_block_trx(Some(success_receipt(37000)), None, None)
-        .validate_with_category("deferredcallstate", |block| {
-            let trx = &block.transaction_traces[0];
-            let call = &trx.calls[0];
-
-            assert_eq!(3, call.gas_changes.len());
-
-            // Before (deferred)
-            assert_eq!(
-                pbeth::gas_change::Reason::IntrinsicGas as i32,
-                call.gas_changes[0].reason
-            );
-
-            // During
-            assert_eq!(
-                pbeth::gas_change::Reason::StateColdAccess as i32,
-                call.gas_changes[1].reason
-            );
-
-            // After (deferred)
-            assert_eq!(
-                pbeth::gas_change::Reason::RefundAfterExecution as i32,
-                call.gas_changes[2].reason
-            );
-        });
-}
-
 // =============================================================================
 // Mixed State Changes - Complex Scenarios
 // =============================================================================
@@ -630,7 +520,6 @@ fn test_all_state_types_before_root_call() {
             old_code.clone(),
             new_code.clone(),
         )
-        .gas_change(50000, 29000, pbeth::gas_change::Reason::IntrinsicGas)
         .start_call(
             alice_addr(),
             bob_addr(),
@@ -648,7 +537,6 @@ fn test_all_state_types_before_root_call() {
             assert_eq!(1, call.balance_changes.len());
             assert_eq!(1, call.nonce_changes.len());
             assert_eq!(1, call.code_changes.len());
-            assert_eq!(1, call.gas_changes.len());
         });
 }
 
@@ -683,7 +571,6 @@ fn test_all_state_types_after_root_call() {
             old_code.clone(),
             new_code.clone(),
         )
-        .gas_change(0, 5000, pbeth::gas_change::Reason::RefundAfterExecution)
         .end_block_trx(Some(success_receipt(16000)), None, None)
         .validate_with_category("deferredcallstate", |block| {
             let trx = &block.transaction_traces[0];
@@ -693,7 +580,6 @@ fn test_all_state_types_after_root_call() {
             assert_eq!(1, call.balance_changes.len());
             assert_eq!(1, call.nonce_changes.len());
             assert_eq!(1, call.code_changes.len());
-            assert_eq!(1, call.gas_changes.len());
         });
 }
 
@@ -725,7 +611,6 @@ fn test_all_state_types_mixed_before_during_after() {
             code1_old.clone(),
             code1_new.clone(),
         )
-        .gas_change(50000, 29000, pbeth::gas_change::Reason::IntrinsicGas)
         // === DURING ROOT CALL ===
         .start_call(
             alice_addr(),
@@ -754,7 +639,6 @@ fn test_all_state_types_mixed_before_during_after() {
             code2_old.clone(),
             code2_new.clone(),
         )
-        .gas_change(29000, 8000, pbeth::gas_change::Reason::StateColdAccess)
         .end_call(vec![], 8000)
         // === AFTER ROOT CALL ===
         .balance_change(
@@ -771,7 +655,6 @@ fn test_all_state_types_mixed_before_during_after() {
             code3_old.clone(),
             code3_new.clone(),
         )
-        .gas_change(8000, 13000, pbeth::gas_change::Reason::RefundAfterExecution)
         .end_block_trx(Some(success_receipt(37000)), None, None)
         .validate_with_category("deferredcallstate", |block| {
             let trx = &block.transaction_traces[0];
@@ -785,7 +668,6 @@ fn test_all_state_types_mixed_before_during_after() {
             );
             assert_eq!(3, call.nonce_changes.len(), "Should have 3 nonce changes");
             assert_eq!(3, call.code_changes.len(), "Should have 3 code changes");
-            assert_eq!(3, call.gas_changes.len(), "Should have 3 gas changes");
 
             // Verify ordering: before (deferred) -> during -> after (deferred)
             // Balance changes
@@ -844,21 +726,5 @@ fn test_all_state_types_mixed_before_during_after() {
                 "Third code change should be Charlie (after)"
             );
 
-            // Gas changes
-            assert_eq!(
-                pbeth::gas_change::Reason::IntrinsicGas as i32,
-                call.gas_changes[0].reason,
-                "First gas change should be intrinsic (before)"
-            );
-            assert_eq!(
-                pbeth::gas_change::Reason::StateColdAccess as i32,
-                call.gas_changes[1].reason,
-                "Second gas change should be call (during)"
-            );
-            assert_eq!(
-                pbeth::gas_change::Reason::RefundAfterExecution as i32,
-                call.gas_changes[2].reason,
-                "Third gas change should be refund (after)"
-            );
         });
 }

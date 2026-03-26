@@ -1,6 +1,5 @@
 [package]
 name = "firehose-test"
-version.workspace = true
 edition.workspace = true
 
 [dependencies]
@@ -56,10 +55,6 @@ name = "tracer_call_test"
 path = "tests/tracer_call_test.rs"
 
 [[test]]
-name = "tracer_gas_test"
-path = "tests/tracer_gas_test.rs"
-
-[[test]]
 name = "tracer_calls_test"
 path = "tests/tracer_calls_test.rs"
 
@@ -108,10 +103,6 @@ name = "tracer_skipped_block_test"
 path = "tests/tracer_skipped_block_test.rs"
 
 [[test]]
-name = "tracer_opcode_gas_test"
-path = "tests/tracer_opcode_gas_test.rs"
-
-[[test]]
 name = "tracer_receipt_logs_test"
 path = "tests/tracer_receipt_logs_test.rs"
 
@@ -138,3 +129,15 @@ path = "tests/tracer_create_nonce_test.rs"
 [[test]]
 name = "tracer_transaction_edge_cases_test"
 path = "tests/tracer_transaction_edge_cases_test.rs"
+
+[[test]]
+name = "tracer_genesis_test"
+path = "tests/tracer_genesis_test.rs"
+
+[[test]]
+name = "tracer_setcode_test"
+path = "tests/tracer_setcode_test.rs"
+
+[[test]]
+name = "tracer_delegation_test"
+path = "tests/tracer_delegation_test.rs"

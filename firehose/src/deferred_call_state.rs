@@ -1,5 +1,5 @@
 use pb::sf::ethereum::r#type::v2::{
-    AccountCreation, BalanceChange, Call, CodeChange, GasChange, NonceChange, StorageChange,
+    AccountCreation, BalanceChange, Call, CodeChange, NonceChange, StorageChange,
 };
 
 /// DeferredCallState holds state changes that need to be attached to a call
@@ -9,7 +9,6 @@ use pb::sf::ethereum::r#type::v2::{
 pub struct DeferredCallState {
     account_creations: Vec<AccountCreation>,
     balance_changes: Vec<BalanceChange>,
-    gas_changes: Vec<GasChange>,
     nonce_changes: Vec<NonceChange>,
     code_changes: Vec<CodeChange>,
     storage_changes: Vec<StorageChange>,
@@ -25,7 +24,6 @@ impl DeferredCallState {
     pub fn is_empty(&self) -> bool {
         self.account_creations.is_empty()
             && self.balance_changes.is_empty()
-            && self.gas_changes.is_empty()
             && self.nonce_changes.is_empty()
             && self.code_changes.is_empty()
             && self.storage_changes.is_empty()
@@ -35,7 +33,6 @@ impl DeferredCallState {
     pub fn reset(&mut self) {
         self.account_creations.clear();
         self.balance_changes.clear();
-        self.gas_changes.clear();
         self.nonce_changes.clear();
         self.code_changes.clear();
         self.storage_changes.clear();
@@ -44,11 +41,6 @@ impl DeferredCallState {
     /// Adds a balance change to deferred state.
     pub fn add_balance_change(&mut self, change: BalanceChange) {
         self.balance_changes.push(change);
-    }
-
-    /// Adds a gas change to deferred state.
-    pub fn add_gas_change(&mut self, change: GasChange) {
-        self.gas_changes.push(change);
     }
 
     /// Adds a nonce change to deferred state.
@@ -98,10 +90,6 @@ impl DeferredCallState {
                 new_balance_changes.append(&mut call.balance_changes);
                 call.balance_changes = new_balance_changes;
 
-                let mut new_gas_changes = std::mem::take(&mut self.gas_changes);
-                new_gas_changes.append(&mut call.gas_changes);
-                call.gas_changes = new_gas_changes;
-
                 let mut new_nonce_changes = std::mem::take(&mut self.nonce_changes);
                 new_nonce_changes.append(&mut call.nonce_changes);
                 call.nonce_changes = new_nonce_changes;
@@ -122,7 +110,6 @@ impl DeferredCallState {
                     call.account_creations.append(&mut self.account_creations);
                 }
                 call.balance_changes.append(&mut self.balance_changes);
-                call.gas_changes.append(&mut self.gas_changes);
                 call.nonce_changes.append(&mut self.nonce_changes);
                 call.code_changes.append(&mut self.code_changes);
                 call.storage_changes.append(&mut self.storage_changes);

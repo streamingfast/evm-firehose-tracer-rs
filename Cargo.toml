@@ -1,45 +1,22 @@
 [workspace]
-members = ["pb", "firehose", "firehose-test", "monad"]
+members = ["firehose", "firehose-test", "monad", "pb", "reth"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
 edition = "2021"
 
 [workspace.dependencies]
 # Internal workspace crates
-pb = { version = "0.1.0", path = "pb" }
-firehose = { version = "0.1.0", path = "firehose" }
-firehose-test = { version = "0.1.0", path = "firehose-test" }
-shared = { version = "0.1.0", path = "shared" }
+pb = { version = "2.0.0", path = "pb" }
+firehose = { version = "5.0.0-rc.0", path = "firehose" }
+firehose-test = { path = "firehose-test" }
 
-# # Reth eth dependencies
-# reth = { path = "../reth/bin/reth" }
-# reth-exex = { path = "../reth/crates/exex/exex" }
-# reth-node-ethereum = { path = "../reth/crates/ethereum/node" }
-# reth-tracing = { path = "../reth/crates/tracing" }
-# reth-cli-util = { path = "../reth/crates/cli/util" }
-# reth-revm = { path = "../reth/crates/revm" }
-# reth-evm = { path = "../reth/crates/evm/evm" }
-
-# # Reth OP dependencies
-# reth-optimism-cli = { path = "../reth/crates/optimism/cli" }
-# reth-optimism-node = { path = "../reth/crates/optimism/node" }
-# reth-optimism-chainspec = { path = "../reth/crates/optimism/chainspec" }
-# reth-optimism-flashblocks = { path = "../reth/crates/optimism/flashblocks" }
-# reth-optimism-primitives = { path = "../reth/crates/optimism/primitives" }
-
-# # Reth shared dependencies
-# reth-node-api = { path = "../reth/crates/node/api" }
-# reth-node-builder = { path = "../reth/crates/node/builder" }
-# reth-provider = { path = "../reth/crates/storage/provider" }
-
-# Alloy dependencies (compatible with rustc 1.89)
-alloy-primitives = "=1.5.2"
-alloy-consensus = "=1.5.2"
-alloy-genesis = "=1.5.2"
-alloy-rlp = "=0.3.13"
-alloy-eips = "=1.5.2"
+# Alloy dependencies
+alloy-consensus = "1.5"
+alloy-eips = "1.5"
+alloy-genesis = "1.5"
+alloy-primitives = "1.5"
+alloy-rlp = "0.3"
 
 # Other dependencies
 base64 = "0.22"
@@ -47,6 +24,7 @@ clap = { version = "4", features = ["derive", "env"] }
 eyre = "0.6"
 futures-util = "0.3"
 hex = "0.4"
+num_enum = "0.7"
 prost = "0.14"
 prost-types = "0.14"
 prost-build = "0.14"

@@ -1,0 +1,30 @@
+[package]
+name = "reth-firehose"
+version = "1.11.3"
+edition.workspace = true
+
+[[bin]]
+name = "reth-firehose-tracer"
+path = "src/main.rs"
+
+[dependencies]
+firehose.workspace = true
+pb.workspace = true
+
+alloy-consensus.workspace = true
+alloy-rlp.workspace = true
+alloy-eips.workspace = true
+alloy-genesis.workspace = true
+alloy-primitives.workspace = true
+clap.workspace = true
+eyre.workspace = true
+futures-util.workspace = true
+reth = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
+reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
+reth-cli-util = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
+reth-node-api = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
+reth-provider = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
+reth-evm = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
+reth-exex = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
+reth-tracing = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
+reth-revm = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }

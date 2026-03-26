@@ -1,6 +1,6 @@
 [package]
 name = "monad-tracer"
-version.workspace = true
+version = "0.1.0"        # Let's align with Monad version we track here!
 edition.workspace = true
 
 [[bin]]

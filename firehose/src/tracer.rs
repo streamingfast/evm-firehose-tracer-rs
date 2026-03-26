@@ -22,7 +22,7 @@ pub struct Tracer {
     output_writer: Box<dyn Write + Send>,
     init_sent: Arc<AtomicBool>,
     config: Config,
-    chain_config: Arc<ChainConfig>,
+    chain_config: Option<ChainConfig>,
 
     // Block state
     block: Option<Block>,
@@ -35,7 +35,7 @@ pub struct Tracer {
     // Transaction state
     transaction: Option<TransactionTrace>,
     transaction_log_index: u32,
-    transaction_state_reader: Option<Box<dyn StateReader>>,
+    transaction_state_reader: Option<Box<dyn StateReader + Send>>,
     in_system_call: bool,
 
     // Call state
@@ -48,23 +48,19 @@ pub struct Tracer {
 impl Tracer {
     /// Creates a new Firehose tracer with the given configuration.
     /// Output is written to stdout.
-    pub fn new(config: Config, chain_config: Arc<ChainConfig>) -> Self {
-        Self::new_with_writer(config, chain_config, Box::new(std::io::stdout()))
+    pub fn new(config: Config) -> Self {
+        Self::new_with_writer(config, Box::new(std::io::stdout()))
     }
 
     /// Creates a new Firehose tracer with a custom output writer.
     /// This is useful for testing where you want to capture output to a buffer.
-    pub fn new_with_writer(
-        config: Config,
-        chain_config: Arc<ChainConfig>,
-        output_writer: Box<dyn Write + Send>,
-    ) -> Self {
+    pub fn new_with_writer(config: Config, output_writer: Box<dyn Write + Send>) -> Self {
         Self {
             // Global state
             output_writer,
             init_sent: Arc::new(AtomicBool::new(false)),
             config,
-            chain_config,
+            chain_config: None,
 
             // Block state
             block: None,
@@ -115,7 +111,12 @@ impl Tracer {
     // ============================================================================
 
     /// OnBlockchainInit is called once when the blockchain is initialized
-    pub fn on_blockchain_init(&mut self, node_name: &str, node_version: &str) {
+    pub fn on_blockchain_init(
+        &mut self,
+        node_name: &str,
+        node_version: &str,
+        chain_config: ChainConfig,
+    ) {
         if self
             .init_sent
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -132,10 +133,8 @@ impl Tracer {
             panic!("OnBlockchainInit was called more than once");
         }
 
-        tracing::info!(
-            "tracer initialized (chain_id={})",
-            self.chain_config.chain_id
-        );
+        tracing::info!("tracer initialized (chain_id={})", chain_config.chain_id);
+        self.chain_config = Some(chain_config);
     }
 
     /// OnGenesisBlock is called for the genesis block
@@ -166,7 +165,7 @@ impl Tracer {
         let zero_hash = B256::ZERO;
 
         let tx_event = TxEvent {
-            tx_type: 0,
+            tx_type: TxType::Legacy,
             hash: zero_hash,
             from: zero_addr,
             to: Some(zero_addr),
@@ -265,9 +264,11 @@ impl Tracer {
         let block_data = &event.block;
 
         // Compute block rules for this block (block-scoped fork flags)
-        self.block_rules =
-            self.chain_config
-                .rules(block_data.number, block_data.is_merge, block_data.time);
+        self.block_rules = self.chain_config.as_ref().unwrap().rules(
+            block_data.number,
+            block_data.is_merge(),
+            block_data.time,
+        );
 
         tracing::info!(
             "block start (number={} hash={:?})",
@@ -280,7 +281,7 @@ impl Tracer {
             hash: block_data.hash.0.to_vec(),
             number: block_data.number,
             header: Some(self.new_block_header_from_block_data(&event.block)),
-            ver: 4, // Protocol version 4 (without backward compatibility)
+            ver: 5, // Protocol version 5
             size: block_data.size,
             ..Default::default()
         });
@@ -301,10 +302,9 @@ impl Tracer {
             self.block_base_fee = Some(base_fee);
         }
 
-        // Note: The protobuf Block currently doesn't have a withdrawals array field.
-        // Withdrawals root hash is set in the block header during finalize_block.
-        // Individual withdrawal data would need to be added to the protobuf schema
-        // to match the Golang version's block.Withdrawals field.
+        // Note: Block withdrawals (EIP-4895) are always recorded in v5 when present.
+        // The protobuf Block does not yet have a withdrawals array field in this Rust version.
+        // Withdrawals root hash is set in the block header (see new_block_header_from_block_data).
 
         // Populate finality status
         if let Some(finalized) = event.finalized {
@@ -365,7 +365,11 @@ impl Tracer {
     // ============================================================================
 
     /// OnTxStart is called at the beginning of transaction execution
-    pub fn on_tx_start(&mut self, event: TxEvent, state_reader: Option<Box<dyn StateReader>>) {
+    pub fn on_tx_start(
+        &mut self,
+        event: TxEvent,
+        state_reader: Option<Box<dyn StateReader + Send>>,
+    ) {
         tracing::info!("trx start (hash={:?} type={})", event.hash, event.tx_type);
 
         // Validate state: Must be in block, not in transaction, not in call
@@ -376,12 +380,12 @@ impl Tracer {
 
         // Convert transaction type to protobuf enum
         use pb::sf::ethereum::r#type::v2::transaction_trace::Type;
-        let tx_type = match event.tx_type {
-            0 => Type::TrxTypeLegacy as i32,
-            1 => Type::TrxTypeAccessList as i32,
-            2 => Type::TrxTypeDynamicFee as i32,
-            3 => Type::TrxTypeBlob as i32,
-            4 => Type::TrxTypeSetCode as i32,
+        let tx_type = match TxType::try_from(event.tx_type) {
+            Ok(TxType::Legacy) => Type::TrxTypeLegacy as i32,
+            Ok(TxType::AccessList) => Type::TrxTypeAccessList as i32,
+            Ok(TxType::DynamicFee) => Type::TrxTypeDynamicFee as i32,
+            Ok(TxType::Blob) => Type::TrxTypeBlob as i32,
+            Ok(TxType::SetCode) => Type::TrxTypeSetCode as i32,
             _ => Type::TrxTypeLegacy as i32, // Default to legacy for unknown types
         };
 
@@ -424,8 +428,8 @@ impl Tracer {
                     address: auth.address.0.to_vec(),
                     nonce: auth.nonce,
                     v: auth.v,
-                    r: auth.r.0.to_vec(),
-                    s: auth.s.0.to_vec(),
+                    r: utils::normalize_signature_point(&auth.r.0).unwrap_or_default(),
+                    s: utils::normalize_signature_point(&auth.s.0).unwrap_or_default(),
                     authority,
                     ..Default::default() // discarded will be set during validation
                 }
@@ -805,7 +809,7 @@ impl Tracer {
         );
 
         // Handle SELFDESTRUCT specially
-        if typ == OP_SELFDESTRUCT {
+        if typ == Opcode::SelfDestruct as u8 {
             // SELFDESTRUCT opcode
             self.latest_call_enter_suicided = true;
             self.latest_call_enter_suicided_depth = depth;
@@ -1077,7 +1081,7 @@ impl Tracer {
     // ============================================================================
 
     /// OnLog is called when a log event is emitted
-    pub fn on_log(&mut self, addr: Address, topics: Vec<B256>, data: &[u8], block_index: u32) {
+    pub fn on_log(&mut self, addr: Address, topics: &[B256], data: &[u8], block_index: u32) {
         self.ensure_in_block_and_in_trx_and_in_call();
 
         if let Some(active_call) = self.call_stack.peek_mut() {
@@ -1102,45 +1106,13 @@ impl Tracer {
         }
     }
 
-    /// OnGasChange is called when gas is consumed
-    /// Note: The chain implementation should filter out:
-    ///   - GasChangeCallOpCode: Gas changes due to call opcodes (handled separately)
-    ///   - GasChangeIgnored: Gas changes that should not be recorded
-    pub fn on_gas_change(
-        &mut self,
-        old_gas: u64,
-        new_gas: u64,
-        reason: pb::sf::ethereum::r#type::v2::gas_change::Reason,
-    ) {
-        self.ensure_in_block_and_in_trx();
-
-        // No change in gas - ignore
-        if old_gas == new_gas {
-            return;
-        }
-
-        // Ignore UNKNOWN reasons (filtered by caller in chain implementation)
-        if reason == pb::sf::ethereum::r#type::v2::gas_change::Reason::Unknown {
-            return;
-        }
-
-        let change = self.new_gas_change(old_gas, new_gas, reason);
-
-        // Initial gas consumption happens before call starts - defer it
-        if let Some(active_call) = self.call_stack.peek_mut() {
-            active_call.gas_changes.push(change);
-        } else {
-            self.deferred_call_state.add_gas_change(change);
-        }
-    }
-
     /// OnOpcode is called for each opcode executed
     pub fn on_opcode(
         &mut self,
         _pc: u64,
         op: u8,
-        gas: u64,
-        cost: u64,
+        _gas: u64,
+        _cost: u64,
         _data: &[u8],
         _depth: i32,
         err: Option<&dyn std::error::Error>,
@@ -1149,7 +1121,7 @@ impl Tracer {
             return;
         }
 
-        // Set ExecutedCode to true (non-backward-compatible mode)
+        // Set ExecutedCode to true
         if let Some(active_call) = self.call_stack.peek_mut() {
             active_call.executed_code = true;
         }
@@ -1159,18 +1131,8 @@ impl Tracer {
             return;
         }
 
-        // Record gas change for specific opcodes
-        if cost > 0 {
-            if let Some(reason) = Self::opcode_to_gas_change_reason(op) {
-                let change = self.new_gas_change(gas, gas - cost, reason);
-                if let Some(active_call) = self.call_stack.peek_mut() {
-                    active_call.gas_changes.push(change);
-                }
-            }
-        }
-
         // Mark SELFDESTRUCT opcode
-        if op == OP_SELFDESTRUCT {
+        if op == Opcode::SelfDestruct as u8 {
             if let Some(active_call) = self.call_stack.peek_mut() {
                 active_call.suicide = true;
             }
@@ -1242,52 +1204,6 @@ impl Tracer {
     // ============================================================================
     // Helper Methods
     // ============================================================================
-
-    fn new_gas_change(
-        &mut self,
-        old_value: u64,
-        new_value: u64,
-        reason: pb::sf::ethereum::r#type::v2::gas_change::Reason,
-    ) -> pb::sf::ethereum::r#type::v2::GasChange {
-        tracing::trace!(
-            "gas consumed (before={} after={} reason={:?})",
-            old_value,
-            new_value,
-            reason
-        );
-
-        pb::sf::ethereum::r#type::v2::GasChange {
-            old_value,
-            new_value,
-            reason: reason.into(),
-            ordinal: self.block_ordinal.next(),
-        }
-    }
-
-    /// Maps opcodes to their gas change reasons
-    fn opcode_to_gas_change_reason(
-        op: u8,
-    ) -> Option<pb::sf::ethereum::r#type::v2::gas_change::Reason> {
-        use pb::sf::ethereum::r#type::v2::gas_change::Reason;
-
-        match op {
-            OP_CREATE => Some(Reason::ContractCreation),
-            OP_CREATE2 => Some(Reason::ContractCreation2),
-            OP_CALL => Some(Reason::Call),
-            OP_STATICCALL => Some(Reason::StaticCall),
-            OP_CALLCODE => Some(Reason::CallCode),
-            OP_DELEGATECALL => Some(Reason::DelegateCall),
-            OP_RETURN => Some(Reason::Return),
-            OP_REVERT => Some(Reason::Revert),
-            OP_LOG0 | OP_LOG1 | OP_LOG2 | OP_LOG3 | OP_LOG4 => Some(Reason::EventLog),
-            OP_SELFDESTRUCT => Some(Reason::SelfDestruct),
-            OP_CALLDATACOPY => Some(Reason::CallDataCopy),
-            OP_CODECOPY => Some(Reason::CodeCopy),
-            OP_EXTCODECOPY => Some(Reason::ExtCodeCopy),
-            OP_RETURNDATACOPY => Some(Reason::ReturnDataCopy),
-            _ => None,
-        }
-    }
 
     fn new_block_header_from_block_data(
         &self,
@@ -1381,7 +1297,7 @@ impl Tracer {
     // ============================================================================
 
     fn ensure_blockchain_init(&self) {
-        if !self.init_sent.load(Ordering::SeqCst) {
+        if self.chain_config.is_none() {
             panic!("the OnBlockchainInit hook should have been called at this point");
         }
     }
@@ -1390,15 +1306,14 @@ impl Tracer {
     fn opcode_to_call_type(&self, opcode: u8) -> i32 {
         use pb::sf::ethereum::r#type::v2::CallType;
 
-        match opcode {
-            OP_CREATE => CallType::Create as i32,
-            OP_CALL => CallType::Call as i32,
-            OP_CALLCODE => CallType::Callcode as i32,
-            OP_DELEGATECALL => CallType::Delegate as i32,
-            OP_CREATE2 => CallType::Create as i32, // CREATE2 maps to CREATE
-            OP_STATICCALL => CallType::Static as i32,
-            OP_SELFDESTRUCT => CallType::Unspecified as i32, // SELFDESTRUCT is not a call type
-            _ => CallType::Unspecified as i32,               // Unknown
+        match opcode.try_into() {
+            Ok(Opcode::Create) => CallType::Create as i32,
+            Ok(Opcode::Create2) => CallType::Create as i32, // CREATE2 maps to CREATE
+            Ok(Opcode::Call) => CallType::Call as i32,
+            Ok(Opcode::CallCode) => CallType::Callcode as i32,
+            Ok(Opcode::DelegateCall) => CallType::Delegate as i32,
+            Ok(Opcode::StaticCall) => CallType::Static as i32,
+            _ => CallType::Unspecified as i32, // Unknown
         }
     }
 
@@ -1474,39 +1389,17 @@ impl Tracer {
 ///   - If base_fee is None: use max_fee_per_gas (or fallback to gas_price)
 ///   - If base_fee is Some: use min(max_priority_fee_per_gas + base_fee, max_fee_per_gas)
 // Transaction type constants (from Ethereum specification)
-const TX_TYPE_LEGACY: u8 = 0; // Pre-EIP-2718 legacy transaction
-const TX_TYPE_ACCESS_LIST: u8 = 1; // EIP-2930 access list transaction
-const TX_TYPE_DYNAMIC_FEE: u8 = 2; // EIP-1559 dynamic fee transaction
-const TX_TYPE_BLOB: u8 = 3; // EIP-4844 blob transaction
-const TX_TYPE_SET_CODE: u8 = 4; // EIP-7702 set code transaction
+use crate::types::TxType;
 
-// EVM Opcode constants (from Ethereum Yellow Paper)
-pub const OP_CALLDATACOPY: u8 = 0x37;
-pub const OP_CODECOPY: u8 = 0x39;
-pub const OP_EXTCODECOPY: u8 = 0x3c;
-pub const OP_RETURNDATACOPY: u8 = 0x3e;
-pub const OP_LOG0: u8 = 0xa0;
-pub const OP_LOG1: u8 = 0xa1;
-pub const OP_LOG2: u8 = 0xa2;
-pub const OP_LOG3: u8 = 0xa3;
-pub const OP_LOG4: u8 = 0xa4;
-pub const OP_CREATE: u8 = 0xf0;
-pub const OP_CALL: u8 = 0xf1;
-pub const OP_CALLCODE: u8 = 0xf2;
-pub const OP_RETURN: u8 = 0xf3;
-pub const OP_DELEGATECALL: u8 = 0xf4;
-pub const OP_CREATE2: u8 = 0xf5;
-pub const OP_STATICCALL: u8 = 0xfa;
-pub const OP_REVERT: u8 = 0xfd;
-pub const OP_SELFDESTRUCT: u8 = 0xff;
+use crate::types::Opcode;
 
 fn compute_effective_gas_price(event: &TxEvent, base_fee: Option<U256>) -> U256 {
     match event.tx_type {
-        TX_TYPE_LEGACY | TX_TYPE_ACCESS_LIST => {
+        TxType::Legacy | TxType::AccessList => {
             // Legacy, AccessList
             event.gas_price
         }
-        TX_TYPE_DYNAMIC_FEE | TX_TYPE_BLOB | TX_TYPE_SET_CODE => {
+        _ => {
             // DynamicFee, Blob, SetCode (EIP-1559 transactions)
             if base_fee.is_none() {
                 // If baseFee is nil, use MaxFeePerGas
@@ -1528,10 +1421,6 @@ fn compute_effective_gas_price(event: &TxEvent, base_fee: Option<U256>) -> U256 
                     event.gas_price
                 }
             }
-        }
-        _ => {
-            // Unknown type, use GasPrice
-            event.gas_price
         }
     }
 }
