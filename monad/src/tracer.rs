@@ -291,9 +291,9 @@ impl FirehosePlugin {
             }
             ExecEvent::TxnCallFrame { txn_index, txn_call_frame, input_bytes, return_bytes } => {
 
-                if !self.tracer.is_in_transaction() {
-                    self.tracer.on_system_call_start();
-                }
+                // if !self.tracer.is_in_transaction() {
+                //     self.tracer.on_system_call_start();
+                // }
 
                 let from = alloy_primitives::Address::from(txn_call_frame.caller.bytes);
                 let to = alloy_primitives::Address::from(txn_call_frame.call_target.bytes);
@@ -323,22 +323,32 @@ impl FirehosePlugin {
                 }
             }
 
-            // DO NOT TOUCH TODOS
+            ExecEvent::BlockSystemCallStart { system_call_start, input_bytes } => {
+                self.tracer.on_system_call_start();
+                let from = alloy_primitives::Address::from(system_call_start.caller.bytes);
+                let to = alloy_primitives::Address::from(system_call_start.call_target.bytes);
+                self.tracer.on_call_enter(0, system_call_start.opcode, from, to, &input_bytes, system_call_start.gas, alloy_primitives::U256::ZERO);
+            }
+            ExecEvent::BlockSystemCallEnd { system_call_end, return_bytes } => {
+                self.tracer.on_call_exit(0, &return_bytes, system_call_end.gas_used, None, system_call_end.evmc_status == 2);
+                self.tracer.on_system_call_end();
+            }
+
             ExecEvent::RecordError(monad_event_record_error) => todo!(),
             ExecEvent::BlockReject(_) => todo!(),
-            ExecEvent::BlockPerfEvmEnter => todo!(),
-            ExecEvent::BlockPerfEvmExit => todo!(),
+            ExecEvent::BlockPerfEvmEnter => {}
+            ExecEvent::BlockPerfEvmExit => {}
             ExecEvent::BlockQC(monad_exec_block_qc) => todo!(),
 
             // Consensus level finalized
             ExecEvent::BlockFinalized(monad_exec_block_tag) => todo!(),
             ExecEvent::BlockVerified(monad_exec_block_verified) => todo!(),
-            ExecEvent::TxnHeaderEnd => todo!(),
-            ExecEvent::TxnReject { txn_index, reject } => todo!(),
-            ExecEvent::TxnPerfEvmEnter => todo!(),
-            ExecEvent::TxnPerfEvmExit => todo!(),
+            ExecEvent::TxnHeaderEnd => {}
+            ExecEvent::TxnReject { txn_index, reject } => {}
+            ExecEvent::TxnPerfEvmEnter => {}
+            ExecEvent::TxnPerfEvmExit => {}
             ExecEvent::EvmError(monad_exec_evm_error) => todo!(),
-                    }
+        }
         Ok(())
     }
 
@@ -353,62 +363,62 @@ impl FirehosePlugin {
             return Ok(());
         }
 
-        let start = Instant::now();
+        // let start = Instant::now();
+
+        self.add_event(event)?;
 
         // TEMP
-        self.add_event(event.clone())?;
+        // if let Some(block) = self.event_mapper.process_event(event).await? {
+        //     let elapsed = start.elapsed();
 
-        if let Some(block) = self.event_mapper.process_event(event).await? {
-            let elapsed = start.elapsed();
+        //     // Update HEAD block number
+        //     self.current_head = block.number;
 
-            // Update HEAD block number
-            self.current_head = block.number;
+        //     // Calculate LIB
+        //     let lib = if self.current_head > self.lib_delta {
+        //         self.current_head - self.lib_delta
+        //     } else {
+        //         0
+        //     };
+        //     self.finality.set_last_finalized_block(lib);
 
-            // Calculate LIB
-            let lib = if self.current_head > self.lib_delta {
-                self.current_head - self.lib_delta
-            } else {
-                0
-            };
-            self.finality.set_last_finalized_block(lib);
+        //     // Log block summary with metrics
+        //     let hash_short = if block.hash.len() >= 6 {
+        //         format!("{}..{}",
+        //             hex::encode(&block.hash[..3]),
+        //             hex::encode(&block.hash[block.hash.len()-3..]))
+        //     } else {
+        //         hex::encode(&block.hash)
+        //     };
 
-            // Log block summary with metrics
-            let hash_short = if block.hash.len() >= 6 {
-                format!("{}..{}",
-                    hex::encode(&block.hash[..3]),
-                    hex::encode(&block.hash[block.hash.len()-3..]))
-            } else {
-                hex::encode(&block.hash)
-            };
+        //     let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
+        //     let timestamp = block.header.as_ref()
+        //         .and_then(|h| h.timestamp.as_ref())
+        //         .map(|ts| ts.seconds)
+        //         .unwrap_or(0);
 
-            let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
-            let timestamp = block.header.as_ref()
-                .and_then(|h| h.timestamp.as_ref())
-                .map(|ts| ts.seconds)
-                .unwrap_or(0);
+        //     let total_calls: usize = block.transaction_traces.iter().map(|tx| tx.calls.len()).sum();
+        //     let total_logs: usize = block.transaction_traces.iter()
+        //         .filter_map(|tx| tx.receipt.as_ref())
+        //         .map(|r| r.logs.len())
+        //         .sum();
 
-            let total_calls: usize = block.transaction_traces.iter().map(|tx| tx.calls.len()).sum();
-            let total_logs: usize = block.transaction_traces.iter()
-                .filter_map(|tx| tx.receipt.as_ref())
-                .map(|r| r.logs.len())
-                .sum();
+        //     info!(
+        //         "Processed new block number={} hash={} lib={} size={} txs={} calls={} logs={} timestamp={} elapsed={:.2}ms",
+        //         block.number,
+        //         hash_short,
+        //         lib,
+        //         block.size,
+        //         block.transaction_traces.len(),
+        //         total_calls,
+        //         total_logs,
+        //         timestamp,
+        //         elapsed_ms
+        //     );
 
-            info!(
-                "Processed new block number={} hash={} lib={} size={} txs={} calls={} logs={} timestamp={} elapsed={:.2}ms",
-                block.number,
-                hash_short,
-                lib,
-                block.size,
-                block.transaction_traces.len(),
-                total_calls,
-                total_logs,
-                timestamp,
-                elapsed_ms
-            );
-
-            // Print the completed block
-            print_block_to_firehose(&mut stdout(), *block, &self.finality);
-        }
+        //     // Print the completed block
+        //     print_block_to_firehose(&mut stdout(), *block, &self.finality);
+        // }
 
         Ok(())
     }

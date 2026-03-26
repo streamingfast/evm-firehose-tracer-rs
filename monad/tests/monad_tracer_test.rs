@@ -348,7 +348,7 @@ fn test_tx_gas_used_mapped() {
     });
 }
 
-// TxnLog
+// TODO: failing, TxnLog
 #[test]
 fn test_txn_log_mapped() {
     let data = [0xde, 0xad, 0xbe, 0xef];
