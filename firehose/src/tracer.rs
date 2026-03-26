@@ -1402,7 +1402,7 @@ impl Tracer {
         }
     }
 
-    fn ensure_in_block(&self) {
+    pub fn ensure_in_block(&self) {
         if self.block.is_none() {
             panic!("caller expected to be in block state but we were not");
         }
@@ -1452,6 +1452,19 @@ impl Tracer {
             panic!("caller expected to be in system call state but we were not");
         }
     }
+
+    pub fn is_in_transaction(&self) -> bool {
+        self.transaction.is_some()
+    }
+
+    pub fn is_in_call(&self) -> bool {
+        self.call_stack.has_active_call()
+    }
+
+    pub fn is_in_system_call(&self) -> bool {
+        self.in_system_call
+    }
+
 }
 
 /// Computes the effective gas price for a transaction based on its type and block base fee.
@@ -1468,24 +1481,24 @@ const TX_TYPE_BLOB: u8 = 3; // EIP-4844 blob transaction
 const TX_TYPE_SET_CODE: u8 = 4; // EIP-7702 set code transaction
 
 // EVM Opcode constants (from Ethereum Yellow Paper)
-const OP_CALLDATACOPY: u8 = 0x37;
-const OP_CODECOPY: u8 = 0x39;
-const OP_EXTCODECOPY: u8 = 0x3c;
-const OP_RETURNDATACOPY: u8 = 0x3e;
-const OP_LOG0: u8 = 0xa0;
-const OP_LOG1: u8 = 0xa1;
-const OP_LOG2: u8 = 0xa2;
-const OP_LOG3: u8 = 0xa3;
-const OP_LOG4: u8 = 0xa4;
-const OP_CREATE: u8 = 0xf0;
-const OP_CALL: u8 = 0xf1;
-const OP_CALLCODE: u8 = 0xf2;
-const OP_RETURN: u8 = 0xf3;
-const OP_DELEGATECALL: u8 = 0xf4;
-const OP_CREATE2: u8 = 0xf5;
-const OP_STATICCALL: u8 = 0xfa;
-const OP_REVERT: u8 = 0xfd;
-const OP_SELFDESTRUCT: u8 = 0xff;
+pub const OP_CALLDATACOPY: u8 = 0x37;
+pub const OP_CODECOPY: u8 = 0x39;
+pub const OP_EXTCODECOPY: u8 = 0x3c;
+pub const OP_RETURNDATACOPY: u8 = 0x3e;
+pub const OP_LOG0: u8 = 0xa0;
+pub const OP_LOG1: u8 = 0xa1;
+pub const OP_LOG2: u8 = 0xa2;
+pub const OP_LOG3: u8 = 0xa3;
+pub const OP_LOG4: u8 = 0xa4;
+pub const OP_CREATE: u8 = 0xf0;
+pub const OP_CALL: u8 = 0xf1;
+pub const OP_CALLCODE: u8 = 0xf2;
+pub const OP_RETURN: u8 = 0xf3;
+pub const OP_DELEGATECALL: u8 = 0xf4;
+pub const OP_CREATE2: u8 = 0xf5;
+pub const OP_STATICCALL: u8 = 0xfa;
+pub const OP_REVERT: u8 = 0xfd;
+pub const OP_SELFDESTRUCT: u8 = 0xff;
 
 fn compute_effective_gas_price(event: &TxEvent, base_fee: Option<U256>) -> U256 {
     match event.tx_type {

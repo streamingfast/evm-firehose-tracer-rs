@@ -8,7 +8,7 @@ use color_eyre::eyre::Result;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
-use monad_tracer::{FirehoseTracer, MonadConsumer, PluginConfig, TracerConfig};
+use monad_tracer::{FirehosePlugin, FirehosePluginConfig, MonadConsumer, PluginConfig};
 
 #[derive(Parser, Debug)]
 #[command(name = "monad-firehose-tracer")]
@@ -67,12 +67,12 @@ async fn main() -> Result<()> {
 
     let consumer = MonadConsumer::new(consumer_config).await?;
 
-    let tracer_config = TracerConfig::new(args.chain_id, args.network_name)
+    let tracer_config = FirehosePluginConfig::new(args.chain_id, args.network_name)
         .with_debug(args.debug)
         .with_buffer_size(args.buffer_size)
         .with_no_op(args.no_op);
 
-    let mut tracer = FirehoseTracer::new(tracer_config).with_consumer(consumer);
+    let mut tracer = FirehosePlugin::new(tracer_config).with_consumer(consumer);
 
     if args.no_op {
         info!("NO-OP MODE ENABLED: Only logging block numbers, no processing");

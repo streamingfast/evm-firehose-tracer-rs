@@ -228,6 +228,30 @@ pub trait StateReader {
     fn get_storage(&self, address: Address, key: B256) -> B256;
 }
 
+pub struct NoOpStateReader {
+
+} impl StateReader for NoOpStateReader {
+    fn get_nonce(&self, _address: Address) -> u64 {
+        0
+    }
+
+    fn get_code(&self, _address: Address) -> Bytes {
+        Bytes::new()
+    }
+
+    fn get_code_hash(&self, _address: Address) -> B256 {
+        B256::ZERO
+    }
+
+    fn get_balance(&self, _address: Address) -> U256 {
+        U256::ZERO
+    }
+
+    fn get_storage(&self, _address: Address, _key: B256) -> B256 {
+        B256::ZERO
+    }
+}
+
 impl BlockEvent {
     /// Creates a new BlockEvent with the given block data
     pub fn new(block: BlockData) -> Self {

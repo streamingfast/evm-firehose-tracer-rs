@@ -1,37 +1,86 @@
 //! Main Firehose tracer implementation
 
-use crate::{EventMapper, MonadConsumer, TracerConfig};
+use crate::{EventMapper, MonadConsumer, FirehosePluginConfig};
+use alloy_primitives::B256;
 use eyre::Result;
-use firehose::{FinalityStatus, PROTOCOL_VERSION};
+use firehose::{types::{AccessTuple, SetCodeAuthorization}, FinalityStatus, PROTOCOL_VERSION, Tracer};
 use firehose::printer::{print_block_to_firehose, print_to_firehose};
 use futures_util::StreamExt;
 use monad_exec_events::ExecEvent;
+use std::collections::HashMap;
 use std::io::stdout;
+use std::sync::Arc;
 use std::time::Instant;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{TRACER_NAME, TRACER_VERSION};
 
 /// Main Firehose tracer for Monad
-pub struct FirehoseTracer {
-    config: TracerConfig,
+pub struct FirehosePlugin {
+    config: FirehosePluginConfig,
     event_mapper: EventMapper,
-    finality: FinalityStatus,
     consumer: Option<MonadConsumer>,
+    pub tracer: Tracer,
+    tx_end_receipt: Option<monad_exec_events::ffi::monad_exec_txn_evm_output>,
+    pending_tx_events: HashMap<usize, firehose::TxEvent>,
+    block_txn_count: u64,
+    txn_end_count: usize,
+    // TODELETE
+    finality: FinalityStatus,
     current_head: u64,
     lib_delta: u64,
 }
 
-impl FirehoseTracer {
-    pub fn new(config: TracerConfig) -> Self {
+impl FirehosePlugin {
+    pub fn new(config: FirehosePluginConfig) -> Self {
+        let chain_config = firehose::ChainConfig::new(config.chain_id);
         Self {
             config,
             event_mapper: EventMapper::new(),
             finality: FinalityStatus::default(),
             consumer: None,
+            tracer: Tracer::new(firehose::Config::new(chain_config.clone()), Arc::new(chain_config)),
             current_head: 0,
             lib_delta: 10,
+            tx_end_receipt: None,
+            pending_tx_events: HashMap::new(),
+
+            block_txn_count: 0,
+            txn_end_count: 0,
         }
+    }
+
+    pub fn new_with_writer(config: FirehosePluginConfig, writer: Box<dyn std::io::Write + Send>) -> Self {
+        let chain_config = firehose::ChainConfig::new(config.chain_id);
+        Self {
+            config,
+            event_mapper: EventMapper::new(),
+            finality: FinalityStatus::default(),
+            consumer: None,
+            tracer: Tracer::new_with_writer(firehose::Config::new(chain_config.clone()), Arc::new(chain_config), writer),
+            current_head: 0,
+            lib_delta: 10,
+            tx_end_receipt: None,
+            pending_tx_events: HashMap::new(),
+
+            block_txn_count: 0,
+            txn_end_count: 0,
+        }
+    }
+
+    pub fn is_epilogue(&self) -> bool {
+        self.block_txn_count > 0 && self.txn_end_count >= self.block_txn_count as usize
+    }
+
+    fn ensure_in_block_and_in_pending(&self, txn_index: usize, event_name: &str) {
+        self.tracer.ensure_in_block();
+        if !self.pending_tx_events.contains_key(&txn_index) {
+            panic!("{} for txn_index={} but no pending TxEvent", event_name, txn_index);
+        }
+    }
+
+    pub fn on_blockchain_init(&mut self, node_name: &str, node_version: &str) {
+        self.tracer.on_blockchain_init(node_name, node_version);
     }
 
     pub fn with_consumer(mut self, consumer: MonadConsumer) -> Self {
@@ -39,21 +88,10 @@ impl FirehoseTracer {
         self
     }
 
-    pub fn config(&self) -> &TracerConfig {
-        &self.config
-    }
-
     pub async fn start(&mut self) -> Result<()> {
         info!("Starting Firehose tracer for network: {}", self.config.network_name);
 
-        print_to_firehose(
-            &mut stdout(),
-            "FIRE INIT",
-            PROTOCOL_VERSION,
-            TRACER_NAME,
-            TRACER_VERSION,
-        );
-        info!("Printed FIRE INIT message");
+        self.tracer.on_blockchain_init(TRACER_NAME, TRACER_VERSION);
 
         let consumer = self
             .consumer
@@ -73,12 +111,238 @@ impl FirehoseTracer {
             }
         }
 
-        warn!("Event stream ended");
+        Ok(())
+    }
 
-        if let Some(block) = self.event_mapper.finalize_pending()? {
-            print_block_to_firehose(&mut stdout(), *block, &self.finality);
-        }
+    pub fn add_event(&mut self, event: ExecEvent) -> Result<()> {
+        match event {
+            ExecEvent::BlockStart(block_start) => {
+                // self.current_txn_idx = None;
+                self.block_txn_count = block_start.eth_block_input.txn_count;
+                self.txn_end_count = 0;
 
+                let block_number = block_start.eth_block_input.number;
+                // Signal for finalized
+                let lib = if block_number > self.lib_delta {
+                    block_number - self.lib_delta
+                } else {
+                    0
+                };
+
+                let ei = &block_start.eth_block_input;
+                let extra_data_len = ei.extra_data_length as usize;
+                let base_fee = alloy_primitives::U256::from_limbs(ei.base_fee_per_gas.limbs);
+
+                let block_data = firehose::BlockData{
+                    number: block_number,
+                    hash: B256::ZERO,
+                    parent_hash: B256::from(block_start.parent_eth_hash.bytes),
+                    uncle_hash: B256::from(ei.ommers_hash.bytes),
+                    coinbase: alloy_primitives::Address::from(ei.beneficiary.bytes),
+                    root: B256::ZERO,
+                    tx_hash: B256::from(ei.transactions_root.bytes),
+                    receipt_hash: B256::ZERO,
+                    bloom: alloy_primitives::Bloom::ZERO,
+                    difficulty: alloy_primitives::U256::from(ei.difficulty),
+                    gas_limit: ei.gas_limit,
+                    gas_used: 0,
+                    time: ei.timestamp,
+                    extra: alloy_primitives::Bytes::copy_from_slice(&ei.extra_data.bytes[..extra_data_len]),
+                    mix_digest: B256::from(ei.prev_randao.bytes),
+                    nonce: u64::from_le_bytes(ei.nonce.bytes),
+                    base_fee: if base_fee.is_zero() { None } else { Some(base_fee) },
+                    uncles: vec![],
+                    size: 0,
+                    withdrawals: vec![],
+                    is_merge: true,
+                    withdrawals_root: Some(B256::from(ei.withdrawals_root.bytes)),
+                    blob_gas_used: None,
+                    excess_blob_gas: None,
+                    parent_beacon_root: None,
+                    requests_hash: None,
+                    tx_dependency: None,
+                };
+
+                self.tracer.on_block_start(firehose::BlockEvent { block: block_data, finalized: Some(firehose::FinalizedBlockRef{
+                    number: lib,
+                    hash: B256::ZERO
+                }) });
+            }
+            ExecEvent::BlockEnd(block_end) => {
+                self.tracer.on_block_end(None);
+            }
+            ExecEvent::TxnHeaderStart {
+                txn_index,
+                txn_header_start,
+                data_bytes,
+                blob_bytes,
+            } => {
+
+                let h = &txn_header_start.txn_header;
+                let blob_gas_fee_cap = alloy_primitives::U256::from_limbs(h.max_fee_per_blob_gas.limbs);
+                let tx_event = firehose::TxEvent {
+                    tx_type: h.txn_type as u8,
+                    hash: B256::from(txn_header_start.txn_hash.bytes),
+                    from: alloy_primitives::Address::from(txn_header_start.sender.bytes),
+                    to: if h.is_contract_creation { None } else { Some(alloy_primitives::Address::from(h.to.bytes)) },
+                    input: alloy_primitives::Bytes::copy_from_slice(&data_bytes),
+                    value: alloy_primitives::U256::from_limbs(h.value.limbs),
+                    gas: h.gas_limit,
+                    gas_price: alloy_primitives::U256::from_limbs(h.max_fee_per_gas.limbs),
+                    max_fee_per_gas: Some(alloy_primitives::U256::from_limbs(h.max_fee_per_gas.limbs)),
+                    max_priority_fee_per_gas: Some(alloy_primitives::U256::from_limbs(h.max_priority_fee_per_gas.limbs)),
+                    nonce: h.nonce,
+                    index: txn_index as u32,
+                    v: Some(alloy_primitives::Bytes::copy_from_slice(&[h.y_parity as u8])),
+                    r: B256::from(alloy_primitives::U256::from_limbs(h.r.limbs).to_be_bytes()),
+                    s: B256::from(alloy_primitives::U256::from_limbs(h.s.limbs).to_be_bytes()),
+                    blob_gas_fee_cap: if blob_gas_fee_cap.is_zero() { None } else { Some(blob_gas_fee_cap) },
+                    blob_hashes: blob_bytes.chunks(32).map(|c| B256::from_slice(c)).collect(),
+                    access_list: vec![],
+                    set_code_authorizations: vec![],
+                };
+                self.pending_tx_events.insert(txn_index, tx_event);
+            }
+            ExecEvent::TxnAccessListEntry {
+                txn_index,
+                txn_access_list_entry,
+                storage_key_bytes,
+            } => {
+
+                self.ensure_in_block_and_in_pending(txn_index, "TxnAccessListEntry");
+
+                if let Some(tx_event) = self.pending_tx_events.get_mut(&txn_index) {
+                    let addr = alloy_primitives::Address::from(txn_access_list_entry.entry.address.bytes);
+                    let storage_keys = storage_key_bytes
+                        .chunks(32)
+                        .map(|c| B256::from_slice(c))
+                        .collect();
+                    tx_event.access_list.push(AccessTuple { address: addr, storage_keys });
+                }
+            }
+            ExecEvent::TxnAuthListEntry {
+                txn_index,
+                txn_auth_list_entry,
+            } => {
+
+                self.ensure_in_block_and_in_pending(txn_index, "TxnAuthListEntry");
+
+                if let Some(tx_event) = self.pending_tx_events.get_mut(&txn_index) {
+                    let e = &txn_auth_list_entry.entry;
+                    tx_event.set_code_authorizations.push(SetCodeAuthorization {
+                        chain_id: B256::from(alloy_primitives::U256::from_limbs(e.chain_id.limbs).to_be_bytes()),
+                        address: alloy_primitives::Address::from(e.address.bytes),
+                        nonce: e.nonce,
+                        v: e.y_parity as u32,
+                        r: B256::from(alloy_primitives::U256::from_limbs(e.r.limbs).to_be_bytes()),
+                        s: B256::from(alloy_primitives::U256::from_limbs(e.s.limbs).to_be_bytes()),
+                    });
+                }
+            }
+            ExecEvent::TxnEvmOutput { txn_index, output } => {
+
+                self.ensure_in_block_and_in_pending(txn_index, "TxnEvmOutput");
+
+                if let Some(tx_event) = self.pending_tx_events.remove(&txn_index) {
+                    self.tracer.on_tx_start(tx_event, None);
+                }
+                self.tx_end_receipt = Some(output);
+            }
+            ExecEvent::TxnEnd => {
+                self.txn_end_count += 1;
+
+                let receipt = if let Some(output) = self.tx_end_receipt.take() {
+                    firehose::ReceiptData{
+                        transaction_index: 0,
+                        gas_used: output.receipt.gas_used,
+                        status: if output.receipt.status { 1 } else { 0 },
+                        logs: vec![],
+                        logs_bloom: [0u8; 256],
+                        cumulative_gas_used: output.receipt.gas_used,
+                        blob_gas_used: 0,
+                        blob_gas_price: None,
+                        state_root: None,
+                    }
+                } else {
+                    firehose::ReceiptData{
+                        transaction_index: 0,
+                        gas_used: 0,
+                        status: 0,
+                        logs: vec![],
+                        logs_bloom: [0u8; 256],
+                        cumulative_gas_used: 0,
+                        blob_gas_used: 0,
+                        blob_gas_price: None,
+                        state_root: None,
+                    }
+                };
+
+                self.tracer.on_tx_end(Some(&receipt), None);
+            }
+            ExecEvent::TxnLog { txn_index, txn_log, topic_bytes, data_bytes } => {
+                let mut topics: Vec<B256> = Vec::with_capacity(txn_log.topic_count as usize);
+                for i in 0..txn_log.topic_count as usize {
+                    let start = i * 32;
+                    topics.push(B256::from_slice(&topic_bytes[start..start+32]));
+                }
+                let addr = alloy_primitives::Address::from(txn_log.address.bytes);
+                if !self.tracer.is_in_transaction() {
+                    panic!("TxnLog arrived but no transaction is active");
+                }
+                if self.tracer.is_in_call() {
+                    self.tracer.on_log(addr, topics, &data_bytes, txn_log.index);
+                }
+            }
+            ExecEvent::TxnCallFrame { txn_index, txn_call_frame, input_bytes, return_bytes } => {
+
+                if !self.tracer.is_in_transaction() {
+                    self.tracer.on_system_call_start();
+                }
+
+                let from = alloy_primitives::Address::from(txn_call_frame.caller.bytes);
+                let to = alloy_primitives::Address::from(txn_call_frame.call_target.bytes);
+                let value = alloy_primitives::U256::from_limbs(txn_call_frame.value.limbs);
+
+                self.tracer.on_call_enter(txn_call_frame.depth as i32, txn_call_frame.opcode, from, to, &input_bytes, txn_call_frame.gas, value);
+                self.tracer.on_call_exit(txn_call_frame.depth as i32, &return_bytes, txn_call_frame.gas_used, None, txn_call_frame.evmc_status == 2);
+            }
+            ExecEvent::AccountAccessListHeader(header) => {
+
+                // self.tracer.on_system_call_end();
+            }
+            ExecEvent::AccountAccess(account_access) => {
+                let addr = alloy_primitives::Address::from(account_access.address.bytes);
+                if account_access.is_balance_modified {
+                    use firehose::pb::sf::ethereum::r#type::v2::balance_change::Reason;
+                    self.tracer.on_balance_change(addr, alloy_primitives::U256::from_limbs(account_access.prestate.balance.limbs), alloy_primitives::U256::from_limbs(account_access.modified_balance.limbs), Reason::MonadTxPostState);
+                }
+                if account_access.is_nonce_modified {
+                    self.tracer.on_nonce_change(addr, account_access.prestate.nonce, account_access.modified_nonce);
+                }
+            }
+            ExecEvent::StorageAccess(storage_access) => {
+                if storage_access.modified && !storage_access.transient {
+                    let addr = alloy_primitives::Address::from(storage_access.address.bytes);
+                    self.tracer.on_storage_change(addr, B256::from(storage_access.key.bytes), B256::from(storage_access.start_value.bytes), B256::from(storage_access.end_value.bytes));
+                }
+            }
+
+            // DO NOT TOUCH TODOS
+            ExecEvent::RecordError(monad_event_record_error) => todo!(),
+            ExecEvent::BlockReject(_) => todo!(),
+            ExecEvent::BlockPerfEvmEnter => todo!(),
+            ExecEvent::BlockPerfEvmExit => todo!(),
+            ExecEvent::BlockQC(monad_exec_block_qc) => todo!(),
+
+            // Consensus level finalized
+            ExecEvent::BlockFinalized(monad_exec_block_tag) => todo!(),
+            ExecEvent::BlockVerified(monad_exec_block_verified) => todo!(),
+            ExecEvent::TxnHeaderEnd => todo!(),
+            ExecEvent::TxnReject { txn_index, reject } => todo!(),
+            ExecEvent::TxnPerfEvmEnter => todo!(),
+            ExecEvent::TxnPerfEvmExit => todo!(),
+            ExecEvent::EvmError(monad_exec_evm_error) => todo!(),
+                    }
         Ok(())
     }
 
@@ -94,6 +358,9 @@ impl FirehoseTracer {
         }
 
         let start = Instant::now();
+
+        // TEMP
+        self.add_event(event.clone())?;
 
         if let Some(block) = self.event_mapper.process_event(event).await? {
             let elapsed = start.elapsed();

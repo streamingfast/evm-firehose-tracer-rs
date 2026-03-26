@@ -16,7 +16,11 @@ mod version;
 pub use config::{ChainConfig, Config, Rules};
 pub use finality::FinalityStatus;
 pub use logging::HexView;
-pub use tracer::Tracer;
+pub use tracer::{
+    Tracer, OP_CALLDATACOPY, OP_CODECOPY, OP_EXTCODECOPY, OP_RETURNDATACOPY, OP_LOG0, OP_LOG1,
+    OP_LOG2, OP_LOG3, OP_LOG4, OP_CREATE, OP_CALL, OP_CALLCODE, OP_RETURN, OP_DELEGATECALL,
+    OP_CREATE2, OP_STATICCALL, OP_REVERT, OP_SELFDESTRUCT,
+};
 pub use types::{
     BlockData, BlockEvent, CallType, FinalizedBlockRef, LogData, ReceiptData, TxEvent, UncleData,
     WithdrawalData,

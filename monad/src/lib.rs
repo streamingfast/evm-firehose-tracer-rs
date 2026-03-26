@@ -5,10 +5,10 @@ pub mod event_mapper;
 pub mod ring_consumer;
 pub mod tracer;
 
-pub use config::TracerConfig;
+pub use config::FirehosePluginConfig;
 pub use event_mapper::EventMapper;
 pub use ring_consumer::{MonadConsumer, PluginConfig};
-pub use tracer::FirehoseTracer;
+pub use tracer::FirehosePlugin;
 
 // Re-export commonly used types
 pub use firehose::pb::sf::ethereum::r#type::v2::{Block, BlockHeader, TransactionTrace};

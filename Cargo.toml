@@ -10,6 +10,7 @@ edition = "2021"
 # Internal workspace crates
 pb = { version = "0.1.0", path = "pb" }
 firehose = { version = "0.1.0", path = "firehose" }
+firehose-test = { version = "0.1.0", path = "firehose-test" }
 shared = { version = "0.1.0", path = "shared" }
 
 # # Reth eth dependencies

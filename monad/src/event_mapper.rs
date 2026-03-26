@@ -229,7 +229,7 @@ impl BlockBuilder {
         }
     }
 
-    fn add_event(&mut self, event: ExecEvent) -> Result<()> {
+    fn add_event_old(&mut self, event: ExecEvent) -> Result<()> {
         match event {
             ExecEvent::BlockStart(block_start) => {
                 self.current_txn_idx = None;
@@ -472,6 +472,7 @@ impl BlockBuilder {
     ) -> Result<()> {
         debug!("TxnEvmOutput: txn_index={}, status={}, gas_used={}", txn_index, output.receipt.status, output.receipt.gas_used);
 
+        // TODO: use index if parallel
         self.cumulative_gas_used += output.receipt.gas_used;
 
         if let Some(tx) = self.txns.get_mut(&txn_index) {
@@ -1125,7 +1126,7 @@ impl EventMapper {
         debug!("Processing event block={}", block_num);
 
         let builder = self.blocks.entry(block_num).or_insert_with(|| BlockBuilder::new(block_num));
-        builder.add_event(event)?;
+        builder.add_event_old(event)?;
 
         if is_block_end {
             if let Some(builder) = self.blocks.remove(&block_num) {
