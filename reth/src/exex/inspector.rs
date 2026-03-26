@@ -23,6 +23,12 @@ impl<'a, Node: FullNodeComponents> Firehose<'a, Node> {
         }
     }
 
+    /// Returns a mutable reference to the tracer, allowing the runner to call tracer lifecycle
+    /// methods (on_tx_start, on_tx_end, etc.) while the inspector owns the tracer borrow.
+    pub fn tracer_mut(&mut self) -> &mut firehose::Tracer {
+        self.tracer
+    }
+
     /// Map EVM call scheme to Firehose call type opcode
     fn map_call_type_opcode(scheme: &reth::revm::revm::interpreter::CallScheme) -> u8 {
         use reth::revm::revm::interpreter::CallScheme;
