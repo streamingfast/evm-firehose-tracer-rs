@@ -363,9 +363,27 @@ impl FirehosePlugin {
             return Ok(());
         }
 
-        // let start = Instant::now();
+        // Handle mid-stream panic, we wait for the next BlockStart
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.add_event(event)
+        }));
 
-        self.add_event(event)?;
+        match res {
+            Ok(inner) => inner?,
+            Err(panic_payload) => {
+                let msg = panic_payload
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| panic_payload.downcast_ref::<String>().map(|s| s.as_str()))
+                    .unwrap_or("unknown panic");
+                error!("tracer panicked, resetting state: {}", msg);
+                self.tracer.reset();
+                self.tx_end_receipt = None;
+                self.pending_tx_events.clear();
+                self.block_txn_count = 0;
+                self.txn_end_count = 0;
+            }
+        }
 
         // TEMP
         // if let Some(block) = self.event_mapper.process_event(event).await? {

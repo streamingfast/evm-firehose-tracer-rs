@@ -84,6 +84,12 @@ impl Tracer {
         }
     }
 
+    /// Resets all block, transaction, and call state
+    pub fn reset(&mut self) {
+        self.reset_block();
+        self.reset_transaction();
+    }
+
     /// Resets the block state only (not transaction or call state)
     fn reset_block(&mut self) {
         self.block = None;
