@@ -1,12 +1,4 @@
 //! Configuration for the Monad Firehose tracer
-//!
-//! # Event ordering
-
-//!
-//! - execute_block.cpp` promise chain enforcing serial merge+event-emit order
-//! - execute_transaction.cpp execute_final() emits all txn events before merge
-//! - record_txn_events.cpp record_txn_output_events() emits TxnEvmOutput → TxnLog* → TxnCallFrame* → AccountAccessListHeader → AccountAccess* → StorageAccess → TxnEnd in one shot
-//! - exec_event_ctypes.h `MONAD_FLOW_TXN_ID` in content_ext, monad_exec_account_access_context enum
 use serde::{Deserialize, Serialize};
 
 /// Configuration for the Firehose tracer for Monad
