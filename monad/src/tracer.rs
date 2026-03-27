@@ -3,13 +3,10 @@
 use crate::{EventMapper, MonadConsumer, FirehosePluginConfig, TRACER_NAME, TRACER_VERSION};
 use alloy_primitives::B256;
 use eyre::Result;
-use firehose::{types::{AccessTuple, SetCodeAuthorization, TxType}, FinalityStatus, Tracer};
-use firehose::printer::print_block_to_firehose;
+use firehose::{types::{AccessTuple, SetCodeAuthorization, TxType}, Tracer};
 use futures_util::StreamExt;
 use monad_exec_events::ExecEvent;
 use std::collections::HashMap;
-use std::io::stdout;
-use std::time::Instant;
 use tracing::{error, info};
 
 #[repr(u8)]
@@ -22,7 +19,35 @@ struct OpenCall {
     depth: i32,
     return_bytes: Box<[u8]>,
     gas_used: u64,
-    reverted: bool,
+    evmc_status: i32,
+}
+
+fn evmc_status_to_error(evmc_status: i32) -> Option<firehose::StringError> {
+    let msg = match evmc_status {
+        0 => return None,
+        1 => "execution failed",
+        2 => "execution reverted",
+        3 => "out of gas",
+        4 => "invalid instruction",
+        5 => "undefined instruction",
+        6 => "stack overflow",
+        7 => "stack underflow",
+        8 => "bad jump destination",
+        9 => "invalid memory access",
+        10 => "call depth exceeded",
+        11 => "static mode violation",
+        12 => "precompile failure",
+        13 => "contract validation failure",
+        14 => "argument out of range",
+        17 => "insufficient balance for transfer",
+        _ => return Some(firehose::StringError(format!("unknown error (status {})", evmc_status))),
+    };
+    Some(firehose::StringError(msg.to_string()))
+}
+
+fn is_precompile(addr: &alloy_primitives::Address) -> bool {
+    let bytes = addr.as_slice();
+    bytes[..19].iter().all(|&b| b == 0) && bytes[19] >= 1 && bytes[19] <= 9
 }
 
 struct PendingLog {
@@ -40,18 +65,15 @@ pub struct FirehosePlugin {
     pub tracer: Tracer,
     tx_end_receipt: Option<monad_exec_events::ffi::monad_exec_txn_evm_output>,
     pending_tx_events: HashMap<usize, firehose::TxEvent>,
-    // Logs buffered until root call is entered
+    // Logs buffered until root call is entered (logs arrive before call frames)
     pending_logs: Vec<PendingLog>,
-    // Logs for receipt construction
+    // Logs buffered for receipt construction
     pending_receipt_logs: Vec<firehose::LogData>,
     // Stack of open calls: enter on TxnCallFrame
     open_calls: Vec<OpenCall>,
     block_txn_count: u64,
     txn_end_count: usize,
-    // TODELETE
-    finality: FinalityStatus,
-    current_head: u64,
-    lib_delta: u64,
+    last_finalized_block: u64,
 }
 
 
@@ -60,11 +82,9 @@ impl FirehosePlugin {
         Self {
             config,
             event_mapper: EventMapper::new(),
-            finality: FinalityStatus::default(),
             consumer: None,
             tracer: Tracer::new(firehose::Config::new()),
-            current_head: 0,
-            lib_delta: 10,
+            last_finalized_block: 0,
             tx_end_receipt: None,
             pending_tx_events: HashMap::new(),
             pending_logs: Vec::new(),
@@ -79,11 +99,9 @@ impl FirehosePlugin {
         Self {
             config,
             event_mapper: EventMapper::new(),
-            finality: FinalityStatus::default(),
             consumer: None,
             tracer: Tracer::new_with_writer(firehose::Config::new(), writer),
-            current_head: 0,
-            lib_delta: 10,
+            last_finalized_block: 0,
             tx_end_receipt: None,
             pending_tx_events: HashMap::new(),
             pending_logs: Vec::new(),
@@ -92,10 +110,6 @@ impl FirehosePlugin {
             block_txn_count: 0,
             txn_end_count: 0,
         }
-    }
-
-    pub fn is_epilogue(&self) -> bool {
-        self.block_txn_count > 0 && self.txn_end_count >= self.block_txn_count as usize
     }
 
     fn ensure_in_block_and_in_pending(&self, txn_index: usize, event_name: &str) {
@@ -143,7 +157,8 @@ impl FirehosePlugin {
     }
 
     pub fn add_event(&mut self, event: ExecEvent) -> Result<()> {
-        if !self.tracer.is_in_block() && !matches!(event, ExecEvent::BlockStart(_)) {
+        if !self.tracer.is_in_block() && !matches!(event, ExecEvent::BlockStart(_) | ExecEvent::BlockFinalized(_))
+        {
             return Ok(());
         }
 
@@ -154,13 +169,6 @@ impl FirehosePlugin {
                 self.txn_end_count = 0;
 
                 let block_number = block_start.eth_block_input.number;
-                // Signal for finalized
-                let lib = if block_number > self.lib_delta {
-                    block_number - self.lib_delta
-                } else {
-                    0
-                };
-
                 let ei = &block_start.eth_block_input;
                 let extra_data_len = ei.extra_data_length as usize;
                 let base_fee = alloy_primitives::U256::from_limbs(ei.base_fee_per_gas.limbs);
@@ -190,12 +198,12 @@ impl FirehosePlugin {
                     blob_gas_used: Some(0),
                     excess_blob_gas: Some(0),
                     parent_beacon_root: Some(B256::ZERO),
-                    requests_hash: None,
+                    requests_hash: Some(B256::ZERO),
                     tx_dependency: None,
                 };
 
                 self.tracer.on_block_start(firehose::BlockEvent { block: block_data, finalized: Some(firehose::FinalizedBlockRef{
-                    number: lib,
+                    number: self.last_finalized_block,
                     hash: None
                 }) });
             }
@@ -222,8 +230,11 @@ impl FirehosePlugin {
 
                 let h = &txn_header_start.txn_header;
                 let blob_gas_fee_cap = alloy_primitives::U256::from_limbs(h.max_fee_per_blob_gas.limbs);
+                let tx_type = TxType::try_from(h.txn_type as u8).unwrap_or(TxType::Legacy);
+                // max_fee_per_gas and max_priority_fee_per_gas only apply to EIP-1559
+                let is_eip1559 = h.txn_type >= 2;
                 let tx_event = firehose::TxEvent {
-                    tx_type: TxType::try_from(h.txn_type as u8).unwrap_or(TxType::Legacy),
+                    tx_type,
                     hash: B256::from(txn_header_start.txn_hash.bytes),
                     from: alloy_primitives::Address::from(txn_header_start.sender.bytes),
                     to: if h.is_contract_creation { None } else { Some(alloy_primitives::Address::from(h.to.bytes)) },
@@ -231,8 +242,8 @@ impl FirehosePlugin {
                     value: alloy_primitives::U256::from_limbs(h.value.limbs),
                     gas: h.gas_limit,
                     gas_price: alloy_primitives::U256::from_limbs(h.max_fee_per_gas.limbs),
-                    max_fee_per_gas: Some(alloy_primitives::U256::from_limbs(h.max_fee_per_gas.limbs)),
-                    max_priority_fee_per_gas: Some(alloy_primitives::U256::from_limbs(h.max_priority_fee_per_gas.limbs)),
+                    max_fee_per_gas: if is_eip1559 { Some(alloy_primitives::U256::from_limbs(h.max_fee_per_gas.limbs)) } else { None },
+                    max_priority_fee_per_gas: if is_eip1559 { Some(alloy_primitives::U256::from_limbs(h.max_priority_fee_per_gas.limbs)) } else { None },
                     nonce: h.nonce,
                     index: txn_index as u32,
                     v: Some(alloy_primitives::Bytes::copy_from_slice(&[h.y_parity as u8])),
@@ -295,11 +306,11 @@ impl FirehosePlugin {
 
                 // Flush remaining open calls in reverse
                 while let Some(open) = self.open_calls.pop() {
-                    self.tracer.on_call_exit(open.depth, &open.return_bytes, open.gas_used, None, open.reverted);
+                    let err = evmc_status_to_error(open.evmc_status);
+                    self.tracer.on_call_exit(open.depth, &open.return_bytes, open.gas_used, err.as_ref().map(|e| e as &dyn std::error::Error), open.evmc_status != 0);
                 }
                 self.pending_logs.clear();
                 let receipt_logs = std::mem::take(&mut self.pending_receipt_logs);
-
                 let receipt = if let Some(output) = self.tx_end_receipt.take() {
                     firehose::ReceiptData{
                         transaction_index: 0,
@@ -342,7 +353,7 @@ impl FirehosePlugin {
                 //     self.tracer.on_log(addr, &topics, &data_bytes, txn_log.index);
                 // }
 
-                // buffer until root call is entered (for call trace)
+                // buffer until root call is entered (logs arrive before call frames)
                 self.pending_logs.push(PendingLog { addr, topics: topics.clone(), data: data_bytes.to_vec(), index: txn_log.index });
                 // also buffer for receipt construction
                 self.pending_receipt_logs.push(firehose::LogData {
@@ -362,7 +373,8 @@ impl FirehosePlugin {
                 // Close any open calls at depth >= incoming depth
                 while self.open_calls.last().map_or(false, |c| c.depth >= depth) {
                     let open = self.open_calls.pop().unwrap();
-                    self.tracer.on_call_exit(open.depth, &open.return_bytes, open.gas_used, None, open.reverted);
+                    let err = evmc_status_to_error(open.evmc_status);
+                    self.tracer.on_call_exit(open.depth, &open.return_bytes, open.gas_used, err.as_ref().map(|e| e as &dyn std::error::Error), open.evmc_status != 0);
                 }
 
                 let from = alloy_primitives::Address::from(txn_call_frame.caller.bytes);
@@ -378,18 +390,29 @@ impl FirehosePlugin {
                     }
                 }
 
+                let evmc_status = txn_call_frame.evmc_status as i32;
+
+                if txn_call_frame.gas_used > 0 || is_precompile(&to) {
+                    let err = evmc_status_to_error(evmc_status);
+                    if let Some(ref e) = err {
+                        self.tracer.on_opcode_fault(0, txn_call_frame.opcode, txn_call_frame.gas, txn_call_frame.gas_used, depth, e as &dyn std::error::Error);
+                    } else {
+                        self.tracer.on_opcode(0, txn_call_frame.opcode, txn_call_frame.gas, txn_call_frame.gas_used, &[], depth, None);
+                    }
+                }
                 self.open_calls.push(OpenCall {
                     depth,
                     return_bytes,
                     gas_used: txn_call_frame.gas_used,
-                    reverted: txn_call_frame.evmc_status == 2,
+                    evmc_status,
                 });
             }
             ExecEvent::AccountAccessListHeader(header) => {
                 if header.access_context == AccountAccessContext::Transaction as u8 {
                     while self.open_calls.last().map_or(false, |c| c.depth > 0) {
                         let open = self.open_calls.pop().unwrap();
-                        self.tracer.on_call_exit(open.depth, &open.return_bytes, open.gas_used, None, open.reverted);
+                        let err = evmc_status_to_error(open.evmc_status);
+                        self.tracer.on_call_exit(open.depth, &open.return_bytes, open.gas_used, err.as_ref().map(|e| e as &dyn std::error::Error), open.evmc_status != 0);
                     }
                 }
             }
@@ -425,8 +448,10 @@ impl FirehosePlugin {
             ExecEvent::BlockReject(_) => {}
             ExecEvent::BlockPerfEvmEnter => {}
             ExecEvent::BlockPerfEvmExit => {}
+            ExecEvent::BlockFinalized(tag) => {
+                self.last_finalized_block = self.last_finalized_block.max(tag.block_number);
+            }
             ExecEvent::BlockQC(_) => {}
-            ExecEvent::BlockFinalized(_) => {}
             ExecEvent::BlockVerified(_) => {}
             ExecEvent::TxnHeaderEnd => {}
             ExecEvent::TxnReject { .. } => {}
@@ -442,35 +467,13 @@ impl FirehosePlugin {
             let block_num = if let ExecEvent::BlockStart(ref bs) = event {
                 bs.eth_block_input.number
             } else {
-                self.current_head
+                0
             };
             info!("NO-OP: block={}", block_num);
             return Ok(());
         }
 
-        // Handle mid-stream panic, we wait for the next BlockStart
-        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.add_event(event)
-        }));
-
-        match res {
-            Ok(inner) => inner?,
-            Err(panic_payload) => {
-                let msg = panic_payload
-                    .downcast_ref::<&str>()
-                    .copied()
-                    .or_else(|| panic_payload.downcast_ref::<String>().map(|s| s.as_str()))
-                    .unwrap_or("unknown panic");
-                error!("tracer panicked, resetting state: {}", msg);
-                self.tracer.reset();
-                self.tx_end_receipt = None;
-                self.pending_tx_events.clear();
-                self.pending_logs.clear();
-                self.open_calls.clear();
-                self.block_txn_count = 0;
-                self.txn_end_count = 0;
-            }
-        }
+        self.add_event(event)?;
 
         // TEMP
         // if let Some(block) = self.event_mapper.process_event(event).await? {
