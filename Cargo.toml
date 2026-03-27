@@ -38,3 +38,9 @@ color-eyre = "0.6"
 # Monad-specific dependencies
 monad-exec-events = { git = "https://github.com/streamingfast/monad-bft", branch = "feature/add-sys-calls-fh" }
 monad-event-ring = { git = "https://github.com/streamingfast/monad-bft", branch = "feature/add-sys-calls-fh" }
+
+# This is needed otherwise we get flooding of debug logs around a problem that seems to happen in Reth directly.
+# This is about wrong execution pool and cool be related to ExEx in general (not just our version). We will
+# need to investigate to ensure we are not doing wrong thing that could hinder threading in production.
+[profile.dev.package.reth-chain-state]
+debug-assertions = false
