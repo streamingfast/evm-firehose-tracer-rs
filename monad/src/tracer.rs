@@ -172,6 +172,7 @@ impl FirehosePlugin {
                 }) });
             }
             ExecEvent::BlockEnd(block_end) => {
+                self.tracer.set_block_hash(B256::from(block_end.eth_block_hash.bytes));
                 self.tracer.on_block_end(None);
             }
             ExecEvent::TxnHeaderStart {

@@ -1373,6 +1373,11 @@ impl Tracer {
             panic!("caller expected to be in system call state but we were not");
         }
     }
+    pub fn set_block_hash(&mut self, hash: alloy_primitives::B256) {
+        if let Some(block) = &mut self.block {
+            block.hash = hash.0.to_vec();
+        }
+    }
 
     pub fn is_in_transaction(&self) -> bool {
         self.transaction.is_some()
