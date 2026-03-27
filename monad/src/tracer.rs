@@ -139,6 +139,12 @@ impl FirehosePlugin {
     }
 
     pub fn add_event(&mut self, event: ExecEvent) -> Result<()> {
+        if !self.tracer.is_in_block() {
+            if !matches!(event, ExecEvent::BlockStart(_)) {
+                return Ok(());
+            }
+        }
+
         match event {
             ExecEvent::BlockStart(block_start) => {
                 // self.current_txn_idx = None;
@@ -192,9 +198,6 @@ impl FirehosePlugin {
                 }) });
             }
             ExecEvent::BlockEnd(block_end) => {
-                if !self.tracer.is_in_block() {
-                    return Ok(());
-                }
                 self.tracer.set_block_hash(B256::from(block_end.eth_block_hash.bytes));
                 let eo = &block_end.exec_output;
                 self.tracer.set_block_header_end_data(
