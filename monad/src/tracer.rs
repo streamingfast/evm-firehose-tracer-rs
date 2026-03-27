@@ -173,6 +173,13 @@ impl FirehosePlugin {
             }
             ExecEvent::BlockEnd(block_end) => {
                 self.tracer.set_block_hash(B256::from(block_end.eth_block_hash.bytes));
+                let eo = &block_end.exec_output;
+                self.tracer.set_block_header_end_data(
+                    B256::from(eo.state_root.bytes),
+                    B256::from(eo.receipts_root.bytes),
+                    alloy_primitives::Bloom::from_slice(&eo.logs_bloom.bytes),
+                    eo.gas_used,
+                );
                 self.tracer.on_block_end(None);
             }
             ExecEvent::TxnHeaderStart {

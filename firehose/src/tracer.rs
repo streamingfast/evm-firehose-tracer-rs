@@ -1373,11 +1373,6 @@ impl Tracer {
             panic!("caller expected to be in system call state but we were not");
         }
     }
-    pub fn set_block_hash(&mut self, hash: alloy_primitives::B256) {
-        if let Some(block) = &mut self.block {
-            block.hash = hash.0.to_vec();
-        }
-    }
 
     pub fn is_in_transaction(&self) -> bool {
         self.transaction.is_some()
@@ -1390,6 +1385,30 @@ impl Tracer {
     pub fn is_in_system_call(&self) -> bool {
         self.in_system_call
     }
+
+    pub fn set_block_hash(&mut self, hash: alloy_primitives::B256) {
+        if let Some(block) = &mut self.block {
+            block.hash = hash.0.to_vec();
+        }
+    }
+
+    pub fn set_block_header_end_data(
+        &mut self,
+        state_root: alloy_primitives::B256,
+        receipts_root: alloy_primitives::B256,
+        logs_bloom: alloy_primitives::Bloom,
+        gas_used: u64,
+    ) {
+        if let Some(block) = &mut self.block {
+            if let Some(header) = &mut block.header {
+                header.state_root = state_root.0.to_vec();
+                header.receipt_root = receipts_root.0.to_vec();
+                header.logs_bloom = logs_bloom.0.to_vec();
+                header.gas_used = gas_used;
+            }
+        }
+    }
+
 
 }
 
