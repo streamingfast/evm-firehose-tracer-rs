@@ -189,7 +189,7 @@ impl FirehosePlugin {
                     withdrawals_root: Some(B256::from(ei.withdrawals_root.bytes)),
                     blob_gas_used: Some(0),
                     excess_blob_gas: Some(0),
-                    parent_beacon_root: None,
+                    parent_beacon_root: Some(B256::ZERO),
                     requests_hash: None,
                     tx_dependency: None,
                 };
