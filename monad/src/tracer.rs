@@ -42,6 +42,8 @@ pub struct FirehosePlugin {
     pending_tx_events: HashMap<usize, firehose::TxEvent>,
     // Logs buffered until root call is entered
     pending_logs: Vec<PendingLog>,
+    // Logs for receipt construction
+    pending_receipt_logs: Vec<firehose::LogData>,
     // Stack of open calls: enter on TxnCallFrame
     open_calls: Vec<OpenCall>,
     block_txn_count: u64,
@@ -66,6 +68,7 @@ impl FirehosePlugin {
             tx_end_receipt: None,
             pending_tx_events: HashMap::new(),
             pending_logs: Vec::new(),
+            pending_receipt_logs: Vec::new(),
             open_calls: Vec::new(),
             block_txn_count: 0,
             txn_end_count: 0,
@@ -84,6 +87,7 @@ impl FirehosePlugin {
             tx_end_receipt: None,
             pending_tx_events: HashMap::new(),
             pending_logs: Vec::new(),
+            pending_receipt_logs: Vec::new(),
             open_calls: Vec::new(),
             block_txn_count: 0,
             txn_end_count: 0,
@@ -294,13 +298,14 @@ impl FirehosePlugin {
                     self.tracer.on_call_exit(open.depth, &open.return_bytes, open.gas_used, None, open.reverted);
                 }
                 self.pending_logs.clear();
+                let receipt_logs = std::mem::take(&mut self.pending_receipt_logs);
 
                 let receipt = if let Some(output) = self.tx_end_receipt.take() {
                     firehose::ReceiptData{
                         transaction_index: 0,
                         gas_used: output.receipt.gas_used,
                         status: if output.receipt.status { 1 } else { 0 },
-                        logs: vec![],
+                        logs: receipt_logs,
                         logs_bloom: [0u8; 256],
                         cumulative_gas_used: output.receipt.gas_used,
                         blob_gas_used: 0,
@@ -312,7 +317,7 @@ impl FirehosePlugin {
                         transaction_index: 0,
                         gas_used: 0,
                         status: 0,
-                        logs: vec![],
+                        logs: receipt_logs,
                         logs_bloom: [0u8; 256],
                         cumulative_gas_used: 0,
                         blob_gas_used: 0,
@@ -337,8 +342,15 @@ impl FirehosePlugin {
                 //     self.tracer.on_log(addr, &topics, &data_bytes, txn_log.index);
                 // }
 
-                // buffer until root call is entered
-                self.pending_logs.push(PendingLog { addr, topics, data: data_bytes.to_vec(), index: txn_log.index });
+                // buffer until root call is entered (for call trace)
+                self.pending_logs.push(PendingLog { addr, topics: topics.clone(), data: data_bytes.to_vec(), index: txn_log.index });
+                // also buffer for receipt construction
+                self.pending_receipt_logs.push(firehose::LogData {
+                    address: addr,
+                    topics,
+                    data: alloy_primitives::Bytes::copy_from_slice(&data_bytes),
+                    block_index: txn_log.index,
+                });
             }
             ExecEvent::TxnCallFrame { txn_index, txn_call_frame, input_bytes, return_bytes } => {
                 if !self.tracer.is_in_transaction() {
@@ -374,12 +386,12 @@ impl FirehosePlugin {
                 });
             }
             ExecEvent::AccountAccessListHeader(header) => {
-                // if header.access_context == AccountAccessContext::BlockEpilogue as u8 && self.tracer.is_in_system_call() {
-                //     while let Some(open) = self.open_calls.pop() {
-                //         self.tracer.on_call_exit(open.depth, &open.return_bytes, open.gas_used, None, open.reverted);
-                //     }
-                //     self.tracer.on_system_call_end();
-                // }
+                if header.access_context == AccountAccessContext::Transaction as u8 {
+                    while self.open_calls.last().map_or(false, |c| c.depth > 0) {
+                        let open = self.open_calls.pop().unwrap();
+                        self.tracer.on_call_exit(open.depth, &open.return_bytes, open.gas_used, None, open.reverted);
+                    }
+                }
             }
             ExecEvent::AccountAccess(account_access) => {
                 let addr = alloy_primitives::Address::from(account_access.address.bytes);
