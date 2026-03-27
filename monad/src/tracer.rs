@@ -18,6 +18,20 @@ enum AccountAccessContext {
     Transaction = 1,
     BlockEpilogue = 2,
 }
+struct OpenCall {
+    depth: i32,
+    return_bytes: Box<[u8]>,
+    gas_used: u64,
+    reverted: bool,
+}
+
+struct PendingLog {
+    addr: alloy_primitives::Address,
+    topics: Vec<B256>,
+    data: Vec<u8>,
+    index: u32,
+}
+
 /// Main Firehose tracer for Monad
 pub struct FirehosePlugin {
     config: FirehosePluginConfig,
@@ -26,6 +40,10 @@ pub struct FirehosePlugin {
     pub tracer: Tracer,
     tx_end_receipt: Option<monad_exec_events::ffi::monad_exec_txn_evm_output>,
     pending_tx_events: HashMap<usize, firehose::TxEvent>,
+    // Logs buffered until root call is entered
+    pending_logs: Vec<PendingLog>,
+    // Stack of open calls: enter on TxnCallFrame
+    open_calls: Vec<OpenCall>,
     block_txn_count: u64,
     txn_end_count: usize,
     // TODELETE
@@ -47,7 +65,8 @@ impl FirehosePlugin {
             lib_delta: 10,
             tx_end_receipt: None,
             pending_tx_events: HashMap::new(),
-
+            pending_logs: Vec::new(),
+            open_calls: Vec::new(),
             block_txn_count: 0,
             txn_end_count: 0,
         }
@@ -64,7 +83,8 @@ impl FirehosePlugin {
             lib_delta: 10,
             tx_end_receipt: None,
             pending_tx_events: HashMap::new(),
-
+            pending_logs: Vec::new(),
+            open_calls: Vec::new(),
             block_txn_count: 0,
             txn_end_count: 0,
         }
@@ -265,6 +285,12 @@ impl FirehosePlugin {
             ExecEvent::TxnEnd => {
                 self.txn_end_count += 1;
 
+                // Flush remaining open calls in reverse
+                while let Some(open) = self.open_calls.pop() {
+                    self.tracer.on_call_exit(open.depth, &open.return_bytes, open.gas_used, None, open.reverted);
+                }
+                self.pending_logs.clear();
+
                 let receipt = if let Some(output) = self.tx_end_receipt.take() {
                     firehose::ReceiptData{
                         transaction_index: 0,
@@ -303,24 +329,51 @@ impl FirehosePlugin {
                 if !self.tracer.is_in_transaction() {
                     panic!("TxnLog arrived but no transaction is active");
                 }
-                if self.tracer.is_in_call() {
-                    self.tracer.on_log(addr, &topics, &data_bytes, txn_log.index);
-                }
+                // if self.tracer.is_in_call() {
+                //     self.tracer.on_log(addr, &topics, &data_bytes, txn_log.index);
+                // }
+
+                // buffer until root call is entered
+                self.pending_logs.push(PendingLog { addr, topics, data: data_bytes.to_vec(), index: txn_log.index });
             }
             ExecEvent::TxnCallFrame { txn_index, txn_call_frame, input_bytes, return_bytes } => {
                 if !self.tracer.is_in_transaction() {
                     self.tracer.on_system_call_start();
                 }
 
+                let depth = txn_call_frame.depth as i32;
+
+                // Close any open calls at depth >= incoming depth
+                while self.open_calls.last().map_or(false, |c| c.depth >= depth) {
+                    let open = self.open_calls.pop().unwrap();
+                    self.tracer.on_call_exit(open.depth, &open.return_bytes, open.gas_used, None, open.reverted);
+                }
+
                 let from = alloy_primitives::Address::from(txn_call_frame.caller.bytes);
                 let to = alloy_primitives::Address::from(txn_call_frame.call_target.bytes);
                 let value = alloy_primitives::U256::from_limbs(txn_call_frame.value.limbs);
 
-                self.tracer.on_call_enter(txn_call_frame.depth as i32, txn_call_frame.opcode, from, to, &input_bytes, txn_call_frame.gas, value);
-                self.tracer.on_call_exit(txn_call_frame.depth as i32, &return_bytes, txn_call_frame.gas_used, None, txn_call_frame.evmc_status == 2);
+                self.tracer.on_call_enter(depth, txn_call_frame.opcode, from, to, &input_bytes, txn_call_frame.gas, value);
+
+                // Flush buffered logs into the root call once its open
+                if depth == 0 {
+                    for log in self.pending_logs.drain(..) {
+                        self.tracer.on_log(log.addr, &log.topics, &log.data, log.index);
+                    }
+                }
+
+                self.open_calls.push(OpenCall {
+                    depth,
+                    return_bytes,
+                    gas_used: txn_call_frame.gas_used,
+                    reverted: txn_call_frame.evmc_status == 2,
+                });
             }
             ExecEvent::AccountAccessListHeader(header) => {
                 if header.access_context == AccountAccessContext::BlockEpilogue as u8 && self.tracer.is_in_system_call() {
+                    while let Some(open) = self.open_calls.pop() {
+                        self.tracer.on_call_exit(open.depth, &open.return_bytes, open.gas_used, None, open.reverted);
+                    }
                     self.tracer.on_system_call_end();
                 }
             }
@@ -396,6 +449,8 @@ impl FirehosePlugin {
                 self.tracer.reset();
                 self.tx_end_receipt = None;
                 self.pending_tx_events.clear();
+                self.pending_logs.clear();
+                self.open_calls.clear();
                 self.block_txn_count = 0;
                 self.txn_end_count = 0;
             }
