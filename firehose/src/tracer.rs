@@ -1393,6 +1393,9 @@ impl Tracer {
     pub fn set_block_hash(&mut self, hash: alloy_primitives::B256) {
         if let Some(block) = &mut self.block {
             block.hash = hash.0.to_vec();
+            if let Some(header) = &mut block.header {
+                header.hash = hash.0.to_vec();
+            }
         }
     }
 
