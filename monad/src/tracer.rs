@@ -12,6 +12,12 @@ use std::io::stdout;
 use std::time::Instant;
 use tracing::{error, info};
 
+#[repr(u8)]
+enum AccountAccessContext {
+    BlockPrologue = 0,
+    Transaction = 1,
+    BlockEpilogue = 2,
+}
 /// Main Firehose tracer for Monad
 pub struct FirehosePlugin {
     config: FirehosePluginConfig,
@@ -27,6 +33,7 @@ pub struct FirehosePlugin {
     current_head: u64,
     lib_delta: u64,
 }
+
 
 impl FirehosePlugin {
     pub fn new(config: FirehosePluginConfig) -> Self {
@@ -290,8 +297,7 @@ impl FirehosePlugin {
                 }
             }
             ExecEvent::TxnCallFrame { txn_index, txn_call_frame, input_bytes, return_bytes } => {
-                let in_system_call = !self.tracer.is_in_transaction();
-                if in_system_call {
+                if !self.tracer.is_in_transaction() {
                     self.tracer.on_system_call_start();
                 }
 
@@ -303,7 +309,7 @@ impl FirehosePlugin {
                 self.tracer.on_call_exit(txn_call_frame.depth as i32, &return_bytes, txn_call_frame.gas_used, None, txn_call_frame.evmc_status == 2);
             }
             ExecEvent::AccountAccessListHeader(header) => {
-                if self.tracer.is_in_system_call() {
+                if header.access_context == AccountAccessContext::BlockEpilogue as u8 && self.tracer.is_in_system_call() {
                     self.tracer.on_system_call_end();
                 }
             }
