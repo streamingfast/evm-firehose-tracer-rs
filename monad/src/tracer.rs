@@ -180,6 +180,9 @@ impl FirehosePlugin {
                 data_bytes,
                 blob_bytes,
             } => {
+                if self.tracer.is_in_system_call() {
+                    self.tracer.on_system_call_end();
+                }
 
                 let h = &txn_header_start.txn_header;
                 let blob_gas_fee_cap = alloy_primitives::U256::from_limbs(h.max_fee_per_blob_gas.limbs);
