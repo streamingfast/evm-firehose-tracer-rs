@@ -248,25 +248,36 @@ where
 
     /// CALL* operation completes
     fn call_end(&mut self, context: &mut CTX, _inputs: &CallInputs, outcome: &mut CallOutcome) {
-        use reth::revm::revm::interpreter::InstructionResult;
-
         log_journal("call_exit", context);
 
         let depth = context.journal().depth() as i32;
-        let success = outcome.result.is_ok();
-        let (is_revert, err): (bool, Option<StringError>) = if success {
-            (false, None)
+        let failed = !outcome.result.is_ok();
+        let is_revert = outcome.result.result.is_revert();
+        let err: Option<StringError> = if failed {
+            Some(Self::failure_reason(outcome.result.result))
         } else {
-            let is_revert = matches!(outcome.result.result, InstructionResult::Revert);
-            (is_revert, Some(Self::failure_reason(outcome.result.result)))
+            None
         };
 
+        // EVM semantics: a halting error (not a revert) consumes all gas
+        // allocated to the call. revm's gas.spent() only tracks opcodes that
+        // actually executed, so we use gas.limit for non-revert failures.
+        // Reverts only consume gas actually spent (remaining gas is returned).
+        let gas_used = if failed && !is_revert {
+            outcome.result.gas.limit()
+        } else {
+            outcome.result.gas.spent()
+        };
+
+        // The `reverted` parameter in on_call_exit means "did the call fail"
+        // (any failure), not specifically "was it a REVERT opcode". The tracer
+        // internally distinguishes reverts from other failures via the error string.
         self.tracer.on_call_exit(
             depth,
             outcome.result.output.as_ref(),
-            outcome.result.gas.spent(),
+            gas_used,
             err.as_ref().map(|e| e as &dyn std::error::Error),
-            is_revert,
+            failed,
         );
     }
 
@@ -313,25 +324,29 @@ where
         _inputs: &CreateInputs,
         outcome: &mut CreateOutcome,
     ) {
-        use reth::revm::revm::interpreter::InstructionResult;
-
         log_journal("create_exit", context);
 
         let depth = context.journal().depth() as i32;
-        let success = outcome.result.is_ok();
-        let (is_revert, err): (bool, Option<StringError>) = if success {
-            (false, None)
+        let failed = !outcome.result.is_ok();
+        let is_revert = outcome.result.result.is_revert();
+        let err: Option<StringError> = if failed {
+            Some(Self::failure_reason(outcome.result.result))
         } else {
-            let is_revert = matches!(outcome.result.result, InstructionResult::Revert);
-            (is_revert, Some(Self::failure_reason(outcome.result.result)))
+            None
+        };
+
+        let gas_used = if failed && !is_revert {
+            outcome.result.gas.limit()
+        } else {
+            outcome.result.gas.spent()
         };
 
         self.tracer.on_call_exit(
             depth,
             outcome.result.output.as_ref(),
-            outcome.result.gas.spent(),
+            gas_used,
             err.as_ref().map(|e| e as &dyn std::error::Error),
-            is_revert,
+            failed,
         );
     }
 
