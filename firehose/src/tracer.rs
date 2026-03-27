@@ -1386,6 +1386,10 @@ impl Tracer {
         self.in_system_call
     }
 
+    pub fn is_in_block(&self) -> bool {
+        self.block.is_some()
+    }
+
     pub fn set_block_hash(&mut self, hash: alloy_primitives::B256) {
         if let Some(block) = &mut self.block {
             block.hash = hash.0.to_vec();

@@ -192,6 +192,9 @@ impl FirehosePlugin {
                 }) });
             }
             ExecEvent::BlockEnd(block_end) => {
+                if !self.tracer.is_in_block() {
+                    return Ok(());
+                }
                 self.tracer.set_block_hash(B256::from(block_end.eth_block_hash.bytes));
                 let eo = &block_end.exec_output;
                 self.tracer.set_block_header_end_data(
