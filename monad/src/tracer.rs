@@ -376,12 +376,12 @@ impl FirehosePlugin {
                 });
             }
             ExecEvent::AccountAccessListHeader(header) => {
-                if header.access_context == AccountAccessContext::BlockEpilogue as u8 && self.tracer.is_in_system_call() {
-                    while let Some(open) = self.open_calls.pop() {
-                        self.tracer.on_call_exit(open.depth, &open.return_bytes, open.gas_used, None, open.reverted);
-                    }
-                    self.tracer.on_system_call_end();
-                }
+                // if header.access_context == AccountAccessContext::BlockEpilogue as u8 && self.tracer.is_in_system_call() {
+                //     while let Some(open) = self.open_calls.pop() {
+                //         self.tracer.on_call_exit(open.depth, &open.return_bytes, open.gas_used, None, open.reverted);
+                //     }
+                //     self.tracer.on_system_call_end();
+                // }
             }
             ExecEvent::AccountAccess(account_access) => {
                 let addr = alloy_primitives::Address::from(account_access.address.bytes);
