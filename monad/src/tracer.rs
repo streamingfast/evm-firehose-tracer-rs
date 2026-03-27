@@ -139,10 +139,8 @@ impl FirehosePlugin {
     }
 
     pub fn add_event(&mut self, event: ExecEvent) -> Result<()> {
-        if !self.tracer.is_in_block() {
-            if !matches!(event, ExecEvent::BlockStart(_)) {
-                return Ok(());
-            }
+        if !self.tracer.is_in_block() && !matches!(event, ExecEvent::BlockStart(_)) {
+            return Ok(());
         }
 
         match event {
@@ -185,8 +183,8 @@ impl FirehosePlugin {
                     size: 0,
                     withdrawals: vec![],
                     withdrawals_root: Some(B256::from(ei.withdrawals_root.bytes)),
-                    blob_gas_used: None,
-                    excess_blob_gas: None,
+                    blob_gas_used: Some(0),
+                    excess_blob_gas: Some(0),
                     parent_beacon_root: None,
                     requests_hash: None,
                     tx_dependency: None,
