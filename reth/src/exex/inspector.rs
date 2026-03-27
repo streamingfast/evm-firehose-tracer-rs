@@ -29,6 +29,47 @@ impl<'a, Node: FullNodeComponents> Firehose<'a, Node> {
         self.tracer
     }
 
+    /// Capture KECCAK256 preimage from the interpreter state.
+    ///
+    /// Called from `step` before the opcode executes. The stack still holds
+    /// the inputs: stack[0] = offset, stack[1] = size.
+    ///
+    /// Since `step` fires before memory resize, the memory region may not yet
+    /// be allocated. Like Geth's `scope.Memory.GetPtr`, we zero-pad any bytes
+    /// beyond current memory length to produce a complete preimage.
+    fn step_keccak256(tracer: &mut firehose::Tracer, interp: &mut Interpreter<EthInterpreter>) {
+        let (Ok(offset), Ok(size)) = (interp.stack.peek(0), interp.stack.peek(1)) else {
+            return;
+        };
+
+        let len = size.saturating_to::<usize>();
+        if len == 0 {
+            tracer.on_keccak_preimage(alloy_primitives::utils::KECCAK256_EMPTY, &[]);
+            return;
+        }
+
+        let offset = offset.saturating_to::<usize>();
+        let mem_len = interp.memory.len();
+
+        if offset.checked_add(len).is_some_and(|end| end <= mem_len) {
+            // Happy path: entire region is within current memory, no allocation
+            let preimage = interp.memory.slice_len(offset, len);
+            let hash = alloy_primitives::keccak256(&*preimage);
+            tracer.on_keccak_preimage(hash, &preimage);
+        } else {
+            // Memory not yet resized (step fires before resize_memory!).
+            // Zero-pad like Geth's Memory.GetPtr to produce a complete preimage.
+            let mut buf = vec![0u8; len];
+            if offset < mem_len {
+                let copy_len = (mem_len - offset).min(len);
+                buf[..copy_len]
+                    .copy_from_slice(&interp.memory.slice_len(offset, copy_len));
+            }
+            let hash = alloy_primitives::keccak256(&buf);
+            tracer.on_keccak_preimage(hash, &buf);
+        }
+    }
+
     /// Map EVM call scheme to Firehose call type opcode
     fn map_call_type_opcode(scheme: &reth::revm::revm::interpreter::CallScheme) -> u8 {
         use reth::revm::revm::interpreter::CallScheme;
@@ -93,9 +134,7 @@ where
                 address,
                 old_balance,
             } => {
-                firehose::firehose_debug!(
-                    "  [{i}] BalanceChange addr={address} old={old_balance}"
-                );
+                firehose::firehose_debug!("  [{i}] BalanceChange addr={address} old={old_balance}");
             }
             JournalEntry::BalanceTransfer { from, to, balance } => {
                 firehose::firehose_debug!(
@@ -182,9 +221,9 @@ where
 
         self.tracer.on_opcode(pc, op, gas, 0, &[], depth, None);
 
-        // FIXME: Implement on_keccak_preimage by checking for KECCAK256 opcode and
-        // peeking into the stack for the preimage recomputing it. This was possible
-        // in Geth as we had access to memory, hopefully Interpreter exposes memory...
+        if op == Opcode::Keccak256 as u8 {
+            Self::step_keccak256(&mut self.tracer, interp);
+        }
     }
 
     /// CALL, CALLCODE, DELEGATECALL, or STATICCALL is made
