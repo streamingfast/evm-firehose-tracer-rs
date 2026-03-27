@@ -1,6 +1,8 @@
 use alloy_primitives::{Address, Bloom, Bytes, B256, U256};
 use base64::Engine;
-use firehose::{BlockData, BlockEvent, ChainConfig, Config, Opcode, ReceiptData, Tracer, TxEvent};
+use firehose::{
+    BlockData, BlockEvent, ChainClient, ChainConfig, Config, Opcode, ReceiptData, Tracer, TxEvent,
+};
 use pb::sf::ethereum::r#type::v2 as pbeth;
 use prost::Message;
 use std::io::{BufRead, BufReader, Write};
@@ -335,11 +337,23 @@ impl TracerTester {
         Self::new_with_config(config)
     }
 
+    /// Creates a tester simulating Reth chain client behavior
+    pub fn new_reth() -> Self {
+        let mut tracer_config = Config::new();
+        tracer_config.chain_client = ChainClient::Reth;
+        Self::new_full(ChainConfig::new(1), tracer_config)
+    }
+
     /// Creates a tester with a specific chain config
     pub fn new_with_config(chain_config: ChainConfig) -> Self {
+        Self::new_full(chain_config, Config::new())
+    }
+
+    /// Creates a tester with both chain config and tracer config
+    pub fn new_full(chain_config: ChainConfig, tracer_config: Config) -> Self {
         let output_buffer = InMemoryBuffer::new();
 
-        let tracer = Tracer::new_with_writer(Config::new(), Box::new(output_buffer.clone()));
+        let tracer = Tracer::new_with_writer(tracer_config, Box::new(output_buffer.clone()));
 
         let mut tester = Self {
             tracer,

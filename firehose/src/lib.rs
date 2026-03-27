@@ -13,7 +13,7 @@ pub mod utils;
 mod version;
 
 // Re-export public items to maintain the same API
-pub use config::{ChainConfig, Config, Rules};
+pub use config::{ChainClient, ChainConfig, Config, Rules};
 pub use logging::HexView;
 pub use tracer::Tracer;
 pub use types::{

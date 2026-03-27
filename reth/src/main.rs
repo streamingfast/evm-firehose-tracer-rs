@@ -26,8 +26,9 @@ fn main() {
         async move |builder, extension_args| {
             info!(target: "firehose:tracer", args = ?extension_args, "Launching node");
 
-            let config =
+            let mut config =
                 firehose::Config::load_or_default(extension_args.firehose_tracer_config.as_ref())?;
+            config.chain_client = firehose::ChainClient::Reth;
 
             let NodeHandle {
                 node: _node,

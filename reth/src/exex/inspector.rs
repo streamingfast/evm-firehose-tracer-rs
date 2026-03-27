@@ -2,7 +2,7 @@ use alloy_primitives::{Address, Log as AlloyLog, U256};
 use firehose::{Opcode, StringError};
 use reth::api::FullNodeComponents;
 use reth::revm::revm::context_interface::{ContextTr, JournalTr};
-use reth::revm::revm::inspector::Inspector;
+use reth::revm::revm::inspector::{Inspector, JournalExt};
 use reth::revm::revm::interpreter::{
     interpreter::EthInterpreter, interpreter_types::Jumps, CallInputs, CallOutcome, CreateInputs,
     CreateOutcome, Interpreter,
@@ -51,10 +51,127 @@ impl<'a, Node: FullNodeComponents> Firehose<'a, Node> {
     }
 }
 
+/// Logs the current journal entries (since the last checkpoint) using firehose trace-level logging.
+///
+/// The journal records state mutations made by the EVM: balance transfers, nonce bumps, storage
+/// writes, account creation/warming, etc. This function is meant to be called at interesting
+/// points during execution (e.g. before/after call/create) to aid debugging.
+pub fn log_journal<CTX>(label: &str, context: &CTX)
+where
+    CTX: ContextTr,
+    CTX::Journal: JournalExt,
+{
+    use reth::revm::revm::context::JournalEntry;
+
+    if !firehose::logging::is_firehose_debug_enabled() {
+        return;
+    }
+
+    let journal = context.journal().journal();
+    if journal.is_empty() {
+        firehose::firehose_debug!("{}: journal empty", label);
+        return;
+    }
+
+    firehose::firehose_debug!("{}: journal ({} entries)", label, journal.len());
+    for (i, entry) in journal.iter().enumerate() {
+        match entry {
+            JournalEntry::AccountTouched { address } => {
+                firehose::firehose_debug!("  [{i}] AccountTouched addr={address}");
+            }
+            JournalEntry::AccountDestroyed {
+                address,
+                target,
+                had_balance,
+                ..
+            } => {
+                firehose::firehose_debug!(
+                    "  [{i}] AccountDestroyed addr={address} target={target} balance={had_balance}"
+                );
+            }
+            JournalEntry::BalanceChange {
+                address,
+                old_balance,
+            } => {
+                firehose::firehose_debug!(
+                    "  [{i}] BalanceChange addr={address} old={old_balance}"
+                );
+            }
+            JournalEntry::BalanceTransfer { from, to, balance } => {
+                firehose::firehose_debug!(
+                    "  [{i}] BalanceTransfer from={from} to={to} amount={balance}"
+                );
+            }
+            JournalEntry::NonceChange {
+                address,
+                previous_nonce,
+            } => {
+                firehose::firehose_debug!(
+                    "  [{i}] NonceChange addr={address} prev_nonce={previous_nonce}"
+                );
+            }
+            JournalEntry::NonceBump { address } => {
+                firehose::firehose_debug!("  [{i}] NonceBump addr={address}");
+            }
+            JournalEntry::AccountCreated {
+                address,
+                is_created_globally,
+            } => {
+                firehose::firehose_debug!(
+                    "  [{i}] AccountCreated addr={address} global={is_created_globally}"
+                );
+            }
+            JournalEntry::StorageChanged {
+                address,
+                key,
+                had_value,
+            } => {
+                firehose::firehose_debug!(
+                    "  [{i}] StorageChanged addr={address} key={key} had={had_value}"
+                );
+            }
+            JournalEntry::CodeChange { address } => {
+                firehose::firehose_debug!("  [{i}] CodeChange addr={address}");
+            }
+            // Skip warm/cold tracking and transient storage — not relevant for Firehose
+            _ => {}
+        }
+    }
+}
+
+/// Logs the EvmState (accounts and their info) using firehose trace-level logging.
+///
+/// This logs all accounts that have been touched/modified in the state, along with their
+/// balance, nonce, code hash, and status flags. Useful for inspecting the full state picture
+/// at a given point (e.g. via the OnStateHook after each transaction/system call).
+pub fn log_evm_state(label: &str, state: &reth::revm::revm::state::EvmState) {
+    if !firehose::logging::is_firehose_debug_enabled() {
+        return;
+    }
+
+    if state.is_empty() {
+        firehose::firehose_debug!("{}: evm_state empty", label);
+        return;
+    }
+
+    firehose::firehose_debug!("{}: evm_state ({} accounts)", label, state.len());
+    for (addr, account) in state {
+        let info = &account.info;
+        let storage_count = account.storage.len();
+        firehose::firehose_debug!(
+            "  {addr} balance={} nonce={} code_hash={} status={:?} storage_slots={storage_count}",
+            info.balance,
+            info.nonce,
+            info.code_hash,
+            account.status,
+        );
+    }
+}
+
 impl<'a, Node: FullNodeComponents, CTX> Inspector<CTX, EthInterpreter> for Firehose<'a, Node>
 where
     CTX: ContextTr,
-    CTX::Journal: reth::revm::revm::inspector::JournalExt,
+    CTX::Journal: JournalExt,
 {
     /// Called before each opcode executes (equivalent to Geth's OnOpcode hook)
     fn step(&mut self, interp: &mut Interpreter<EthInterpreter>, context: &mut CTX) {
@@ -75,6 +192,8 @@ where
         let depth = context.journal().depth() as i32;
         let call_type = Self::map_call_type_opcode(&inputs.scheme);
 
+        log_journal("call_enter", context);
+
         self.tracer.on_call_enter(
             depth,
             call_type,
@@ -91,6 +210,8 @@ where
     /// CALL* operation completes
     fn call_end(&mut self, context: &mut CTX, _inputs: &CallInputs, outcome: &mut CallOutcome) {
         use reth::revm::revm::interpreter::InstructionResult;
+
+        log_journal("call_exit", context);
 
         let depth = context.journal().depth() as i32;
         let success = outcome.result.is_ok();
@@ -131,6 +252,8 @@ where
             }
         };
 
+        log_journal("create_enter", context);
+
         self.tracer.on_call_enter(
             depth,
             call_type,
@@ -152,6 +275,8 @@ where
         outcome: &mut CreateOutcome,
     ) {
         use reth::revm::revm::interpreter::InstructionResult;
+
+        log_journal("create_exit", context);
 
         let depth = context.journal().depth() as i32;
         let success = outcome.result.is_ok();

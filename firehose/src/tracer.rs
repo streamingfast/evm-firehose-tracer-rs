@@ -5,11 +5,13 @@ use std::sync::Arc;
 use alloy_primitives::{Address, B256, U256};
 
 use super::{
-    callstack::CallStack, deferred_call_state::DeferredCallState, finality::FinalityStatus,
-    ordinal::Ordinal, Config,
+    callstack::CallStack, config, deferred_call_state::DeferredCallState,
+    finality::FinalityStatus, ordinal::Ordinal, Config,
 };
 use crate::types::{BlockEvent, ReceiptData, StateReader, TxEvent};
-use crate::{utils, ChainConfig, Rules, PROTOCOL_VERSION};
+use crate::{
+    firehose_debug, firehose_info, firehose_trace, utils, ChainConfig, Rules, PROTOCOL_VERSION,
+};
 use pb::sf::ethereum::r#type::v2::{Block, Call, TransactionTrace};
 
 /// Tracer is the main Firehose tracer that captures EVM execution and produces
@@ -133,7 +135,7 @@ impl Tracer {
             panic!("OnBlockchainInit was called more than once");
         }
 
-        tracing::info!("tracer initialized (chain_id={})", chain_config.chain_id);
+        firehose_info!("tracer initialized (chain_id={})", chain_config.chain_id);
         self.chain_config = Some(chain_config);
     }
 
@@ -143,7 +145,7 @@ impl Tracer {
             return;
         }
 
-        tracing::info!(
+        firehose_info!(
             "genesis block (number={} hash={:?})",
             event.block.number,
             event.block.hash
@@ -270,7 +272,7 @@ impl Tracer {
             block_data.time,
         );
 
-        tracing::info!(
+        firehose_info!(
             "block start (number={} hash={:?})",
             block_data.number,
             block_data.hash
@@ -315,7 +317,7 @@ impl Tracer {
 
     /// OnBlockEnd is called at the end of block processing
     pub fn on_block_end(&mut self, err: Option<&dyn std::error::Error>) {
-        tracing::info!("block ending (err={:?})", err);
+        firehose_info!("block ending (err={:?})", err);
 
         if err.is_none() {
             // Validate state: Must be in block and not in transaction
@@ -338,7 +340,7 @@ impl Tracer {
         self.reset_block();
         self.reset_transaction();
 
-        tracing::info!("block end");
+        firehose_info!("block end");
     }
 
     /// OnSkippedBlock is called for blocks that are skipped
@@ -370,7 +372,7 @@ impl Tracer {
         event: TxEvent,
         state_reader: Option<Box<dyn StateReader + Send>>,
     ) {
-        tracing::info!("trx start (hash={:?} type={})", event.hash, event.tx_type);
+        firehose_info!("trx start (hash={:?} type={})", event.hash, event.tx_type);
 
         // Validate state: Must be in block, not in transaction, not in call
         self.ensure_in_block_and_not_in_trx_and_not_in_call();
@@ -470,7 +472,7 @@ impl Tracer {
             value: if is_genesis {
                 None
             } else {
-                utils::u256_to_protobuf_always(event.value)
+                utils::u256_to_protobuf(event.value)
             },
             input: event.input.to_vec(),
             v: event.v.map(|v| v.to_vec()).unwrap_or_default(),
@@ -497,7 +499,7 @@ impl Tracer {
         receipt: Option<&ReceiptData>,
         err: Option<&dyn std::error::Error>,
     ) {
-        tracing::info!("trx ending (err={:?})", err);
+        firehose_info!("trx ending (err={:?})", err);
 
         // Validate state: Must be in block and in transaction
         self.ensure_in_block_and_in_trx();
@@ -512,7 +514,7 @@ impl Tracer {
 
         self.reset_transaction();
 
-        tracing::info!("trx end");
+        firehose_info!("trx end");
     }
 
     /// Complete transaction processing (matching Golang completeTransaction)
@@ -522,7 +524,7 @@ impl Tracer {
         receipt: Option<&ReceiptData>,
         _err: Option<&dyn std::error::Error>,
     ) -> TransactionTrace {
-        tracing::info!("completing transaction (call_count={})", trx.calls.len());
+        firehose_info!("completing transaction (call_count={})", trx.calls.len());
 
         if trx.calls.is_empty() {
             // Bad block or misconfigured - terminate immediately
@@ -569,6 +571,24 @@ impl Tracer {
                 trx.status = pb::sf::ethereum::r#type::v2::TransactionTraceStatus::Succeeded as i32;
             } else {
                 trx.status = pb::sf::ethereum::r#type::v2::TransactionTraceStatus::Failed as i32;
+            }
+        }
+
+        // Step 4.5: Reth-specific reconciliation — revm's inspector `call_end` hook
+        // may report the root call as successful even when the transaction actually
+        // failed (e.g., out-of-gas). In Geth, `OnExit` receives the EVM-level error
+        // directly, but revm determines failure at the executor level. When the receipt
+        // says failure but the root call wasn't marked as failed, reconcile here.
+        if self.config.chain_client == config::ChainClient::Reth {
+            if let Some(receipt) = receipt {
+                if receipt.status != 1 {
+                    if let Some(root_call) = trx.calls.first_mut() {
+                        if !root_call.status_failed {
+                            root_call.status_failed = true;
+                            root_call.failure_reason = "out of gas".to_string();
+                        }
+                    }
+                }
             }
         }
 
@@ -729,7 +749,7 @@ impl Tracer {
             // Look for nonce change matching this authorization
             if !find_nonce_change(authority_bytes, auth.nonce, &mut used_nonce_change_indices) {
                 // No matching nonce change found - authorization was not applied
-                tracing::debug!(
+                firehose_debug!(
                     "discarded SetCode authorization: no matching nonce change (authority={} nonce={})",
                     hex::encode(authority_bytes),
                     auth.nonce
@@ -800,7 +820,7 @@ impl Tracer {
         gas: u64,
         value: U256,
     ) {
-        tracing::trace!(
+        firehose_debug!(
             "call enter (depth={} type={} from={:?} to={:?})",
             depth,
             typ,
@@ -813,7 +833,7 @@ impl Tracer {
             // SELFDESTRUCT opcode
             self.latest_call_enter_suicided = true;
             self.latest_call_enter_suicided_depth = depth;
-            tracing::trace!("SELFDESTRUCT opcode: set latestCallEnterSuicided flag");
+            firehose_debug!("SELFDESTRUCT opcode: set latestCallEnterSuicided flag");
             return;
         }
 
@@ -852,7 +872,7 @@ impl Tracer {
                 if !code.is_empty() {
                     // ParseDelegation returns (address, true) if valid delegation
                     if let Some(target) = Self::parse_delegation(&code) {
-                        tracing::debug!(
+                        firehose_debug!(
                             "call resolved delegation (from={:?}, delegates_to={:?})",
                             from,
                             target
@@ -891,7 +911,7 @@ impl Tracer {
     ) {
         // Handle SELFDESTRUCT exit
         if self.latest_call_enter_suicided {
-            tracing::trace!("skipping OnCallExit for SELFDESTRUCT opcode");
+            firehose_debug!("skipping OnCallExit for SELFDESTRUCT opcode");
             self.latest_call_enter_suicided = false;
             return;
         }
@@ -901,7 +921,7 @@ impl Tracer {
 
         // Pop call from stack
         if let Some(mut call) = self.call_stack.pop() {
-            tracing::trace!("call exit (depth={} gas_used={})", depth, gas_used);
+            firehose_debug!("call exit (depth={} gas_used={})", depth, gas_used);
 
             call.gas_consumed = gas_used;
 
@@ -954,6 +974,14 @@ impl Tracer {
         new_balance: U256,
         reason: pb::sf::ethereum::r#type::v2::balance_change::Reason,
     ) {
+        firehose_trace!(
+            "balance changed (address={:?} old_balance={} new_balance={} reason={:?})",
+            addr,
+            old_balance,
+            new_balance,
+            reason
+        );
+
         // Ignore unspecified reasons
         if reason == pb::sf::ethereum::r#type::v2::balance_change::Reason::Unknown {
             return;
@@ -986,6 +1014,13 @@ impl Tracer {
 
     /// OnNonceChange is called when an account nonce changes
     pub fn on_nonce_change(&mut self, addr: Address, old_nonce: u64, new_nonce: u64) {
+        firehose_debug!(
+            "nonce changed (address={:?} old_nonce={} new_nonce={})",
+            addr,
+            old_nonce,
+            new_nonce
+        );
+
         self.ensure_in_block_and_in_trx();
 
         let change = pb::sf::ethereum::r#type::v2::NonceChange {
@@ -1011,7 +1046,7 @@ impl Tracer {
         old_code: &[u8],
         new_code: &[u8],
     ) {
-        tracing::debug!(
+        firehose_debug!(
             "code changed (address={:?} prev_hash={:?} new_hash={:?})",
             addr,
             prev_code_hash,
@@ -1034,7 +1069,7 @@ impl Tracer {
             if let Some(active_call) = self.call_stack.peek_mut() {
                 // Ignore code changes from suicide if there was previous code
                 if active_call.suicide && !old_code.is_empty() && new_code.is_empty() {
-                    tracing::debug!("ignoring code change due to suicide");
+                    firehose_debug!("ignoring code change due to suicide");
                     return;
                 }
                 active_call.code_changes.push(change);
@@ -1057,7 +1092,7 @@ impl Tracer {
         old_value: B256,
         new_value: B256,
     ) {
-        tracing::trace!("storage changed (address={:?} key={:?})", addr, slot);
+        firehose_trace!("storage changed (address={:?} key={:?})", addr, slot);
 
         self.ensure_in_block_and_in_trx();
 
@@ -1085,7 +1120,7 @@ impl Tracer {
         self.ensure_in_block_and_in_trx_and_in_call();
 
         if let Some(active_call) = self.call_stack.peek_mut() {
-            tracing::trace!(
+            firehose_trace!(
                 "adding log to call (address={:?} call={} existing_logs={})",
                 addr,
                 active_call.index,
@@ -1149,7 +1184,7 @@ impl Tracer {
         _depth: i32,
         err: &dyn std::error::Error,
     ) {
-        tracing::debug!("opcode fault (pc={} op={} err={})", pc, op, err);
+        firehose_debug!("opcode fault (pc={} op={} err={})", pc, op, err);
 
         if let Some(active_call) = self.call_stack.peek_mut() {
             // Even faulted opcodes count as executed code
@@ -1166,7 +1201,7 @@ impl Tracer {
             call.keccak_preimages
                 .insert(hex::encode(hash.0), hex::encode(preimage));
 
-            tracing::trace!(
+            firehose_trace!(
                 "keccak preimage (hash={:?} preimage_len={})",
                 hash,
                 preimage.len()
@@ -1180,7 +1215,7 @@ impl Tracer {
 
     /// OnSystemCallStart is called when a system call starts (chain-specific)
     pub fn on_system_call_start(&mut self) {
-        tracing::info!("system call start");
+        firehose_info!("system call start");
         self.ensure_in_block_and_not_in_trx();
 
         self.in_system_call = true;
@@ -1189,7 +1224,7 @@ impl Tracer {
 
     /// OnSystemCallEnd is called when a system call ends (chain-specific)
     pub fn on_system_call_end(&mut self) {
-        tracing::info!("system call end");
+        firehose_info!("system call end");
         self.ensure_in_block_and_in_trx();
         self.ensure_in_system_call();
 

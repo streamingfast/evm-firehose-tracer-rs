@@ -14,7 +14,7 @@ where
     ChainSpec<Node>: EthereumHardforks + EthChainSpec,
     SignedTx<Node>: mapper::SignatureFields,
 {
-    info!(target: "firehose:tracer", "Launching Ethereum tracer");
+    info!(target: "firehose", "Launching Ethereum tracer");
 
     // Initialize tracer with chain spec
     // FIXME: Pull version from cargo
@@ -34,10 +34,16 @@ where
     while let Some(notification) = ctx.notifications.try_next().await? {
         match &notification {
             ExExNotification::ChainCommitted { new } => {
+                info!(target: "firehose", chain = ?new.range(), "Chain committed, tracing {} blocks", new.len());
+
+                let chain_start = std::time::Instant::now();
                 for (block, receipts) in new.blocks_and_receipts() {
                     trace_block(&ctx, &mut tracer, &evm_config, block, receipts)
                         .wrap_err("Firehose trace block")?;
                 }
+
+                let elapsed = chain_start.elapsed();
+                info!(target: "firehose", elapsed = ?chain_start.elapsed(), by_block = ?(elapsed / new.len() as u32),  "Traced chain");
             }
             ExExNotification::ChainReorged { old, new } => {
                 error!(from_chain = ?old.range(), to_chain = ?new.range(), "Received reorg");
@@ -109,12 +115,27 @@ where
     let evm = evm_config.evm_with_env_and_inspector(&mut state, evm_env, inspector);
     let mut executor = evm_config.create_executor(evm, exec_ctx);
 
+    // Set state hook to log EvmState changes after each transaction and system call
+    executor.set_state_hook(Some(Box::new(
+        |source: reth_evm::block::StateChangeSource, state: &reth::revm::revm::state::EvmState| {
+            inspector::log_evm_state(&format!("state_hook({source:?})"), state);
+        },
+    )));
+
     // System calls (EIP-4788, EIP-2935, etc.) — handled by apply_pre_execution_changes
-    executor.evm_mut().inspector_mut().tracer_mut().on_system_call_start();
+    executor
+        .evm_mut()
+        .inspector_mut()
+        .tracer_mut()
+        .on_system_call_start();
     executor
         .apply_pre_execution_changes()
         .wrap_err("Failed to apply pre-execution changes")?;
-    executor.evm_mut().inspector_mut().tracer_mut().on_system_call_end();
+    executor
+        .evm_mut()
+        .inspector_mut()
+        .tracer_mut()
+        .on_system_call_end();
 
     let mut prev_cumulative_gas: u64 = 0;
     let mut log_index: u32 = 0;
@@ -149,8 +170,7 @@ where
         let cumulative_gas = receipt.cumulative_gas_used();
         let gas_used = cumulative_gas - prev_cumulative_gas;
         let log_count = receipt.logs().len() as u32;
-        let receipt_data =
-            mapper::to_receipt_data(receipt, tx_index as u32, gas_used, log_index);
+        let receipt_data = mapper::to_receipt_data(receipt, tx_index as u32, gas_used, log_index);
         prev_cumulative_gas = cumulative_gas;
         log_index += log_count;
 
@@ -161,6 +181,12 @@ where
             .on_tx_end(Some(&receipt_data), None);
     }
 
+    executor
+        .evm_mut()
+        .inspector_mut()
+        .tracer_mut()
+        .on_system_call_start();
+
     // Post-execution changes (block rewards, withdrawals, etc.)
     // This consumes the executor, dropping the inspector and releasing the tracer borrow
     executor
@@ -168,6 +194,8 @@ where
         .wrap_err("Failed to apply post-execution changes")?;
 
     // Tracer borrow released — can call directly again
+    tracer.on_system_call_end();
+
     tracer.on_block_end(None);
 
     Ok(())
