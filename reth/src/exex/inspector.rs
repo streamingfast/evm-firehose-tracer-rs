@@ -62,8 +62,7 @@ impl<'a, Node: FullNodeComponents> Firehose<'a, Node> {
             let mut buf = vec![0u8; len];
             if offset < mem_len {
                 let copy_len = (mem_len - offset).min(len);
-                buf[..copy_len]
-                    .copy_from_slice(&interp.memory.slice_len(offset, copy_len));
+                buf[..copy_len].copy_from_slice(&interp.memory.slice_len(offset, copy_len));
             }
             let hash = alloy_primitives::keccak256(&buf);
             tracer.on_keccak_preimage(hash, &buf);
@@ -89,121 +88,6 @@ impl<'a, Node: FullNodeComponents> Firehose<'a, Node> {
             InstructionResult::InvalidFEOpcode => "invalid opcode: INVALID".to_string(),
             other => format!("{:?}", other),
         })
-    }
-}
-
-/// Logs the current journal entries (since the last checkpoint) using firehose trace-level logging.
-///
-/// The journal records state mutations made by the EVM: balance transfers, nonce bumps, storage
-/// writes, account creation/warming, etc. This function is meant to be called at interesting
-/// points during execution (e.g. before/after call/create) to aid debugging.
-pub fn log_journal<CTX>(label: &str, context: &CTX)
-where
-    CTX: ContextTr,
-    CTX::Journal: JournalExt,
-{
-    use reth::revm::revm::context::JournalEntry;
-
-    if !firehose::logging::is_firehose_debug_enabled() {
-        return;
-    }
-
-    let journal = context.journal().journal();
-    if journal.is_empty() {
-        firehose::firehose_debug!("{}: journal empty", label);
-        return;
-    }
-
-    firehose::firehose_debug!("{}: journal ({} entries)", label, journal.len());
-    for (i, entry) in journal.iter().enumerate() {
-        match entry {
-            JournalEntry::AccountTouched { address } => {
-                firehose::firehose_debug!("  [{i}] AccountTouched addr={address}");
-            }
-            JournalEntry::AccountDestroyed {
-                address,
-                target,
-                had_balance,
-                ..
-            } => {
-                firehose::firehose_debug!(
-                    "  [{i}] AccountDestroyed addr={address} target={target} balance={had_balance}"
-                );
-            }
-            JournalEntry::BalanceChange {
-                address,
-                old_balance,
-            } => {
-                firehose::firehose_debug!("  [{i}] BalanceChange addr={address} old={old_balance}");
-            }
-            JournalEntry::BalanceTransfer { from, to, balance } => {
-                firehose::firehose_debug!(
-                    "  [{i}] BalanceTransfer from={from} to={to} amount={balance}"
-                );
-            }
-            JournalEntry::NonceChange {
-                address,
-                previous_nonce,
-            } => {
-                firehose::firehose_debug!(
-                    "  [{i}] NonceChange addr={address} prev_nonce={previous_nonce}"
-                );
-            }
-            JournalEntry::NonceBump { address } => {
-                firehose::firehose_debug!("  [{i}] NonceBump addr={address}");
-            }
-            JournalEntry::AccountCreated {
-                address,
-                is_created_globally,
-            } => {
-                firehose::firehose_debug!(
-                    "  [{i}] AccountCreated addr={address} global={is_created_globally}"
-                );
-            }
-            JournalEntry::StorageChanged {
-                address,
-                key,
-                had_value,
-            } => {
-                firehose::firehose_debug!(
-                    "  [{i}] StorageChanged addr={address} key={key} had={had_value}"
-                );
-            }
-            JournalEntry::CodeChange { address } => {
-                firehose::firehose_debug!("  [{i}] CodeChange addr={address}");
-            }
-            // Skip warm/cold tracking and transient storage — not relevant for Firehose
-            _ => {}
-        }
-    }
-}
-
-/// Logs the EvmState (accounts and their info) using firehose trace-level logging.
-///
-/// This logs all accounts that have been touched/modified in the state, along with their
-/// balance, nonce, code hash, and status flags. Useful for inspecting the full state picture
-/// at a given point (e.g. via the OnStateHook after each transaction/system call).
-pub fn log_evm_state(label: &str, state: &reth::revm::revm::state::EvmState) {
-    if !firehose::logging::is_firehose_debug_enabled() {
-        return;
-    }
-
-    if state.is_empty() {
-        firehose::firehose_debug!("{}: evm_state empty", label);
-        return;
-    }
-
-    firehose::firehose_debug!("{}: evm_state ({} accounts)", label, state.len());
-    for (addr, account) in state {
-        let info = &account.info;
-        let storage_count = account.storage.len();
-        firehose::firehose_debug!(
-            "  {addr} balance={} nonce={} code_hash={} status={:?} storage_slots={storage_count}",
-            info.balance,
-            info.nonce,
-            info.code_hash,
-            account.status,
-        );
     }
 }
 
@@ -354,11 +238,16 @@ where
     fn log_full(
         &mut self,
         _interp: &mut Interpreter<EthInterpreter>,
-        _context: &mut CTX,
+        context: &mut CTX,
         log: AlloyLog,
     ) {
+        // The journal tracks all non-reverted logs. log_full fires after the
+        // log is appended, so logs().len() - 1 is this log's block-wide index.
+        // On revert, the journal truncates logs back, so subsequent logs after
+        // a revert get correct indices automatically.
+        let block_index = (context.journal().logs().len() as u32).saturating_sub(1);
         self.tracer
-            .on_log(log.address, log.topics(), &log.data.data, 0);
+            .on_log(log.address, log.topics(), &log.data.data, block_index);
     }
 
     /// SELFDESTRUCT is executed
@@ -377,5 +266,120 @@ where
             value,
         );
         self.tracer.on_call_exit(1, &[], 0, None, false);
+    }
+}
+
+/// Logs the current journal entries (since the last checkpoint) using firehose trace-level logging.
+///
+/// The journal records state mutations made by the EVM: balance transfers, nonce bumps, storage
+/// writes, account creation/warming, etc. This function is meant to be called at interesting
+/// points during execution (e.g. before/after call/create) to aid debugging.
+pub fn log_journal<CTX>(label: &str, context: &CTX)
+where
+    CTX: ContextTr,
+    CTX::Journal: JournalExt,
+{
+    use reth::revm::revm::context::JournalEntry;
+
+    if !firehose::logging::is_firehose_debug_enabled() {
+        return;
+    }
+
+    let journal = context.journal().journal();
+    if journal.is_empty() {
+        firehose::firehose_debug!("{}: journal empty", label);
+        return;
+    }
+
+    firehose::firehose_debug!("{}: journal ({} entries)", label, journal.len());
+    for (i, entry) in journal.iter().enumerate() {
+        match entry {
+            JournalEntry::AccountTouched { address } => {
+                firehose::firehose_debug!("  [{i}] AccountTouched addr={address}");
+            }
+            JournalEntry::AccountDestroyed {
+                address,
+                target,
+                had_balance,
+                ..
+            } => {
+                firehose::firehose_debug!(
+                    "  [{i}] AccountDestroyed addr={address} target={target} balance={had_balance}"
+                );
+            }
+            JournalEntry::BalanceChange {
+                address,
+                old_balance,
+            } => {
+                firehose::firehose_debug!("  [{i}] BalanceChange addr={address} old={old_balance}");
+            }
+            JournalEntry::BalanceTransfer { from, to, balance } => {
+                firehose::firehose_debug!(
+                    "  [{i}] BalanceTransfer from={from} to={to} amount={balance}"
+                );
+            }
+            JournalEntry::NonceChange {
+                address,
+                previous_nonce,
+            } => {
+                firehose::firehose_debug!(
+                    "  [{i}] NonceChange addr={address} prev_nonce={previous_nonce}"
+                );
+            }
+            JournalEntry::NonceBump { address } => {
+                firehose::firehose_debug!("  [{i}] NonceBump addr={address}");
+            }
+            JournalEntry::AccountCreated {
+                address,
+                is_created_globally,
+            } => {
+                firehose::firehose_debug!(
+                    "  [{i}] AccountCreated addr={address} global={is_created_globally}"
+                );
+            }
+            JournalEntry::StorageChanged {
+                address,
+                key,
+                had_value,
+            } => {
+                firehose::firehose_debug!(
+                    "  [{i}] StorageChanged addr={address} key={key} had={had_value}"
+                );
+            }
+            JournalEntry::CodeChange { address } => {
+                firehose::firehose_debug!("  [{i}] CodeChange addr={address}");
+            }
+            // Skip warm/cold tracking and transient storage — not relevant for Firehose
+            _ => {}
+        }
+    }
+}
+
+/// Logs the EvmState (accounts and their info) using firehose trace-level logging.
+///
+/// This logs all accounts that have been touched/modified in the state, along with their
+/// balance, nonce, code hash, and status flags. Useful for inspecting the full state picture
+/// at a given point (e.g. via the OnStateHook after each transaction/system call).
+pub fn log_evm_state(label: &str, state: &reth::revm::revm::state::EvmState) {
+    if !firehose::logging::is_firehose_debug_enabled() {
+        return;
+    }
+
+    if state.is_empty() {
+        firehose::firehose_debug!("{}: evm_state empty", label);
+        return;
+    }
+
+    firehose::firehose_debug!("{}: evm_state ({} accounts)", label, state.len());
+    for (addr, account) in state {
+        let info = &account.info;
+        let storage_count = account.storage.len();
+        firehose::firehose_debug!(
+            "  {addr} balance={} nonce={} code_hash={} status={:?} storage_slots={storage_count}",
+            info.balance,
+            info.nonce,
+            info.code_hash,
+            account.status,
+        );
     }
 }
