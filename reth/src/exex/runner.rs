@@ -111,7 +111,7 @@ where
     // Inspector borrows tracer mutably for the duration of the block execution.
     // All tracer lifecycle calls (on_tx_start, on_tx_end, etc.) go through
     // executor.evm_mut().inspector_mut().tracer_mut() while the inspector is live.
-    let inspector = inspector::Firehose::<Node>::new(tracer);
+    let inspector = inspector::FirehoseInspector::<Node>::new(tracer);
     let evm = evm_config.evm_with_env_and_inspector(&mut state, evm_env, inspector);
     let mut executor = evm_config.create_executor(evm, exec_ctx);
 

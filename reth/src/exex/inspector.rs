@@ -10,12 +10,12 @@ use reth::revm::revm::interpreter::{
 
 /// FirehoseInspector captures execution traces for the Firehose format
 /// It hooks into EVM execution via the Inspector trait to build a complete call tree
-pub struct Firehose<'a, Node: FullNodeComponents> {
+pub struct FirehoseInspector<'a, Node: FullNodeComponents> {
     tracer: &'a mut firehose::Tracer,
     _phantom: std::marker::PhantomData<Node>,
 }
 
-impl<'a, Node: FullNodeComponents> Firehose<'a, Node> {
+impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
     pub fn new(tracer: &'a mut firehose::Tracer) -> Self {
         Self {
             tracer,
@@ -91,7 +91,8 @@ impl<'a, Node: FullNodeComponents> Firehose<'a, Node> {
     }
 }
 
-impl<'a, Node: FullNodeComponents, CTX> Inspector<CTX, EthInterpreter> for Firehose<'a, Node>
+impl<'a, Node: FullNodeComponents, CTX> Inspector<CTX, EthInterpreter>
+    for FirehoseInspector<'a, Node>
 where
     CTX: ContextTr,
     CTX::Journal: JournalExt,

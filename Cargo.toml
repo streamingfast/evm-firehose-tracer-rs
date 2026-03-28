@@ -1,5 +1,6 @@
 [workspace]
 members = ["firehose", "firehose-test", "monad", "monad-plugin", "pb", "reth"]
+exclude = ["resources"]
 resolver = "2"
 
 [workspace.package]
@@ -38,6 +39,12 @@ color-eyre = "0.6"
 # Monad-specific dependencies
 monad-exec-events = { git = "https://github.com/streamingfast/monad-bft", branch = "feature/add-sys-calls-fh" }
 monad-event-ring = { git = "https://github.com/streamingfast/monad-bft", branch = "feature/add-sys-calls-fh" }
+
+[patch.crates-io]
+# Patch alloy-evm to inspect system calls (EIP-4788, EIP-2935, etc.) through the
+# Inspector when inspect mode is enabled, matching what transact_raw already does.
+# See https://github.com/alloy-rs/evm/pull/323 for tentative of upstreaming this change.
+alloy-evm = { git = "https://github.com/streamingfast/evm.git", branch = "sf/v0.27.3" }
 
 # This is needed otherwise we get flooding of debug logs around a problem that seems to happen in Reth directly.
 # This is about wrong execution pool and cool be related to ExEx in general (not just our version). We will
