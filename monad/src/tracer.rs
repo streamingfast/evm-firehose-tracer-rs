@@ -407,19 +407,19 @@ impl FirehosePlugin {
 
                 let evmc_status = txn_call_frame.evmc_status as i32;
 
-                if txn_call_frame.gas_used > 0 || is_precompile(&to) {
-                    let err = evmc_status_to_error(evmc_status);
-                    if let Some(ref e) = err {
-                        self.tracer.on_opcode_fault(0, txn_call_frame.opcode, txn_call_frame.gas, txn_call_frame.gas_used, depth, e as &dyn std::error::Error);
-                    } else {
-                        self.tracer.on_opcode(0, txn_call_frame.opcode, txn_call_frame.gas, txn_call_frame.gas_used, &[], depth, None);
-                    }
-                }
-
                 if txn_call_frame.opcode == Opcode::SelfDestruct as u8 {
+                    self.tracer.on_opcode(0, txn_call_frame.opcode, txn_call_frame.gas, txn_call_frame.gas_used, &[], depth, None);
                     let err = evmc_status_to_error(evmc_status);
                     self.tracer.on_call_exit(depth, &return_bytes, txn_call_frame.gas_used, err.as_ref().map(|e| e as &dyn std::error::Error), evmc_status != 0);
                 } else {
+                    if txn_call_frame.gas_used > 0 || is_precompile(&to) {
+                        let err = evmc_status_to_error(evmc_status);
+                        if let Some(ref e) = err {
+                            self.tracer.on_opcode_fault(0, txn_call_frame.opcode, txn_call_frame.gas, txn_call_frame.gas_used, depth, e as &dyn std::error::Error);
+                        } else {
+                            self.tracer.on_opcode(0, txn_call_frame.opcode, txn_call_frame.gas, txn_call_frame.gas_used, &[], depth, None);
+                        }
+                    }
                     self.open_calls.push(OpenCall {
                         depth,
                         return_bytes,
