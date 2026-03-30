@@ -1,5 +1,5 @@
 use pb::sf::ethereum::r#type::v2::{
-    AccountCreation, BalanceChange, Call, CodeChange, NonceChange, StorageChange,
+    AccountCreation, BalanceChange, Call, CodeChange, NonceChange, StorageChange, Log
 };
 
 /// DeferredCallState holds state changes that need to be attached to a call
@@ -12,6 +12,7 @@ pub struct DeferredCallState {
     nonce_changes: Vec<NonceChange>,
     code_changes: Vec<CodeChange>,
     storage_changes: Vec<StorageChange>,
+    logs: Vec<Log>,
 }
 
 impl DeferredCallState {
@@ -27,6 +28,7 @@ impl DeferredCallState {
             && self.nonce_changes.is_empty()
             && self.code_changes.is_empty()
             && self.storage_changes.is_empty()
+            && self.logs.is_empty()
     }
 
     /// Clears all deferred state.
@@ -36,6 +38,7 @@ impl DeferredCallState {
         self.nonce_changes.clear();
         self.code_changes.clear();
         self.storage_changes.clear();
+        self.logs.clear();
     }
 
     /// Adds a balance change to deferred state.
@@ -56,6 +59,11 @@ impl DeferredCallState {
     /// Adds a storage change to deferred state.
     pub fn add_storage_change(&mut self, change: StorageChange) {
         self.storage_changes.push(change);
+    }
+
+    /// Adds logs to deferred state.
+    pub fn add_logs(&mut self, change: Log) {
+        self.logs.push(change);
     }
 
     /// Populates the call with deferred state if any exists and then resets the deferred state.
@@ -101,6 +109,10 @@ impl DeferredCallState {
                 let mut new_storage_changes = std::mem::take(&mut self.storage_changes);
                 new_storage_changes.append(&mut call.storage_changes);
                 call.storage_changes = new_storage_changes;
+
+                let mut new_logs = std::mem::take(&mut self.logs);
+                new_logs.append(&mut call.logs);
+                call.logs = new_logs;
             }
             "root" => {
                 // APPEND deferred state (changes that happened AFTER the call)

@@ -1,6 +1,6 @@
 //! Main Firehose tracer implementation
 
-use crate::{EventMapper, MonadConsumer, FirehosePluginConfig, TRACER_NAME, TRACER_VERSION};
+use crate::{MonadConsumer, FirehosePluginConfig, TRACER_NAME, TRACER_VERSION};
 use alloy_primitives::B256;
 use eyre::Result;
 use firehose::{types::{AccessTuple, SetCodeAuthorization, TxType}, Opcode, Tracer};
@@ -49,24 +49,13 @@ fn is_precompile(addr: &alloy_primitives::Address) -> bool {
     let bytes = addr.as_slice();
     bytes[..19].iter().all(|&b| b == 0) && bytes[19] >= 1 && bytes[19] <= 9
 }
-
-struct PendingLog {
-    addr: alloy_primitives::Address,
-    topics: Vec<B256>,
-    data: Vec<u8>,
-    index: u32,
-}
-
 /// Main Firehose tracer for Monad
 pub struct FirehosePlugin {
     config: FirehosePluginConfig,
-    event_mapper: EventMapper,
     consumer: Option<MonadConsumer>,
     pub tracer: Tracer,
     tx_end_receipt: Option<monad_exec_events::ffi::monad_exec_txn_evm_output>,
     pending_tx_events: HashMap<usize, firehose::TxEvent>,
-    // Logs buffered until root call is entered (logs arrive before call frames)
-    pending_logs: Vec<PendingLog>,
     // Logs buffered for receipt construction
     pending_receipt_logs: Vec<firehose::LogData>,
     // Stack of open calls: enter on TxnCallFrame
@@ -81,13 +70,11 @@ impl FirehosePlugin {
     pub fn new(config: FirehosePluginConfig) -> Self {
         Self {
             config,
-            event_mapper: EventMapper::new(),
             consumer: None,
             tracer: Tracer::new(firehose::Config::new()),
             last_finalized_block: 0,
             tx_end_receipt: None,
             pending_tx_events: HashMap::new(),
-            pending_logs: Vec::new(),
             pending_receipt_logs: Vec::new(),
             open_calls: Vec::new(),
             block_txn_count: 0,
@@ -98,13 +85,11 @@ impl FirehosePlugin {
     pub fn new_with_writer(config: FirehosePluginConfig, writer: Box<dyn std::io::Write + Send>) -> Self {
         Self {
             config,
-            event_mapper: EventMapper::new(),
             consumer: None,
             tracer: Tracer::new_with_writer(firehose::Config::new(), writer),
             last_finalized_block: 0,
             tx_end_receipt: None,
             pending_tx_events: HashMap::new(),
-            pending_logs: Vec::new(),
             pending_receipt_logs: Vec::new(),
             open_calls: Vec::new(),
             block_txn_count: 0,
@@ -117,6 +102,11 @@ impl FirehosePlugin {
         if !self.pending_tx_events.contains_key(&txn_index) {
             panic!("{} for txn_index={} but no pending TxEvent", event_name, txn_index);
         }
+    }
+
+    fn call_exit(&mut self, depth: i32, return_bytes: &[u8], gas_used: u64, evmc_status: i32) {
+        let err = evmc_status_to_error(evmc_status);
+        self.tracer.on_call_exit(depth, return_bytes, gas_used, err.as_ref().map(|e| e as &dyn std::error::Error), evmc_status != 0);
     }
 
     pub fn on_blockchain_init(&mut self, node_name: &str, node_version: &str) {
@@ -311,13 +301,7 @@ impl FirehosePlugin {
 
                 // Flush remaining open calls in reverse
                 while let Some(open) = self.open_calls.pop() {
-                    let err = evmc_status_to_error(open.evmc_status);
-                    self.tracer.on_call_exit(open.depth, &open.return_bytes, open.gas_used, err.as_ref().map(|e| e as &dyn std::error::Error), open.evmc_status != 0);
-                }
-                if !self.pending_logs.is_empty() {
-                    tracing::trace!("discarding {} pending logs with no call frame", self.pending_logs.len());
-                    self.pending_logs.clear();
-                    self.pending_receipt_logs.clear();
+                    self.call_exit(open.depth, &open.return_bytes, open.gas_used, open.evmc_status);
                 }
                 let receipt_logs = std::mem::take(&mut self.pending_receipt_logs);
                 let receipt = if let Some(output) = self.tx_end_receipt.take() {
@@ -359,12 +343,10 @@ impl FirehosePlugin {
                 if !self.tracer.is_in_transaction() {
                     panic!("TxnLog arrived but no transaction is active");
                 }
-                // if self.tracer.is_in_call() {
-                //     self.tracer.on_log(addr, &topics, &data_bytes, txn_log.index);
-                // }
 
-                // buffer until root call is entered (logs arrive before call frames)
-                self.pending_logs.push(PendingLog { addr, topics: topics.clone(), data: data_bytes.to_vec(), index: txn_log.index });
+                // Defer log into deferred call state
+                self.tracer.on_log(addr, &topics, &data_bytes, txn_log.index);
+
                 // also buffer for receipt construction
                 self.pending_receipt_logs.push(firehose::LogData {
                     address: addr,
@@ -384,8 +366,7 @@ impl FirehosePlugin {
                 // Close any open calls at depth >= incoming depth
                 while self.open_calls.last().map_or(false, |c| c.depth >= depth) {
                     let open = self.open_calls.pop().unwrap();
-                    let err = evmc_status_to_error(open.evmc_status);
-                    self.tracer.on_call_exit(open.depth, &open.return_bytes, open.gas_used, err.as_ref().map(|e| e as &dyn std::error::Error), open.evmc_status != 0);
+                    self.call_exit(open.depth, &open.return_bytes, open.gas_used, open.evmc_status);
                 }
 
                 let from = alloy_primitives::Address::from(txn_call_frame.caller.bytes);
@@ -397,21 +378,9 @@ impl FirehosePlugin {
                 if txn_call_frame.opcode == Opcode::SelfDestruct as u8 {
                     self.tracer.on_call_enter(depth, Opcode::Call as u8, from, to, &input_bytes, txn_call_frame.gas, value);
                     self.tracer.on_opcode(0, Opcode::SelfDestruct as u8, txn_call_frame.gas, txn_call_frame.gas_used, &[], depth, None);
-                    let err = evmc_status_to_error(evmc_status);
-                    self.tracer.on_call_exit(depth, &return_bytes, txn_call_frame.gas_used, err.as_ref().map(|e| e as &dyn std::error::Error), evmc_status != 0);
+                    self.call_exit(depth, &return_bytes, txn_call_frame.gas_used, evmc_status);
                 } else {
                     self.tracer.on_call_enter(depth, txn_call_frame.opcode, from, to, &input_bytes, txn_call_frame.gas, value);
-
-                    // Flush buffered logs into the root call once its open
-                    if depth == 0 {
-                        let log_count = self.pending_logs.len();
-                        if log_count > 0 {
-                            tracing::trace!("flushing {} pending logs into root call", log_count);
-                            for log in self.pending_logs.drain(..) {
-                                self.tracer.on_log(log.addr, &log.topics, &log.data, log.index);
-                            }
-                        }
-                    }
 
                     if txn_call_frame.gas_used > 0 || is_precompile(&to) {
                         let err = evmc_status_to_error(evmc_status);
@@ -435,8 +404,7 @@ impl FirehosePlugin {
                 if header.access_context == AccountAccessContext::Transaction as u8 {
                     while self.open_calls.last().map_or(false, |c| c.depth > 0) {
                         let open = self.open_calls.pop().unwrap();
-                        let err = evmc_status_to_error(open.evmc_status);
-                        self.tracer.on_call_exit(open.depth, &open.return_bytes, open.gas_used, err.as_ref().map(|e| e as &dyn std::error::Error), open.evmc_status != 0);
+                        self.call_exit(open.depth, &open.return_bytes, open.gas_used, open.evmc_status);
                     }
                 }
             }
@@ -472,25 +440,47 @@ impl FirehosePlugin {
             ExecEvent::BlockSystemCallEnd { system_call_end, return_bytes } => {
                 tracing::info!("block system call end (gas_used={} status={})", system_call_end.gas_used, system_call_end.evmc_status);
 
-                self.tracer.on_call_exit(0, &return_bytes, system_call_end.gas_used, None, system_call_end.evmc_status == 2);
+                self.call_exit(0, &return_bytes, system_call_end.gas_used, system_call_end.evmc_status as i32);
                 self.tracer.on_system_call_end();
             }
 
-            ExecEvent::RecordError(_) => {}
-            ExecEvent::BlockReject(_) => {}
-            ExecEvent::BlockPerfEvmEnter => {}
-            ExecEvent::BlockPerfEvmExit => {}
+            ExecEvent::RecordError(e) => {
+                tracing::warn!("record error ({:?})", e);
+            }
+            ExecEvent::BlockReject(e) => {
+                tracing::warn!("block reject (code={:?})", e);
+            }
+            ExecEvent::BlockPerfEvmEnter => {
+                tracing::trace!("block perf evm enter");
+            }
+            ExecEvent::BlockPerfEvmExit => {
+                tracing::trace!("block perf evm exit");
+            }
             ExecEvent::BlockFinalized(tag) => {
                 tracing::info!("block finalized (block={} prev_last_finalized={})", tag.block_number, self.last_finalized_block);
                 self.last_finalized_block = self.last_finalized_block.max(tag.block_number);
             }
-            ExecEvent::BlockQC(_) => {}
-            ExecEvent::BlockVerified(_) => {}
-            ExecEvent::TxnHeaderEnd => {}
-            ExecEvent::TxnReject { .. } => {}
-            ExecEvent::TxnPerfEvmEnter => {}
-            ExecEvent::TxnPerfEvmExit => {}
-            ExecEvent::EvmError(_) => {}
+            ExecEvent::BlockQC(e) => {
+                tracing::debug!("block qc (block={} round={} epoch={})", e.block_tag.block_number, e.round, e.epoch);
+            }
+            ExecEvent::BlockVerified(e) => {
+                tracing::debug!("block verified (block={})", e.block_number);
+            }
+            ExecEvent::TxnHeaderEnd => {
+                tracing::trace!("txn header end");
+            }
+            ExecEvent::TxnReject { txn_index, reject } => {
+                tracing::warn!("txn reject (txn={} code={:?})", txn_index, reject);
+            }
+            ExecEvent::TxnPerfEvmEnter => {
+                tracing::trace!("txn perf evm enter");
+            }
+            ExecEvent::TxnPerfEvmExit => {
+                tracing::trace!("txn perf evm exit");
+            }
+            ExecEvent::EvmError(e) => {
+                tracing::warn!("evm error (domain={} status={})", e.domain_id, e.status_code);
+            }
         }
         Ok(())
     }
