@@ -314,7 +314,11 @@ impl FirehosePlugin {
                     let err = evmc_status_to_error(open.evmc_status);
                     self.tracer.on_call_exit(open.depth, &open.return_bytes, open.gas_used, err.as_ref().map(|e| e as &dyn std::error::Error), open.evmc_status != 0);
                 }
-                self.pending_logs.clear();
+                if !self.pending_logs.is_empty() {
+                    tracing::trace!("discarding {} pending logs with no call frame", self.pending_logs.len());
+                    self.pending_logs.clear();
+                    self.pending_receipt_logs.clear();
+                }
                 let receipt_logs = std::mem::take(&mut self.pending_receipt_logs);
                 let receipt = if let Some(output) = self.tx_end_receipt.take() {
                     firehose::ReceiptData{
@@ -389,6 +393,17 @@ impl FirehosePlugin {
                 let value = alloy_primitives::U256::from_limbs(txn_call_frame.value.limbs);
 
                 self.tracer.on_call_enter(depth, txn_call_frame.opcode, from, to, &input_bytes, txn_call_frame.gas, value);
+
+                // Flush buffered logs into the root call once its open
+                if depth == 0 {
+                    let log_count = self.pending_logs.len();
+                    if log_count > 0 {
+                        tracing::trace!("flushing {} pending logs into root call", log_count);
+                        for log in self.pending_logs.drain(..) {
+                            self.tracer.on_log(log.addr, &log.topics, &log.data, log.index);
+                        }
+                    }
+                }
 
                 let evmc_status = txn_call_frame.evmc_status as i32;
 
