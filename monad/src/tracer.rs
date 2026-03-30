@@ -392,27 +392,27 @@ impl FirehosePlugin {
                 let to = alloy_primitives::Address::from(txn_call_frame.call_target.bytes);
                 let value = alloy_primitives::U256::from_limbs(txn_call_frame.value.limbs);
 
-                self.tracer.on_call_enter(depth, txn_call_frame.opcode, from, to, &input_bytes, txn_call_frame.gas, value);
-
-                // Flush buffered logs into the root call once its open
-                if depth == 0 {
-                    let log_count = self.pending_logs.len();
-                    if log_count > 0 {
-                        tracing::trace!("flushing {} pending logs into root call", log_count);
-                        for log in self.pending_logs.drain(..) {
-                            self.tracer.on_log(log.addr, &log.topics, &log.data, log.index);
-                        }
-                    }
-                }
-
                 let evmc_status = txn_call_frame.evmc_status as i32;
 
                 if txn_call_frame.opcode == Opcode::SelfDestruct as u8 {
                     self.tracer.on_call_enter(depth, Opcode::Call as u8, from, to, &input_bytes, txn_call_frame.gas, value);
-                    self.tracer.on_opcode(0, txn_call_frame.opcode, txn_call_frame.gas, txn_call_frame.gas_used, &[], depth, None);
+                    self.tracer.on_opcode(0, Opcode::SelfDestruct as u8, txn_call_frame.gas, txn_call_frame.gas_used, &[], depth, None);
                     let err = evmc_status_to_error(evmc_status);
                     self.tracer.on_call_exit(depth, &return_bytes, txn_call_frame.gas_used, err.as_ref().map(|e| e as &dyn std::error::Error), evmc_status != 0);
                 } else {
+                    self.tracer.on_call_enter(depth, txn_call_frame.opcode, from, to, &input_bytes, txn_call_frame.gas, value);
+
+                    // Flush buffered logs into the root call once its open
+                    if depth == 0 {
+                        let log_count = self.pending_logs.len();
+                        if log_count > 0 {
+                            tracing::trace!("flushing {} pending logs into root call", log_count);
+                            for log in self.pending_logs.drain(..) {
+                                self.tracer.on_log(log.addr, &log.topics, &log.data, log.index);
+                            }
+                        }
+                    }
+
                     if txn_call_frame.gas_used > 0 || is_precompile(&to) {
                         let err = evmc_status_to_error(evmc_status);
                         if let Some(ref e) = err {
