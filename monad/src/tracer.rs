@@ -164,6 +164,7 @@ impl FirehosePlugin {
 
         match event {
             ExecEvent::BlockStart(block_start) => {
+                tracing::info!("block start (number={} txn_count={})", block_start.eth_block_input.number, block_start.eth_block_input.txn_count);
                 // self.current_txn_idx = None;
                 self.block_txn_count = block_start.eth_block_input.txn_count;
                 self.txn_end_count = 0;
@@ -208,6 +209,7 @@ impl FirehosePlugin {
                 }) });
             }
             ExecEvent::BlockEnd(block_end) => {
+                tracing::info!("block end (hash={:?})", B256::from(block_end.eth_block_hash.bytes));
                 self.tracer.set_block_hash(B256::from(block_end.eth_block_hash.bytes));
                 let eo = &block_end.exec_output;
                 self.tracer.set_block_header_end_data(
@@ -224,6 +226,7 @@ impl FirehosePlugin {
                 data_bytes,
                 blob_bytes,
             } => {
+                tracing::info!("txn header start (txn={} hash={:?})", txn_index, B256::from(txn_header_start.txn_hash.bytes));
                 if self.tracer.is_in_system_call() {
                     self.tracer.on_system_call_end();
                 }
@@ -261,7 +264,7 @@ impl FirehosePlugin {
                 txn_access_list_entry,
                 storage_key_bytes,
             } => {
-
+                tracing::trace!("txn access list entry (txn={} addr={:?} keys={})", txn_index, alloy_primitives::Address::from(txn_access_list_entry.entry.address.bytes), txn_access_list_entry.entry.storage_key_count);
                 self.ensure_in_block_and_in_pending(txn_index, "TxnAccessListEntry");
 
                 if let Some(tx_event) = self.pending_tx_events.get_mut(&txn_index) {
@@ -277,7 +280,7 @@ impl FirehosePlugin {
                 txn_index,
                 txn_auth_list_entry,
             } => {
-
+                tracing::trace!("txn auth list entry (txn={} addr={:?})", txn_index, alloy_primitives::Address::from(txn_auth_list_entry.entry.address.bytes));
                 self.ensure_in_block_and_in_pending(txn_index, "TxnAuthListEntry");
 
                 if let Some(tx_event) = self.pending_tx_events.get_mut(&txn_index) {
@@ -293,7 +296,7 @@ impl FirehosePlugin {
                 }
             }
             ExecEvent::TxnEvmOutput { txn_index, output } => {
-
+                tracing::info!("txn evm output (txn={} gas_used={} status={} call_frame_count={})", txn_index, output.receipt.gas_used, output.receipt.status, output.call_frame_count);
                 self.ensure_in_block_and_in_pending(txn_index, "TxnEvmOutput");
 
                 if let Some(tx_event) = self.pending_tx_events.remove(&txn_index) {
@@ -302,6 +305,7 @@ impl FirehosePlugin {
                 self.tx_end_receipt = Some(output);
             }
             ExecEvent::TxnEnd => {
+                tracing::info!("txn end");
                 self.txn_end_count += 1;
 
                 // Flush remaining open calls in reverse
@@ -340,6 +344,7 @@ impl FirehosePlugin {
                 self.tracer.on_tx_end(Some(&receipt), None);
             }
             ExecEvent::TxnLog { txn_index, txn_log, topic_bytes, data_bytes } => {
+                tracing::trace!("txn log (txn={} idx={} addr={:?} topics={} data_len={})", txn_index, txn_log.index, alloy_primitives::Address::from(txn_log.address.bytes), txn_log.topic_count, data_bytes.len());
                 let mut topics: Vec<B256> = Vec::with_capacity(txn_log.topic_count as usize);
                 for i in 0..txn_log.topic_count as usize {
                     let start = i * 32;
@@ -364,6 +369,7 @@ impl FirehosePlugin {
                 });
             }
             ExecEvent::TxnCallFrame { txn_index, txn_call_frame, input_bytes, return_bytes } => {
+                tracing::trace!("txn call frame (txn={:?} depth={} opcode=0x{:02x} from={:?} to={:?} gas={} gas_used={} status={})", txn_index, txn_call_frame.depth, txn_call_frame.opcode, alloy_primitives::Address::from(txn_call_frame.caller.bytes), alloy_primitives::Address::from(txn_call_frame.call_target.bytes), txn_call_frame.gas, txn_call_frame.gas_used, txn_call_frame.evmc_status);
                 if !self.tracer.is_in_transaction() {
                     self.tracer.on_system_call_start();
                 }
@@ -385,6 +391,10 @@ impl FirehosePlugin {
 
                 // Flush buffered logs into the root call once its open
                 if depth == 0 {
+                    let log_count = self.pending_logs.len();
+                    if log_count > 0 {
+                        tracing::trace!("flushing {} pending logs into root call", log_count);
+                    }
                     for log in self.pending_logs.drain(..) {
                         self.tracer.on_log(log.addr, &log.topics, &log.data, log.index);
                     }
@@ -408,6 +418,7 @@ impl FirehosePlugin {
                 });
             }
             ExecEvent::AccountAccessListHeader(header) => {
+                tracing::trace!("account access list header (ctx={} count={})", header.access_context, header.entry_count);
                 if header.access_context == AccountAccessContext::Transaction as u8 {
                     while self.open_calls.last().map_or(false, |c| c.depth > 0) {
                         let open = self.open_calls.pop().unwrap();
@@ -417,6 +428,7 @@ impl FirehosePlugin {
                 }
             }
             ExecEvent::AccountAccess(account_access) => {
+                tracing::trace!("account access (addr={:?} balance_modified={} nonce_modified={})", alloy_primitives::Address::from(account_access.address.bytes), account_access.is_balance_modified, account_access.is_nonce_modified);
                 let addr = alloy_primitives::Address::from(account_access.address.bytes);
                 if account_access.is_balance_modified {
                     use firehose::pb::sf::ethereum::r#type::v2::balance_change::Reason;
@@ -427,6 +439,7 @@ impl FirehosePlugin {
                 }
             }
             ExecEvent::StorageAccess(storage_access) => {
+                tracing::trace!("storage access (addr={:?} modified={} transient={})", alloy_primitives::Address::from(storage_access.address.bytes), storage_access.modified, storage_access.transient);
                 if storage_access.modified && !storage_access.transient {
                     let addr = alloy_primitives::Address::from(storage_access.address.bytes);
                     self.tracer.on_storage_change(addr, B256::from(storage_access.key.bytes), B256::from(storage_access.start_value.bytes), B256::from(storage_access.end_value.bytes));
@@ -434,12 +447,14 @@ impl FirehosePlugin {
             }
 
             ExecEvent::BlockSystemCallStart { system_call_start, input_bytes } => {
+                tracing::info!("block system call start (from={:?} to={:?} opcode=0x{:02x} gas={})", alloy_primitives::Address::from(system_call_start.caller.bytes), alloy_primitives::Address::from(system_call_start.call_target.bytes), system_call_start.opcode, system_call_start.gas);
                 self.tracer.on_system_call_start();
                 let from = alloy_primitives::Address::from(system_call_start.caller.bytes);
                 let to = alloy_primitives::Address::from(system_call_start.call_target.bytes);
                 self.tracer.on_call_enter(0, system_call_start.opcode, from, to, &input_bytes, system_call_start.gas, alloy_primitives::U256::ZERO);
             }
             ExecEvent::BlockSystemCallEnd { system_call_end, return_bytes } => {
+                tracing::info!("block system call end (gas_used={} status={})", system_call_end.gas_used, system_call_end.evmc_status);
                 self.tracer.on_call_exit(0, &return_bytes, system_call_end.gas_used, None, system_call_end.evmc_status == 2);
                 self.tracer.on_system_call_end();
             }
@@ -449,6 +464,7 @@ impl FirehosePlugin {
             ExecEvent::BlockPerfEvmEnter => {}
             ExecEvent::BlockPerfEvmExit => {}
             ExecEvent::BlockFinalized(tag) => {
+                tracing::info!("block finalized (block={} prev_last_finalized={})", tag.block_number, self.last_finalized_block);
                 self.last_finalized_block = self.last_finalized_block.max(tag.block_number);
             }
             ExecEvent::BlockQC(_) => {}
