@@ -315,6 +315,30 @@ impl Write for InMemoryBuffer {
     }
 }
 
+/// Parses the first FIRE BLOCK line from raw output bytes and returns the decoded protobuf Block.
+pub fn parse_firehose_block(output: &[u8]) -> pbeth::Block {
+    let reader = BufReader::new(output);
+    for line in reader.lines() {
+        let line = line.expect("Failed to read line");
+        if line.starts_with("FIRE BLOCK ") {
+            // Format: FIRE BLOCK {num} {hash} {prev_num} {prev_hash} {lib_num} {timestamp} {base64}
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 9 {
+                let base64_data = parts[8..].join(" ");
+                let decoded = base64::engine::general_purpose::STANDARD
+                    .decode(&base64_data)
+                    .expect(&format!(
+                        "Failed to decode base64 (len={}, data={})",
+                        base64_data.len(),
+                        &base64_data[..base64_data.len().min(100)]
+                    ));
+                return pbeth::Block::decode(&decoded[..]).expect("Failed to decode protobuf");
+            }
+        }
+    }
+    panic!("No FIRE BLOCK found in output");
+}
+
 /// TracerTester provides a fluent API for building test scenarios
 pub struct TracerTester {
     pub tracer: Tracer,
@@ -846,32 +870,7 @@ impl TracerTester {
     }
 
     fn parse_firehose_block(&self) -> pbeth::Block {
-        let output = self.output_buffer.get_bytes();
-        let reader = BufReader::new(&output[..]);
-
-        for line in reader.lines() {
-            let line = line.expect("Failed to read line");
-            if line.starts_with("FIRE BLOCK ") {
-                // Format: FIRE BLOCK {num} {hash} {prev_num} {prev_hash} {lib_num} {timestamp} {base64}
-                // Parts: [0]FIRE [1]BLOCK [2]num [3]hash [4]prev_num [5]prev_hash [6]lib_num [7]timestamp [8]base64
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 9 {
-                    // The base64 protobuf is at index 8 (everything after the timestamp)
-                    // We need to rejoin all parts from index 8 onwards in case the base64 contains whitespace
-                    let base64_data = parts[8..].join(" ");
-                    let decoded = base64::engine::general_purpose::STANDARD
-                        .decode(&base64_data)
-                        .expect(&format!(
-                            "Failed to decode base64 (len={}, data={})",
-                            base64_data.len(),
-                            &base64_data[..base64_data.len().min(100)]
-                        ));
-                    return pbeth::Block::decode(&decoded[..]).expect("Failed to decode protobuf");
-                }
-            }
-        }
-
-        panic!("No FIRE BLOCK found in output");
+        parse_firehose_block(&self.output_buffer.get_bytes())
     }
 
     /// Parse all FIRE BLOCK lines from output buffer (for testing multiple blocks)

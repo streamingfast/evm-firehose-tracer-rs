@@ -53,7 +53,7 @@ Build from source using Cargo:
 cargo build --release
 
 # Build the Monad tracer specifically
-cargo build --release -p monad-plugin
+cargo build --release -p monad
 ```
 
 ### Mac OS X Prerequisites
@@ -128,8 +128,7 @@ Ordinals provide deterministic ordering of all events within a block:
 - **`firehose`**: Core chain-agnostic tracer implementation
 - **`pb`**: Generated protobuf types for `sf.ethereum.type.v2.Block`
 - **`firehose-test`**: Test helpers and the full integration test suite
-- **`monad`**: Monad-specific tracer adapter
-- **`monad-plugin`**: Monad execution environment plugin
+- **`monad`**: Monad-specific tracer adapter and execution environment
 
 ## Repository
 

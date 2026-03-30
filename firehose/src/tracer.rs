@@ -86,6 +86,12 @@ impl Tracer {
         }
     }
 
+    /// Resets all block, transaction, and call state
+    pub fn reset(&mut self) {
+        self.reset_block();
+        self.reset_transaction();
+    }
+
     /// Resets the block state only (not transaction or call state)
     fn reset_block(&mut self) {
         self.block = None;
@@ -1352,7 +1358,7 @@ impl Tracer {
         }
     }
 
-    fn ensure_in_block(&self) {
+    pub fn ensure_in_block(&self) {
         if self.block.is_none() {
             panic!("caller expected to be in block state but we were not");
         }
@@ -1402,6 +1408,50 @@ impl Tracer {
             panic!("caller expected to be in system call state but we were not");
         }
     }
+
+    pub fn is_in_transaction(&self) -> bool {
+        self.transaction.is_some()
+    }
+
+    pub fn is_in_call(&self) -> bool {
+        self.call_stack.has_active_call()
+    }
+
+    pub fn is_in_system_call(&self) -> bool {
+        self.in_system_call
+    }
+
+    pub fn is_in_block(&self) -> bool {
+        self.block.is_some()
+    }
+
+    pub fn set_block_hash(&mut self, hash: alloy_primitives::B256) {
+        if let Some(block) = &mut self.block {
+            block.hash = hash.0.to_vec();
+            if let Some(header) = &mut block.header {
+                header.hash = hash.0.to_vec();
+            }
+        }
+    }
+
+    pub fn set_block_header_end_data(
+        &mut self,
+        state_root: alloy_primitives::B256,
+        receipts_root: alloy_primitives::B256,
+        logs_bloom: alloy_primitives::Bloom,
+        gas_used: u64,
+    ) {
+        if let Some(block) = &mut self.block {
+            if let Some(header) = &mut block.header {
+                header.state_root = state_root.0.to_vec();
+                header.receipt_root = receipts_root.0.to_vec();
+                header.logs_bloom = logs_bloom.0.to_vec();
+                header.gas_used = gas_used;
+            }
+        }
+    }
+
+
 }
 
 /// Computes the effective gas price for a transaction based on its type and block base fee.

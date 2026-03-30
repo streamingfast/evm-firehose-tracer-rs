@@ -8,14 +8,12 @@ name = "monad-firehose-tracer"
 path = "src/main.rs"
 
 [dependencies]
-pb = { workspace = true }
-monad-plugin = { path = "../monad-plugin" }
+firehose = { workspace = true }
 eyre = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 base64 = { workspace = true }
 hex = { workspace = true }
 chrono = { workspace = true }
@@ -28,3 +26,13 @@ color-eyre = { workspace = true }
 futures-util = { workspace = true }
 tokio-stream = { workspace = true }
 alloy-primitives = { workspace = true }
+
+[dev-dependencies]
+firehose-test = { workspace = true }
+pb = { workspace = true }
+prost = { workspace = true }
+base64 = { workspace = true }
+
+[[test]]
+name = "monad_tracer_test"
+path = "tests/monad_tracer_test.rs"

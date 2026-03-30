@@ -3,18 +3,48 @@
 //! This module handles consuming execution events from Monad's shared memory
 //! event ring buffer system.
 
-use crate::{EventProcessor, PluginConfig};
-use eyre::{Result, WrapErr};
-use monad_event_ring::{DecodedEventRing, EventNextResult, EventPayloadResult, EventRingPath};
-use monad_exec_events::ExecEventRing;
+use eyre::Result;
+use monad_event_ring::{DecodedEventRing, EventDecoder, EventDescriptorInfo, EventNextResult, EventPayloadResult};
+use monad_exec_events::{ExecEvent, ExecEventDecoder, ExecEventRing};
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, Stream};
 use tracing::{error, info, warn};
 
+#[derive(Debug, Clone)]
+pub struct PluginConfig {
+    pub event_ring_path: String,
+    pub buffer_size: usize,
+    pub timeout_ms: u64,
+}
+
+impl Default for PluginConfig {
+    fn default() -> Self {
+        Self {
+            event_ring_path: "/tmp/monad_events".to_string(),
+            buffer_size: 1024,
+            timeout_ms: 1000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct EventMeta {
+    pub seqno: u64,
+}
+
+fn decode_with_meta(
+    info: EventDescriptorInfo<ExecEventDecoder>,
+    bytes: &[u8],
+) -> Option<(EventMeta, ExecEvent)> {
+    let seqno = info.seqno;
+    let event_ref = ExecEventDecoder::raw_to_event_ref(info, bytes);
+    let event = ExecEventDecoder::event_ref_to_event(event_ref);
+    Some((EventMeta { seqno }, event))
+}
+
 /// Consumer for Monad execution events
 pub struct MonadConsumer {
     config: PluginConfig,
-    event_processor: EventProcessor,
     event_ring: ExecEventRing,
 }
 
@@ -26,25 +56,19 @@ impl MonadConsumer {
             config.event_ring_path
         );
 
-        let event_processor = EventProcessor::new();
-
-        // Initialize the SDK event ring
-        let event_ring_path = EventRingPath::resolve(&config.event_ring_path)
-            .map_err(|e| eyre::eyre!("Failed to resolve event ring path: {:?}", e))?;
-        let event_ring = ExecEventRing::new(event_ring_path)
+        let event_ring = ExecEventRing::new_from_path(&config.event_ring_path)
             .map_err(|e| eyre::eyre!("Failed to open Monad event ring: {:?}", e))?;
 
         info!("Successfully opened Monad event ring");
 
         Ok(Self {
             config,
-            event_processor,
             event_ring,
         })
     }
 
-    /// Start consuming events and return a stream of processed events
-    pub async fn start_consuming(self) -> Result<impl Stream<Item = ProcessedEvent>> {
+    /// Start consuming events and return a stream of (seqno, ExecEvent)
+    pub async fn start_consuming(self) -> Result<impl Stream<Item = (u64, ExecEvent)>> {
         info!("Starting Monad event consumption");
 
         let (tx, rx) = mpsc::channel(self.config.buffer_size);
@@ -60,13 +84,12 @@ impl MonadConsumer {
     }
 
     /// Main event consumption loop
-    async fn consume_events_loop(self, tx: mpsc::Sender<ProcessedEvent>) -> Result<()> {
+    async fn consume_events_loop(self, tx: mpsc::Sender<(u64, ExecEvent)>) -> Result<()> {
         info!("Starting event consumption loop");
 
         // Move fields out to avoid borrowing `self` both mutably and immutably at the same time.
         let MonadConsumer {
             config: _,
-            mut event_processor,
             event_ring,
         } = self;
 
@@ -103,41 +126,19 @@ impl MonadConsumer {
                         }
                     }
                 }
-                EventNextResult::Ready(event) => {
-                    let exec_event = match event.try_read() {
+                EventNextResult::Ready(event_descriptor) => {
+                    let (meta, exec_event) = match event_descriptor.try_filter_map_raw(decode_with_meta) {
                         EventPayloadResult::Expired => {
                             warn!("Event payload expired!");
                             continue;
                         }
-                        EventPayloadResult::Ready(exec_event) => exec_event,
+                        EventPayloadResult::Ready(Some(pair)) => pair,
+                        EventPayloadResult::Ready(None) => continue,
                     };
 
-                    // Event descriptor will drop here at end of scope
-                    // Extract block number from event if it's a BlockStart
-                    let block_number =
-                        if let monad_exec_events::ExecEvent::BlockStart(ref bs) = exec_event {
-                            bs.block_tag.block_number
-                        } else {
-                            event_processor.current_block().unwrap_or(0)
-                        };
-
-                    // Process and send asynchronously
-                    match event_processor
-                        .process_monad_event(exec_event, block_number)
-                        .await
-                    {
-                        Ok(Some(processed_event)) => {
-                            if let Err(e) = tx.send(processed_event).await {
-                                warn!("Failed to send processed event: {}", e);
-                                break; // Channel closed
-                            }
-                        }
-                        Ok(None) => {
-                            // Event processed but no output needed
-                        }
-                        Err(e) => {
-                            error!("Failed to process event: {}", e);
-                        }
+                    if let Err(e) = tx.send((meta.seqno, exec_event)).await {
+                        warn!("Failed to send processed event: {}", e);
+                        break; // Channel closed
                     }
                 }
             }
@@ -146,12 +147,4 @@ impl MonadConsumer {
         info!("Event consumption loop terminated gracefully");
         Ok(())
     }
-}
-
-/// Processed event ready for the Firehose tracer
-#[derive(Debug, Clone)]
-pub struct ProcessedEvent {
-    pub block_number: u64,
-    pub event_type: String,
-    pub firehose_data: Vec<u8>,
 }

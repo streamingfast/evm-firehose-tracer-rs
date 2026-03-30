@@ -14,6 +14,7 @@ mod version;
 
 // Re-export public items to maintain the same API
 pub use config::{ChainClient, ChainConfig, Config, Rules};
+pub use finality::FinalityStatus;
 pub use logging::HexView;
 pub use tracer::Tracer;
 pub use types::{
@@ -22,7 +23,7 @@ pub use types::{
 };
 pub use version::{BLOCK_VERSION, PROTOCOL_VERSION};
 
-// Re-export pb from the pb crate
+// pb module backed by buf-generated protobuf files in pb/src/
 pub use pb;
 
 // // Type aliases for generic Node types

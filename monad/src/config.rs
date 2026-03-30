@@ -1,10 +1,9 @@
 //! Configuration for the Monad Firehose tracer
-
 use serde::{Deserialize, Serialize};
 
-/// Configuration for the Firehose tracer
+/// Configuration for the Firehose tracer for Monad
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TracerConfig {
+pub struct FirehosePluginConfig {
     /// Chain ID for the blockchain
     pub chain_id: u64,
     /// Network name (e.g., "monad", "monad-testnet")
@@ -17,7 +16,7 @@ pub struct TracerConfig {
     pub no_op: bool,
 }
 
-impl Default for TracerConfig {
+impl Default for FirehosePluginConfig {
     fn default() -> Self {
         Self {
             chain_id: 1,
@@ -29,7 +28,7 @@ impl Default for TracerConfig {
     }
 }
 
-impl TracerConfig {
+impl FirehosePluginConfig {
     /// Create a new tracer configuration
     pub fn new(chain_id: u64, network_name: String) -> Self {
         Self {

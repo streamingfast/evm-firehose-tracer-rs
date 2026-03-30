@@ -12,17 +12,17 @@ impl FinalityStatus {
     }
 
     /// Updates the last finalized block number.
-    pub(super) fn set_last_finalized_block(&mut self, block_number: u64) {
+    pub fn set_last_finalized_block(&mut self, block_number: u64) {
         self.last_finalized_block_number = block_number;
     }
 
     /// Returns true if finality status is not set (for backward compatibility with printer).
-    pub(super) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.last_finalized_block_number == 0
     }
 
     /// Returns the last irreversible block number (alias for backward compatibility).
-    pub(super) fn last_irreversible_block_number(&self) -> u64 {
+    pub fn last_irreversible_block_number(&self) -> u64 {
         self.last_finalized_block_number
     }
 }

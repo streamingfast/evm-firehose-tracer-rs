@@ -9,4 +9,4 @@ plugins:
   out: pb/src
   opt:
     - no_features
-    - include_file=pb.rs
+    - include_file=mod.rs

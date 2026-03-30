@@ -11,12 +11,12 @@ sudo apt-get update && sudo apt-get install -y libclang-dev
 ### Why
 
 - `reth-firehose` depends on `reth-mdbx-sys` which uses `bindgen` to generate FFI bindings at compile time. `bindgen` requires `libclang` to parse C headers.
-- The `monad` and `monad-plugin` crates similarly require `libclang` (and `cmake`).
+- The `monad` and  crates similarly require `libclang` (and `cmake`).
 
 ### Affected crates
 
 - `reth-firehose` — needs `libclang-dev`
-- `monad`, `monad-plugin` — needs `libclang-dev` + `cmake`
+- `monad` needs `libclang-dev` + `cmake`
 
 ### Building without native deps
 

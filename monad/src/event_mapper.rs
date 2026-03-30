@@ -1,8 +1,8 @@
-use crate::{Block, BlockHeader, ProcessedEvent, TransactionTrace};
-use pb::sf::ethereum::r#type::v2::{block, BigInt, AccessTuple};
-use alloy_primitives::{Bloom, BloomInput};
+use crate::{Block, BlockHeader, TransactionTrace};
+use firehose::pb::sf::ethereum::r#type::v2::{block, BigInt, AccessTuple, CodeChange};
+use alloy_primitives::{Bloom, BloomInput, keccak256};
 use eyre::Result;
-use serde_json;
+use monad_exec_events::ExecEvent;
 use tracing::debug;
 
 // Constants for Monad-specific values
@@ -11,71 +11,25 @@ const DEFAULT_GAS_LIMIT: u64 = 30_000_000;
 
 fn encode_v_bytes(v_value: u64) -> Vec<u8> {
     let mut bytes = v_value.to_be_bytes().to_vec();
-    // Remove leading zeros but keep at least one byte
     while bytes.len() > 1 && bytes[0] == 0 {
         bytes.remove(0);
     }
     bytes
 }
 
-fn parse_u256_limbs_raw(json: &serde_json::Value, field: &str) -> Vec<u64> {
-    json[field]["limbs"]
-        .as_array()
-        .map(|arr| arr.iter().map(|v| v.as_u64().unwrap_or(0)).collect())
-        .unwrap_or_else(|| vec![0u64; 4])
-}
-
-fn parse_u256_limbs(json: &serde_json::Value, field: &str) -> Vec<u8> {
-    u256_limbs_to_bytes(&parse_u256_limbs_raw(json, field))
-}
-
-fn parse_hex_field(json: &serde_json::Value, field: &str) -> Vec<u8> {
-    hex::decode(json[field].as_str().unwrap_or("")).unwrap_or_default()
-}
-
-fn parse_access_list(tx_data: &serde_json::Value) -> Vec<AccessTuple> {
-    tx_data.get("access_list")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter().filter_map(|entry| {
-                let address = entry.get("address")?.as_str()?;
-                let storage_keys = entry.get("storage_keys")?.as_array()?;
-
-                let address_bytes = hex::decode(address.trim_start_matches("0x")).ok()?;
-                let storage_keys_bytes = storage_keys.iter()
-                    .filter_map(|k| k.as_str().and_then(|s| hex::decode(s.trim_start_matches("0x")).ok()))
-                    .collect();
-
-                Some(AccessTuple {
-                    address: address_bytes,
-                    storage_keys: storage_keys_bytes,
-                })
-            }).collect()
-        })
-        .unwrap_or_default()
-}
-
 /// Convert U256 limbs (4x u64 in little-endian) to big-endian bytes with leading zero compaction
 fn u256_limbs_to_bytes(limbs: &[u64]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(32);
-    // U256 is stored as 4 limbs in little-endian order
-    // We need to convert to big-endian for protobuf
     for i in (0..4).rev() {
         let limb = limbs.get(i).copied().unwrap_or(0);
         bytes.extend_from_slice(&limb.to_be_bytes());
     }
-
-    // Strip leading zeros for Ethereum hex compaction
-    // For zero values, compact_bytes returns empty vec (serializes as "00" in protobuf JSON)
     compact_bytes(bytes)
 }
 
 /// Strip leading zeros from byte array (Ethereum hex compaction)
-/// Returns empty vec for zero values (protobuf serializes this as "00" in JSON)
 fn compact_bytes(bytes: Vec<u8>) -> Vec<u8> {
-    // Find first non-zero byte
     let first_non_zero = bytes.iter().position(|&b| b != 0);
-
     match first_non_zero {
         Some(pos) => bytes[pos..].to_vec(),
         None => vec![],
@@ -84,7 +38,6 @@ fn compact_bytes(bytes: Vec<u8>) -> Vec<u8> {
 
 /// Add two u256 values represented as big-endian byte arrays
 fn add_u256_bytes(a: &[u8], b: &[u8]) -> Vec<u8> {
-    // Pad to 32 bytes for addition
     let mut a_padded = [0u8; 32];
     let mut b_padded = [0u8; 32];
 
@@ -96,7 +49,6 @@ fn add_u256_bytes(a: &[u8], b: &[u8]) -> Vec<u8> {
     let mut result = vec![0u8; 32];
     let mut carry = 0u16;
 
-    // Add from least significant byte
     for i in (0..32).rev() {
         let sum = a_padded[i] as u16 + b_padded[i] as u16 + carry;
         result[i] = (sum & 0xff) as u8;
@@ -111,12 +63,10 @@ fn compare_u256_bytes(a: &[u8], b: &[u8]) -> i32 {
     let a_len = a.len();
     let b_len = b.len();
 
-    // Compare lengths first (longer is larger, assuming no leading zeros)
     if a_len != b_len {
         return if a_len > b_len { 1 } else { -1 };
     }
 
-    // Same length, compare byte by byte from most significant
     for i in 0..a_len {
         if a[i] != b[i] {
             return if a[i] > b[i] { 1 } else { -1 };
@@ -126,192 +76,84 @@ fn compare_u256_bytes(a: &[u8], b: &[u8]) -> i32 {
     0
 }
 
-/// Multiply a u256 (big-endian bytes) by a u64
-fn multiply_u256_by_u64(a: &[u8], b: u64) -> Vec<u8> {
-    if a.is_empty() || b == 0 {
-        return vec![];
-    }
-
-    // Pad a to 32 bytes
-    let mut a_padded = [0u8; 32];
-    let a_start = 32 - a.len();
-    a_padded[a_start..].copy_from_slice(a);
-
-    // Result can be up to 40 bytes (32 + 8), but we'll use 40 for safety
-    let mut result = [0u128; 5]; // Use u128 for intermediate calculations
-
-    // Multiply each byte by b
-    let b_128 = b as u128;
-    for i in (0..32).rev() {
-        let product = (a_padded[i] as u128) * b_128;
-        let result_idx = 4 - (31 - i) / 8;
-        let shift = ((31 - i) % 8) * 8;
-
-        // Add the shifted product to result
-        let shifted = product << shift;
-        result[result_idx] = result[result_idx].wrapping_add(shifted & 0xFFFFFFFFFFFFFFFF);
-        if result_idx > 0 {
-            result[result_idx - 1] = result[result_idx - 1].wrapping_add(shifted >> 64);
-        }
-    }
-
-    // Handle carries
-    for i in (1..5).rev() {
-        let carry = result[i] >> 64;
-        result[i] &= 0xFFFFFFFFFFFFFFFF;
-        result[i - 1] = result[i - 1].wrapping_add(carry);
-    }
-    result[0] &= 0xFFFFFFFFFFFFFFFF;
-
-    // Convert to bytes
-    let mut bytes = Vec::with_capacity(40);
-    for val in &result {
-        bytes.extend_from_slice(&(*val as u64).to_be_bytes());
-    }
-
-    compact_bytes(bytes)
+fn is_precompile_address(addr: &[u8]) -> bool {
+    matches!(addr, [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 1..=10])
 }
 
-/// Ensure address bytes are 20 bytes (zero-pad if empty)
 fn ensure_address_bytes(bytes: Vec<u8>) -> Vec<u8> {
-    if bytes.is_empty() {
-        vec![0u8; 20]
-    } else {
-        bytes
-    }
+    if bytes.is_empty() { vec![0u8; 20] } else { bytes }
 }
 
-/// Ensure hash bytes are 32 bytes (zero-pad if empty)
 fn ensure_hash_bytes(bytes: Vec<u8>) -> Vec<u8> {
-    if bytes.is_empty() {
-        vec![0u8; 32]
-    } else {
-        bytes
-    }
+    if bytes.is_empty() { vec![0u8; 32] } else { bytes }
 }
 
-/// Calculate logs bloom filter from logs
-fn calculate_logs_bloom(logs: &[pb::sf::ethereum::r#type::v2::Log]) -> Vec<u8> {
+fn calculate_logs_bloom(logs: &[firehose::pb::sf::ethereum::r#type::v2::Log]) -> Vec<u8> {
     let mut bloom = Bloom::default();
-
     for log in logs {
-        // Add log address to bloom
         if log.address.len() == 20 {
             bloom.accrue(BloomInput::Raw(&log.address));
         }
-
-        // Add each topic to bloom
         for topic in &log.topics {
             if topic.len() == 32 {
                 bloom.accrue(BloomInput::Raw(topic));
             }
         }
     }
-
     bloom.as_slice().to_vec()
 }
 
-/// Maps processed events to Firehose blocks
-pub struct EventMapper {
-    blocks: std::collections::HashMap<u64, BlockBuilder>,
-}
-
-impl EventMapper {
-    /// Create a new event mapper
-    pub fn new() -> Self {
-        Self {
-            blocks: std::collections::HashMap::new(),
-        }
-    }
-
-    /// Process an event and potentially return a completed block
-    pub async fn process_event(&mut self, event: ProcessedEvent) -> Result<Option<Box<Block>>> {
-        debug!(
-            "Processing event: block={}, type={}",
-            event.block_number, event.event_type
-        );
-
-        let block_num = event.block_number;
-        let is_block_end = event.event_type == "BLOCK_END";
-
-        // Get or create the block builder for this block number
-        let builder = self.blocks.entry(block_num).or_insert_with(|| BlockBuilder::new(block_num));
-
-        // Add the event to the block
-        builder.add_event(event).await?;
-
-        // Check if this is a BLOCK_END event, finalize the block
-        if is_block_end {
-            if let Some(builder) = self.blocks.remove(&block_num) {
-                let completed_block = builder.finalize()?;
-                // Box the block to avoid expensive move - only moves a pointer instead of the whole struct
-                return Ok(Some(Box::new(completed_block)));
-            }
-        }
-
-        Ok(None)
-    }
-
-    /// Finalize any pending blocks
-    pub fn finalize_pending(&mut self) -> Result<Option<Box<Block>>> {
-        // Finalize the oldest pending block if any exist
-        if let Some((&block_num, _)) = self.blocks.iter().next() {
-            if let Some(builder) = self.blocks.remove(&block_num) {
-                // Box the block to avoid expensive move
-                return Ok(Some(Box::new(builder.finalize()?)));
-            }
-        }
-        Ok(None)
+fn evmc_status_to_failure_reason(evmc_status: i32) -> String {
+    match evmc_status {
+        0 => String::new(),
+        1 => "execution failed".to_string(),
+        2 => "execution reverted".to_string(),
+        3 => "out of gas".to_string(),
+        4 => "invalid instruction".to_string(),
+        5 => "undefined instruction".to_string(),
+        6 => "stack overflow".to_string(),
+        7 => "stack underflow".to_string(),
+        8 => "bad jump destination".to_string(),
+        9 => "invalid memory access".to_string(),
+        10 => "call depth exceeded".to_string(),
+        11 => "static mode violation".to_string(),
+        12 => "precompile failure".to_string(),
+        13 => "contract validation failure".to_string(),
+        14 => "argument out of range".to_string(),
+        15 => "wasm unreachable instruction".to_string(),
+        16 => "wasm trap".to_string(),
+        17 => "insufficient balance for transfer".to_string(),
+        _ => format!("unknown error (status {})", evmc_status),
     }
 }
 
-impl Default for EventMapper {
-    fn default() -> Self {
-        Self::new()
+fn opcode_to_call_type(opcode: u8) -> firehose::pb::sf::ethereum::r#type::v2::CallType {
+    match opcode {
+        0xF0 => firehose::pb::sf::ethereum::r#type::v2::CallType::Create,
+        0xF5 => firehose::pb::sf::ethereum::r#type::v2::CallType::Create,
+        0xF1 => firehose::pb::sf::ethereum::r#type::v2::CallType::Call,
+        0xF4 => firehose::pb::sf::ethereum::r#type::v2::CallType::Delegate,
+        0xF2 => firehose::pb::sf::ethereum::r#type::v2::CallType::Callcode,
+        0xFA => firehose::pb::sf::ethereum::r#type::v2::CallType::Static,
+        _ => firehose::pb::sf::ethereum::r#type::v2::CallType::Call,
     }
 }
 
-/// Raw call frame data from Monad events
-#[derive(Clone, Debug)]
-struct CallFrameData {
-    index: u32,
-    caller: Vec<u8>,
-    call_target: Vec<u8>,
-    opcode: u8,
-    value: Vec<u8>,
-    gas: u64,
-    gas_used: u64,
-    evmc_status: i32,
-    depth: u64,
-    input: Vec<u8>,
-    return_data: Vec<u8>,
+// Buffered until all access list entries arrive
+struct PendingTxnHeader {
+    txn_header: monad_exec_events::ffi::monad_exec_txn_header_start,
+    data_bytes: Box<[u8]>,
+    expected_access_list_count: u32,
 }
 
-/// Raw account access data from Monad events
-#[derive(Clone, Debug)]
-struct AccountAccessData {
-    index: u32,
-    address: Vec<u8>,
-    access_context: u8,
-    is_balance_modified: bool,
-    is_nonce_modified: bool,
-    prestate_balance: Vec<u8>,
-    prestate_nonce: u64,
-    modified_balance: Vec<u8>,
-    modified_nonce: u64,
-    storage_key_count: u32,
-}
-
-/// Raw storage access data from Monad events
-#[derive(Clone, Debug)]
-struct StorageAccessData {
-    address: Vec<u8>,
-    index: u32,
-    modified: bool,
-    transient: bool,
-    key: Vec<u8>,
-    start_value: Vec<u8>,
-    end_value: Vec<u8>,
+// Per-tx live state, pending_* fields are flushed into trace.calls at TxnEnd
+struct TxState {
+    trace: TransactionTrace,
+    pending_calls: Vec<firehose::pb::sf::ethereum::r#type::v2::Call>,
+    // Buffered state changes, applied to root call at TxnEnd
+    pending_balance_changes: Vec<firehose::pb::sf::ethereum::r#type::v2::BalanceChange>,
+    pending_nonce_changes: Vec<firehose::pb::sf::ethereum::r#type::v2::NonceChange>,
+    pending_storage_changes: Vec<firehose::pb::sf::ethereum::r#type::v2::StorageChange>,
 }
 
 struct BlockBuilder {
@@ -334,21 +176,23 @@ struct BlockBuilder {
     size: u64,
     gas_used: u64,
     gas_limit: u64,
-    transactions_map: std::collections::HashMap<usize, TransactionTrace>,
     cumulative_gas_used: u64,
     total_log_count: usize,
     next_ordinal: u64,
-    // Extended blocks data
-    call_frames: std::collections::HashMap<usize, Vec<CallFrameData>>,
-    account_accesses: std::collections::HashMap<usize, Vec<AccountAccessData>>,
-    storage_accesses: std::collections::HashMap<usize, Vec<StorageAccessData>>,
-    // System transactions from BLOCK_PROLOGUE
-    system_calls_account_accesses: Vec<AccountAccessData>,
-    system_calls_storage_accesses: Vec<StorageAccessData>,
-    system_calls_call_frames: Vec<CallFrameData>,
+    txns: std::collections::HashMap<usize, TxState>,
+    // System call frames (txn_index=None)
+    system_calls_calls: Vec<firehose::pb::sf::ethereum::r#type::v2::Call>,
+    // System account/storage accesses buffered as raw data, applied to system_calls at finalize
+    system_calls_account_accesses: Vec<(Vec<u8>, bool, Vec<u8>, Vec<u8>, bool, u64, u64)>,
+    system_calls_storage_accesses: Vec<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)>,
+    // TxnHeaderStart arrives before TxnAccessListEntry
+    pending_txn_headers: std::collections::HashMap<usize, PendingTxnHeader>,
+    pending_access_lists: std::collections::HashMap<usize, Vec<AccessTuple>>,
+    // AccountAccess/StorageAccess don't carry txn_index directly
+    current_txn_idx: Option<usize>,
+    current_account_idx: u64,
 }
 
-/// Builder for constructing Firehose blocks from events
 impl BlockBuilder {
     fn new(block_number: u64) -> Self {
         Self {
@@ -366,196 +210,229 @@ impl BlockBuilder {
             extra_data: Vec::new(),
             mix_hash: vec![0u8; 32],
             nonce: 0,
-              base_fee_per_gas: vec![0u64; 4],
-              withdrawals_root: vec![0u8; 32],
-              size: 0,
+            base_fee_per_gas: vec![0u64; 4],
+            withdrawals_root: vec![0u8; 32],
+            size: 0,
             gas_used: 0,
             gas_limit: DEFAULT_GAS_LIMIT,
-            transactions_map: std::collections::HashMap::new(),
             cumulative_gas_used: 0,
             total_log_count: 0,
-            next_ordinal: 0,
-            call_frames: std::collections::HashMap::new(),
-            account_accesses: std::collections::HashMap::new(),
-            storage_accesses: std::collections::HashMap::new(),
+            next_ordinal: 1,
+            txns: std::collections::HashMap::new(),
+            system_calls_calls: Vec::new(),
             system_calls_account_accesses: Vec::new(),
             system_calls_storage_accesses: Vec::new(),
-            system_calls_call_frames: Vec::new(),
+            pending_txn_headers: std::collections::HashMap::new(),
+            pending_access_lists: std::collections::HashMap::new(),
+            current_txn_idx: None,
+            current_account_idx: 0,
         }
     }
 
-    /// Add an event to the block
-    async fn add_event(&mut self, event: ProcessedEvent) -> Result<()> {
-        match event.event_type.as_str() {
-            "BLOCK_START" => self.handle_block_start(event).await?,
-            "BLOCK_END" => self.handle_block_end(event).await?,
-            "TX_HEADER" => self.handle_transaction_header(event).await?,
-            "TX_RECEIPT" => self.handle_transaction_receipt(event).await?,
-            "TX_LOG" => self.handle_transaction_log(event).await?,
-            "TX_CALL_FRAME" => self.handle_call_frame(event).await?,
-            "ACCOUNT_ACCESS_LIST_HEADER" => {
-                // Just metadata, we don't need to store it
+    fn add_event_old(&mut self, event: ExecEvent) -> Result<()> {
+        match event {
+            ExecEvent::BlockStart(block_start) => {
+                self.current_txn_idx = None;
+                self.handle_block_start(block_start)?;
             }
-            "ACCOUNT_ACCESS" => self.handle_account_access(event).await?,
-            "STORAGE_ACCESS" => self.handle_storage_access(event).await?,
+            ExecEvent::BlockEnd(block_end) => {
+                self.current_txn_idx = None;
+                self.handle_block_end(block_end)?;
+            }
+            ExecEvent::TxnHeaderStart {
+                txn_index,
+                txn_header_start,
+                data_bytes,
+                blob_bytes: _,
+            } => {
+                self.current_txn_idx = Some(txn_index);
+                self.handle_txn_header(txn_index, txn_header_start, data_bytes)?;
+            }
+            ExecEvent::TxnAccessListEntry {
+                txn_index,
+                txn_access_list_entry,
+                storage_key_bytes,
+            } => {
+                self.handle_txn_access_list_entry(txn_index, txn_access_list_entry, storage_key_bytes)?;
+            }
+            ExecEvent::TxnEvmOutput { txn_index, output } => {
+                self.current_txn_idx = Some(txn_index);
+                self.handle_txn_evm_output(txn_index, output)?;
+            }
+            ExecEvent::TxnEnd => {
+                self.handle_txn_end()?;
+            }
+            ExecEvent::TxnLog { txn_index, txn_log, topic_bytes, data_bytes } => {
+                self.handle_txn_log(txn_index, txn_log, topic_bytes, data_bytes)?;
+            }
+            ExecEvent::TxnCallFrame { txn_index, txn_call_frame, input_bytes, return_bytes } => {
+                self.handle_call_frame(txn_index, txn_call_frame, input_bytes, return_bytes)?;
+            }
+            ExecEvent::AccountAccessListHeader(header) => {
+                self.current_account_idx = 0;
+                let _ = header;
+            }
+            ExecEvent::AccountAccess(account_access) => {
+                let txn_index = self.current_txn_idx;
+                self.current_account_idx = account_access.index as u64;
+                self.handle_account_access(account_access, txn_index)?;
+            }
+            ExecEvent::StorageAccess(storage_access) => {
+                let txn_index = self.current_txn_idx;
+                let _account_index = self.current_account_idx;
+                self.handle_storage_access(storage_access, txn_index)?;
+            }
             _ => {
-                debug!("Unknown event type: {}", event.event_type);
+                debug!("Skipping event type: {:?}", event);
             }
         }
-
         Ok(())
     }
 
-    /// Handle block start events
-    async fn handle_block_start(&mut self, event: ProcessedEvent) -> Result<()> {
-        debug!("Handling block start for block {}", event.block_number);
+    fn handle_block_start(&mut self, block_start: monad_exec_events::ffi::monad_exec_block_start) -> Result<()> {
+        debug!("BlockStart: block #{}", self.block_number);
 
-        let block_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
+        let nonce = u64::from_le_bytes(block_start.eth_block_input.nonce.bytes);
+        let extra_data_len = block_start.eth_block_input.extra_data_length as usize;
 
-        // Extract all header fields
-        if let Some(parent_hash) = block_data["parent_hash"].as_str() {
-            debug!("BLOCK_START parent_hash for block {}: {}", event.block_number, parent_hash);
-            self.parent_hash = ensure_hash_bytes(hex::decode(parent_hash).unwrap_or_default());
-        } else {
-            debug!("BLOCK_START has no parent_hash field for block {}", event.block_number);
-        }
-        if let Some(uncle_hash) = block_data["uncle_hash"].as_str() {
-            self.uncle_hash = ensure_hash_bytes(hex::decode(uncle_hash).unwrap_or_default());
-        }
-        if let Some(coinbase) = block_data["coinbase"].as_str() {
-            self.coinbase = ensure_address_bytes(hex::decode(coinbase).unwrap_or_default());
-        }
-        if let Some(transactions_root) = block_data["transactions_root"].as_str() {
-            self.transactions_root = ensure_hash_bytes(hex::decode(transactions_root).unwrap_or_default());
-        }
-        if let Some(difficulty) = block_data["difficulty"].as_u64() {
-            self.difficulty = difficulty;
-        }
-        if let Some(gas_limit) = block_data["gas_limit"].as_u64() {
-            self.gas_limit = gas_limit;
-        }
-        if let Some(timestamp) = block_data["timestamp"].as_u64() {
-            self.timestamp = timestamp;
-        }
-        if let Some(extra_data) = block_data["extra_data"].as_str() {
-            self.extra_data = hex::decode(extra_data).unwrap_or_default();
-        }
-        if let Some(mix_hash) = block_data["mix_hash"].as_str() {
-            self.mix_hash = ensure_hash_bytes(hex::decode(mix_hash).unwrap_or_default());
-        }
-        if let Some(nonce) = block_data["nonce"].as_u64() {
-            self.nonce = nonce;
-        }
-        if let Some(base_fee_limbs) = block_data["base_fee_per_gas"]["limbs"].as_array() {
-            self.base_fee_per_gas = base_fee_limbs
-                .iter()
-                .map(|v| v.as_u64().unwrap_or(0))
-                .collect();
-        }
-        if let Some(withdrawals_root) = block_data["withdrawals_root"].as_str() {
-            self.withdrawals_root = ensure_hash_bytes(hex::decode(withdrawals_root).unwrap_or_default());
-        }
+        self.parent_hash = ensure_hash_bytes(block_start.parent_eth_hash.bytes.to_vec());
+        self.uncle_hash = ensure_hash_bytes(block_start.eth_block_input.ommers_hash.bytes.to_vec());
+        self.coinbase = ensure_address_bytes(block_start.eth_block_input.beneficiary.bytes.to_vec());
+        self.transactions_root = ensure_hash_bytes(block_start.eth_block_input.transactions_root.bytes.to_vec());
+        self.difficulty = block_start.eth_block_input.difficulty;
+        self.gas_limit = block_start.eth_block_input.gas_limit;
+        self.timestamp = block_start.eth_block_input.timestamp;
+        self.extra_data = block_start.eth_block_input.extra_data.bytes[..extra_data_len].to_vec();
+        self.mix_hash = ensure_hash_bytes(block_start.eth_block_input.prev_randao.bytes.to_vec());
+        self.nonce = nonce;
+        self.base_fee_per_gas = block_start.eth_block_input.base_fee_per_gas.limbs.to_vec();
+        self.withdrawals_root = ensure_hash_bytes(block_start.eth_block_input.withdrawals_root.bytes.to_vec());
 
+        debug!("BLOCK_START parent_hash: {}", hex::encode(&self.parent_hash));
         Ok(())
     }
 
-    async fn handle_block_end(&mut self, event: ProcessedEvent) -> Result<()> {
-        debug!("Handling block end for block {}", event.block_number);
+    fn handle_block_end(&mut self, block_end: monad_exec_events::ffi::monad_exec_block_end) -> Result<()> {
+        debug!("BlockEnd: block #{}", self.block_number);
 
-        let block_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
-
-        if let Some(hash) = block_data["hash"].as_str() {
-            debug!("BLOCK_END hash for block {}: {}", event.block_number, hash);
-            self.block_hash = ensure_hash_bytes(hex::decode(hash).unwrap_or_default());
+        self.block_hash = ensure_hash_bytes(block_end.eth_block_hash.bytes.to_vec());
+        self.state_root = ensure_hash_bytes(block_end.exec_output.state_root.bytes.to_vec());
+        self.receipts_root = ensure_hash_bytes(block_end.exec_output.receipts_root.bytes.to_vec());
+        self.logs_bloom = if block_end.exec_output.logs_bloom.bytes.iter().all(|&b| b == 0) {
+            vec![0u8; 256]
         } else {
-            debug!("BLOCK_END has no hash field for block {}", event.block_number);
-        }
-        if let Some(state_root) = block_data["state_root"].as_str() {
-            self.state_root = ensure_hash_bytes(hex::decode(state_root).unwrap_or_default());
-        }
-        if let Some(receipts_root) = block_data["receipts_root"].as_str() {
-            self.receipts_root = ensure_hash_bytes(hex::decode(receipts_root).unwrap_or_default());
-        }
-        if let Some(logs_bloom) = block_data["logs_bloom"].as_str() {
-            self.logs_bloom = hex::decode(logs_bloom).unwrap_or_else(|_| vec![0u8; 256]);
-        }
-        if let Some(gas_used) = block_data["gas_used"].as_u64() {
-            self.gas_used = gas_used;
-        }
-
-        // Monad's RPC always returns 0x30f (783) for block size its not actually calculated per block
+            block_end.exec_output.logs_bloom.bytes.to_vec()
+        };
+        self.gas_used = block_end.exec_output.gas_used;
         self.size = MONAD_BLOCK_SIZE;
 
+        debug!("BLOCK_END hash: {}", hex::encode(&self.block_hash));
         Ok(())
     }
 
-    /// Handle transaction header events
-    async fn handle_transaction_header(&mut self, event: ProcessedEvent) -> Result<()> {
-        debug!("Handling transaction header");
+    fn handle_txn_header(
+        &mut self,
+        txn_index: usize,
+        txn_header: monad_exec_events::ffi::monad_exec_txn_header_start,
+        data_bytes: Box<[u8]>,
+    ) -> Result<()> {
+        let expected_access_list_count = txn_header.txn_header.access_list_count;
 
-        let tx_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
+        self.pending_txn_headers.insert(txn_index, PendingTxnHeader {
+            txn_header,
+            data_bytes,
+            expected_access_list_count,
+        });
 
-        let txn_index = tx_data["txn_index"].as_u64().unwrap_or(0) as usize;
+        if expected_access_list_count == 0 {
+            self.try_emit_txn_header(txn_index)?;
+        }
 
-        let access_list_entries = parse_access_list(&tx_data);
-        let hash = ensure_hash_bytes(parse_hex_field(&tx_data, "hash"));
-        let from = ensure_address_bytes(parse_hex_field(&tx_data, "from"));
-        let to = match tx_data["to"].as_str() {
-            Some(s) if !s.is_empty() => ensure_address_bytes(hex::decode(s).unwrap_or_default()),
-            _ => vec![],
+        Ok(())
+    }
+
+    fn handle_txn_access_list_entry(
+        &mut self,
+        txn_index: usize,
+        entry: monad_exec_events::ffi::monad_exec_txn_access_list_entry,
+        storage_key_bytes: Box<[u8]>,
+    ) -> Result<()> {
+        let mut storage_keys = Vec::new();
+        for i in 0..entry.entry.storage_key_count as usize {
+            let start = i * 32;
+            let end = start + 32;
+            if end <= storage_key_bytes.len() {
+                storage_keys.push(storage_key_bytes[start..end].to_vec());
+            }
+        }
+
+        let access_tuple = AccessTuple {
+            address: entry.entry.address.bytes.to_vec(),
+            storage_keys,
         };
-        let nonce = tx_data["nonce"].as_u64().unwrap_or(0);
-        let gas_limit = tx_data["gas_limit"].as_u64().unwrap_or(0);
-        let input = parse_hex_field(&tx_data, "input");
-        let txn_type = tx_data["txn_type"].as_u64().unwrap_or(2) as u32;
 
-        let value = parse_u256_limbs(&tx_data, "value");
-        let max_fee_limbs = parse_u256_limbs_raw(&tx_data, "max_fee_per_gas");
-        let max_priority_fee_limbs = parse_u256_limbs_raw(&tx_data, "max_priority_fee_per_gas");
+        self.pending_access_lists.entry(txn_index).or_default().push(access_tuple);
+        self.try_emit_txn_header(txn_index)?;
+        Ok(())
+    }
 
+    fn try_emit_txn_header(&mut self, txn_index: usize) -> Result<()> {
+        let pending = match self.pending_txn_headers.get(&txn_index) {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+
+        let collected_count = self.pending_access_lists
+            .get(&txn_index)
+            .map(|l| l.len())
+            .unwrap_or(0);
+
+        if collected_count < pending.expected_access_list_count as usize {
+            return Ok(());
+        }
+
+        let pending = self.pending_txn_headers.remove(&txn_index).unwrap();
+        let access_list = self.pending_access_lists.remove(&txn_index).unwrap_or_default();
+
+        let txn_type = pending.txn_header.txn_header.txn_type as u32;
+        let max_fee_limbs = pending.txn_header.txn_header.max_fee_per_gas.limbs.to_vec();
+        let max_priority_fee_limbs = pending.txn_header.txn_header.max_priority_fee_per_gas.limbs.to_vec();
         let gas_price = self.calculate_effective_gas_price(&max_fee_limbs, &max_priority_fee_limbs, txn_type);
 
-        let r = parse_u256_limbs(&tx_data, "r");
-        let s = parse_u256_limbs(&tx_data, "s");
-        let chain_id = parse_u256_limbs_raw(&tx_data, "chain_id")[0];
+        let value = u256_limbs_to_bytes(&pending.txn_header.txn_header.value.limbs);
+        let r = u256_limbs_to_bytes(&pending.txn_header.txn_header.r.limbs);
+        let s = u256_limbs_to_bytes(&pending.txn_header.txn_header.s.limbs);
+        let chain_id = pending.txn_header.txn_header.chain_id.limbs.first().copied().unwrap_or(0);
+        let y_parity = pending.txn_header.txn_header.y_parity;
 
-        let y_parity = tx_data["y_parity"].as_bool().unwrap_or(false);
-
-        // Calculate proper v based on transaction type
         let v = match txn_type {
             0 => {
-                // Legacy transaction: EIP-155 v = chain_id * 2 + 35 + y_parity
                 let v_value = chain_id * 2 + 35 + (y_parity as u64);
-                // Encode as big-endian bytes with leading zero trimming
                 encode_v_bytes(v_value)
             }
             2 => {
-                // EIP-1559 transaction: v = y_parity (0 or 1)
-                // Use empty vec for 0
-                if y_parity {
-                    vec![1]
-                } else {
-                    vec![]
-                }
+                if y_parity { vec![1] } else { vec![] }
             }
             _ => {
-                // Default to y_parity
-                if y_parity {
-                    vec![1]
-                } else {
-                    vec![]
-                }
+                if y_parity { vec![1] } else { vec![] }
             }
         };
 
-        let tx_trace = TransactionTrace {
+        let hash = ensure_hash_bytes(pending.txn_header.txn_hash.bytes.to_vec());
+        let from = ensure_address_bytes(pending.txn_header.sender.bytes.to_vec());
+        let to = {
+            let raw = pending.txn_header.txn_header.to.bytes.to_vec();
+            if raw.is_empty() { vec![] } else { ensure_address_bytes(raw) }
+        };
+
+        let trace = TransactionTrace {
             index: txn_index as u32,
             hash,
             from,
             to,
-            nonce,
-            gas_limit,
-            value: Some(BigInt { bytes: value }),
+            nonce: pending.txn_header.txn_header.nonce,
+            gas_limit: pending.txn_header.txn_header.gas_limit,
+            value: if value.iter().any(|&b| b != 0) { Some(BigInt { bytes: value }) } else { None },
             gas_price: Some(BigInt { bytes: gas_price }),
             max_fee_per_gas: if txn_type == 2 {
                 Some(BigInt { bytes: u256_limbs_to_bytes(&max_fee_limbs) })
@@ -567,39 +444,41 @@ impl BlockBuilder {
             } else {
                 None
             },
-            input,
+            input: pending.data_bytes.to_vec(),
             v,
             r,
             s,
             r#type: txn_type as i32,
-            access_list: access_list_entries,
-            begin_ordinal: 0, // Will be properly set during finalization
-            end_ordinal: 0,   // Will be properly set during finalization
+            access_list,
+            begin_ordinal: 0,
+            end_ordinal: 0,
             ..Default::default()
         };
 
-        self.transactions_map.insert(txn_index, tx_trace);
-
+        self.txns.insert(txn_index, TxState {
+            trace,
+            pending_calls: Vec::new(),
+            pending_balance_changes: Vec::new(),
+            pending_nonce_changes: Vec::new(),
+            pending_storage_changes: Vec::new(),
+        });
         Ok(())
     }
 
-    async fn handle_transaction_receipt(&mut self, event: ProcessedEvent) -> Result<()> {
-        debug!("Handling transaction receipt");
+    fn handle_txn_evm_output(
+        &mut self,
+        txn_index: usize,
+        output: monad_exec_events::ffi::monad_exec_txn_evm_output,
+    ) -> Result<()> {
+        debug!("TxnEvmOutput: txn_index={}, status={}, gas_used={}", txn_index, output.receipt.status, output.receipt.gas_used);
 
-        let receipt_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
+        // TODO: use index if parallel
+        self.cumulative_gas_used += output.receipt.gas_used;
 
-        let txn_index = receipt_data["txn_index"].as_u64().unwrap_or(0) as usize;
-        let status = receipt_data["status"].as_bool().unwrap_or(false);
-        let gas_used = receipt_data["gas_used"].as_u64().unwrap_or(0);
-
-        self.cumulative_gas_used += gas_used;
-
-        if let Some(tx) = self.transactions_map.get_mut(&txn_index) {
-            tx.gas_used = gas_used;
-            tx.status = if status { 1 } else { 2 };
-
-            // Create receipt with empty bloom - will be calculated in finalize() after logs are added
-            tx.receipt = Some(pb::sf::ethereum::r#type::v2::TransactionReceipt {
+        if let Some(tx) = self.txns.get_mut(&txn_index) {
+            tx.trace.gas_used = output.receipt.gas_used;
+            tx.trace.status = if output.receipt.status { 1 } else { 2 };
+            tx.trace.receipt = Some(firehose::pb::sf::ethereum::r#type::v2::TransactionReceipt {
                 cumulative_gas_used: self.cumulative_gas_used,
                 logs_bloom: vec![0u8; 256],
                 logs: Vec::new(),
@@ -610,195 +489,378 @@ impl BlockBuilder {
         Ok(())
     }
 
-    async fn handle_transaction_log(&mut self, event: ProcessedEvent) -> Result<()> {
-        debug!("Handling transaction log");
+    fn handle_txn_log(
+        &mut self,
+        txn_index: usize,
+        log: monad_exec_events::ffi::monad_exec_txn_log,
+        topic_bytes: Box<[u8]>,
+        data_bytes: Box<[u8]>,
+    ) -> Result<()> {
+        let mut topics = Vec::new();
+        for i in 0..log.topic_count as usize {
+            let start = i * 32;
+            let end = start + 32;
+            if end <= topic_bytes.len() {
+                topics.push(ensure_hash_bytes(topic_bytes[start..end].to_vec()));
+            }
+        }
 
-        let log_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
-
-        let txn_index = log_data["txn_index"].as_u64().unwrap_or(0) as usize;
-        let address = ensure_address_bytes(hex::decode(log_data["address"].as_str().unwrap_or("")).unwrap_or_default());
-        let topics = log_data["topics"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| hex::decode(v.as_str().unwrap_or("")).ok().map(ensure_hash_bytes))
-                    .collect::<Vec<Vec<u8>>>()
-            })
-            .unwrap_or_default();
-        let data = hex::decode(log_data["data"].as_str().unwrap_or("")).unwrap_or_default();
-
-        // This counter tracks all logs across all transactions in the block
         let log_index = self.total_log_count as u32;
         self.total_log_count += 1;
 
-        let log = pb::sf::ethereum::r#type::v2::Log {
-            address,
+        let log_entry = firehose::pb::sf::ethereum::r#type::v2::Log {
+            address: ensure_address_bytes(log.address.bytes.to_vec()),
             topics,
-            data,
+            data: data_bytes.to_vec(),
             index: log_index,
             block_index: log_index,
             ..Default::default()
         };
 
-        if let Some(tx) = self.transactions_map.get_mut(&txn_index) {
-            if let Some(receipt) = tx.receipt.as_mut() {
-                receipt.logs.push(log);
+        if let Some(tx) = self.txns.get_mut(&txn_index) {
+            if let Some(receipt) = tx.trace.receipt.as_mut() {
+                receipt.logs.push(log_entry);
             }
         }
 
         Ok(())
     }
 
-    /// Handle call frame event - execution trace data
-    async fn handle_call_frame(&mut self, event: ProcessedEvent) -> Result<()> {
-        debug!("Handling call frame");
+    fn handle_call_frame(
+        &mut self,
+        txn_index: Option<usize>,
+        call_frame: monad_exec_events::ffi::monad_exec_txn_call_frame,
+        input_bytes: Box<[u8]>,
+        return_bytes: Box<[u8]>,
+    ) -> Result<()> {
+        let call = Self::build_call_from_frame(&call_frame, &input_bytes, &return_bytes);
 
-        let call_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
-
-        let value_limbs = call_data["value"]["limbs"]
-            .as_array()
-            .map(|arr| arr.iter().map(|v| v.as_u64().unwrap_or(0)).collect::<Vec<u64>>())
-            .unwrap_or_else(|| vec![0u64; 4]);
-
-        // Debug log for system calls
-        if call_data["txn_index"].is_null() {
-            debug!("System call frame raw data - input field: {:?}", call_data["input"]);
-            debug!("System call frame raw data - call_target: {:?}", call_data["call_target"]);
-        }
-
-        let call_frame = CallFrameData {
-            index: call_data["index"].as_u64().unwrap_or(0) as u32,
-            caller: hex::decode(call_data["caller"].as_str().unwrap_or("")).unwrap_or_default(),
-            call_target: hex::decode(call_data["call_target"].as_str().unwrap_or("")).unwrap_or_default(),
-            opcode: call_data["opcode"].as_u64().unwrap_or(0) as u8,
-            value: u256_limbs_to_bytes(&value_limbs),
-            gas: call_data["gas"].as_u64().unwrap_or(0),
-            gas_used: call_data["gas_used"].as_u64().unwrap_or(0),
-            evmc_status: call_data["evmc_status"].as_i64().unwrap_or(0) as i32,
-            depth: call_data["depth"].as_u64().unwrap_or(0),
-            input: hex::decode(call_data["input"].as_str().unwrap_or("")).unwrap_or_default(),
-            return_data: hex::decode(call_data["return_data"].as_str().unwrap_or("")).unwrap_or_default(),
-        };
-
-        // Check if this is a system call (BLOCK_PROLOGUE) by checking if txn_index is present
-        // System calls from our C++ changes are block-level events without a txn_index
-        if let Some(txn_index) = call_data["txn_index"].as_u64() {
-            // Regular transaction call frame
-            self.call_frames.entry(txn_index as usize).or_default().push(call_frame);
+        if let Some(idx) = txn_index {
+            if let Some(tx) = self.txns.get_mut(&idx) {
+                tx.pending_calls.push(call);
+            }
         } else {
-            // System call frame (BLOCK_PROLOGUE) - store separately
-            debug!("BLOCK_PROLOGUE call frame detected for address: {}", hex::encode(&call_frame.call_target));
-            self.system_calls_call_frames.push(call_frame);
+            debug!("BLOCK_PROLOGUE call frame for: {}", hex::encode(call_frame.call_target.bytes));
+            // System calls: group by address at finalize time — store directly
+            self.system_calls_calls.push(call);
         }
 
         Ok(())
     }
 
-    /// Handle account access event - balance/nonce changes
-    async fn handle_account_access(&mut self, event: ProcessedEvent) -> Result<()> {
-        debug!("Handling account access");
+    fn build_call_from_frame(
+        call_frame: &monad_exec_events::ffi::monad_exec_txn_call_frame,
+        input_bytes: &[u8],
+        return_bytes: &[u8],
+    ) -> firehose::pb::sf::ethereum::r#type::v2::Call {
+        let firehose_index = call_frame.index + 1;
+        let call_type = opcode_to_call_type(call_frame.opcode as u8);
+        let normalized_call_target = ensure_address_bytes(call_frame.call_target.bytes.to_vec());
+        let is_precompile = is_precompile_address(&normalized_call_target);
+        let status_reverted = call_frame.evmc_status == 2 || call_frame.evmc_status == 17;
+        let status_failed = call_frame.evmc_status != 0;
+        let failure_reason = evmc_status_to_failure_reason(call_frame.evmc_status);
+        let value = u256_limbs_to_bytes(&call_frame.value.limbs);
 
-        let access_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
-
-        // DEBUG: Log raw account access data
-        debug!("Raw account access data: {}", serde_json::to_string_pretty(&access_data).unwrap_or_default());
-
-        // txn_index is Option<usize> from the event
-        // If None, these are block-level changes (associate with transaction 0)
-        let txn_index = access_data["txn_index"].as_u64().map(|i| i as usize).unwrap_or(0);
-
-        let prestate_balance_limbs = access_data["prestate"]["balance"]["limbs"]
-            .as_array()
-            .map(|arr| arr.iter().map(|v| v.as_u64().unwrap_or(0)).collect::<Vec<u64>>())
-            .unwrap_or_else(|| vec![0u64; 4]);
-
-        let modified_balance_limbs = access_data["modified_balance"]["limbs"]
-            .as_array()
-            .map(|arr| arr.iter().map(|v| v.as_u64().unwrap_or(0)).collect::<Vec<u64>>())
-            .unwrap_or_else(|| vec![0u64; 4]);
-
-        debug!("Parsed balance limbs - prestate: {:?}, modified: {:?}", prestate_balance_limbs, modified_balance_limbs);
-
-        let prestate_balance_bytes = u256_limbs_to_bytes(&prestate_balance_limbs);
-        let modified_balance_bytes = u256_limbs_to_bytes(&modified_balance_limbs);
-
-        debug!("Balance bytes - prestate: {} bytes, modified: {} bytes",
-               prestate_balance_bytes.len(), modified_balance_bytes.len());
-        if !prestate_balance_bytes.is_empty() {
-            debug!("  prestate hex: {}", hex::encode(&prestate_balance_bytes));
-        }
-        if !modified_balance_bytes.is_empty() {
-            debug!("  modified hex: {}", hex::encode(&modified_balance_bytes));
-        }
-
-        let account_access = AccountAccessData {
-            index: access_data["index"].as_u64().unwrap_or(0) as u32,
-            address: hex::decode(access_data["address"].as_str().unwrap_or("")).unwrap_or_default(),
-            access_context: access_data["access_context"].as_u64().unwrap_or(1) as u8,
-            is_balance_modified: access_data["is_balance_modified"].as_bool().unwrap_or(false),
-            is_nonce_modified: access_data["is_nonce_modified"].as_bool().unwrap_or(false),
-            prestate_balance: prestate_balance_bytes,
-            prestate_nonce: access_data["prestate"]["nonce"].as_u64().unwrap_or(0),
-            modified_balance: modified_balance_bytes,
-            modified_nonce: access_data["modified_nonce"].as_u64().unwrap_or(0),
-            storage_key_count: access_data["storage_key_count"].as_u64().unwrap_or(0) as u32,
+        let is_call_opcode = call_frame.opcode == 0xF1;
+        let is_pure_transfer = is_call_opcode
+            && call_frame.depth == 0
+            && input_bytes.is_empty()
+            && return_bytes.is_empty()
+            && !is_precompile;
+        let executed_code = if is_precompile {
+            true
+        } else if is_pure_transfer {
+            false
+        } else {
+            call_frame.gas_used > 0
         };
 
-        debug!("Created AccountAccessData - address: {}, access_context: {}, balance_modified: {}, nonce_modified: {}",
-               hex::encode(&account_access.address),
-               account_access.access_context,
-               account_access.is_balance_modified,
-               account_access.is_nonce_modified);
+        let state_reverted = call_frame.evmc_status != 0;
 
-        // BLOCK_PROLOGUE (context = 0) are system calls that should be separate from transactions
-        if account_access.access_context == 0 {
-            debug!("BLOCK_PROLOGUE account access detected for address: {}", hex::encode(&account_access.address));
-            self.system_calls_account_accesses.push(account_access);
+        let is_create = call_frame.opcode == 0xF0 || call_frame.opcode == 0xF5;
+        let is_successful_create = is_create && call_frame.evmc_status == 0 && !return_bytes.is_empty();
+        let return_data = if is_successful_create { vec![] } else { return_bytes.to_vec() };
+        let code_changes = if is_successful_create {
+            let target_addr = ensure_address_bytes(call_frame.call_target.bytes.to_vec());
+            // old_hash is always the empty code hash (keccak256 of empty bytes) for a new contract
+            vec![CodeChange {
+                old_hash: keccak256(&[]).to_vec(),
+                new_hash: keccak256(return_bytes).to_vec(),
+                new_code: return_bytes.to_vec(),
+                address: target_addr,
+                old_code: vec![],
+                ordinal: 0,
+            }]
         } else {
-            // Regular transaction account accesses
-            self.account_accesses.entry(txn_index).or_default().push(account_access);
+            vec![]
+        };
+
+        firehose::pb::sf::ethereum::r#type::v2::Call {
+            index: firehose_index,
+            parent_index: 0, // assigned below in assign_parent_indices
+            depth: call_frame.depth as u32,
+            call_type: call_type as i32,
+            caller: ensure_address_bytes(call_frame.caller.bytes.to_vec()),
+            address: normalized_call_target,
+            value: if value.iter().any(|&b| b != 0) { Some(BigInt { bytes: value }) } else { None },
+            gas_limit: call_frame.gas,
+            gas_consumed: call_frame.gas_used,
+            return_data,
+            input: input_bytes.to_vec(),
+            executed_code,
+            suicide: call_frame.opcode == 0xFF,
+            status_failed,
+            status_reverted,
+            state_reverted,
+            failure_reason,
+            code_changes,
+            ..Default::default()
+        }
+    }
+
+    fn assign_parent_indices(calls: &mut Vec<firehose::pb::sf::ethereum::r#type::v2::Call>) {
+        let mut parent_stack: Vec<u32> = Vec::new();
+        for call in calls.iter_mut() {
+            let depth = call.depth as usize;
+            call.parent_index = if depth == 0 {
+                0
+            } else if depth <= parent_stack.len() {
+                parent_stack[depth - 1]
+            } else {
+                call.index
+            };
+
+            if depth >= parent_stack.len() {
+                parent_stack.resize(depth + 1, call.index);
+            } else {
+                parent_stack[depth] = call.index;
+                parent_stack.truncate(depth + 1);
+            }
+        }
+    }
+
+    fn handle_txn_end(&mut self) -> Result<()> {
+        let txn_index = self.current_txn_idx.unwrap_or(0);
+        debug!("TX_END: finalizing tx #{}", txn_index);
+
+        let tx = match self.txns.get_mut(&txn_index) {
+            Some(t) => t,
+            None => {
+                debug!("TX_END: no transaction found for index {}", txn_index);
+                return Ok(());
+            }
+        };
+
+        if !tx.pending_calls.is_empty() {
+            tx.trace.calls = std::mem::take(&mut tx.pending_calls);
+            Self::assign_parent_indices(&mut tx.trace.calls);
+
+            // Propagate state_reverted down the call tree
+            let reverted: std::collections::HashSet<u32> = tx.trace.calls.iter()
+                .filter(|c| c.state_reverted)
+                .map(|c| c.index)
+                .collect();
+            let mut reverted_indices = reverted;
+            for i in 0..tx.trace.calls.len() {
+                if reverted_indices.contains(&tx.trace.calls[i].parent_index) {
+                    tx.trace.calls[i].state_reverted = true;
+                    reverted_indices.insert(tx.trace.calls[i].index);
+                }
+            }
+
+            // Fill in contract creation `to` from the root frame's deployed address
+            if tx.trace.to.is_empty() || tx.trace.to == vec![0u8; 20] {
+                if let Some(root_call) = tx.trace.calls.first() {
+                    if root_call.address != vec![0u8; 20] {
+                        tx.trace.to = root_call.address.clone();
+                    }
+                }
+            }
+        }
+
+        // No call frames — synthetic root call
+        if tx.trace.calls.is_empty() {
+            debug!("TX_END: creating synthetic root call for tx #{}", txn_index);
+            let root_call = firehose::pb::sf::ethereum::r#type::v2::Call {
+                index: 1,
+                parent_index: 0,
+                depth: 0,
+                call_type: if tx.trace.to.is_empty() || tx.trace.to == vec![0u8; 20] {
+                    firehose::pb::sf::ethereum::r#type::v2::CallType::Create as i32
+                } else {
+                    firehose::pb::sf::ethereum::r#type::v2::CallType::Call as i32
+                },
+                caller: tx.trace.from.clone(),
+                address: tx.trace.to.clone(),
+                value: tx.trace.value.clone(),
+                gas_limit: 0,
+                gas_consumed: 0,
+                return_data: Vec::new(),
+                input: tx.trace.input.clone(),
+                executed_code: false,
+                suicide: false,
+                status_failed: tx.trace.status != 1,
+                status_reverted: false,
+                failure_reason: String::new(),
+                state_reverted: false,
+                ..Default::default()
+            };
+            tx.trace.calls.push(root_call);
+        }
+
+        if let Some(root_call) = tx.trace.calls.first_mut() {
+            if let Some(ref receipt) = tx.trace.receipt {
+                root_call.logs = receipt.logs.clone();
+            }
+        }
+
+        // Flush pending state changes onto root call
+        if !tx.pending_balance_changes.is_empty() || !tx.pending_nonce_changes.is_empty() || !tx.pending_storage_changes.is_empty() {
+            if let Some(root_call) = tx.trace.calls.first_mut() {
+                root_call.balance_changes.extend(std::mem::take(&mut tx.pending_balance_changes));
+                root_call.nonce_changes.extend(std::mem::take(&mut tx.pending_nonce_changes));
+                root_call.storage_changes.extend(std::mem::take(&mut tx.pending_storage_changes));
+            }
+        }
+
+        if let Some(root_call) = tx.trace.calls.first() {
+            use firehose::pb::sf::ethereum::r#type::v2::TransactionTraceStatus;
+            if tx.trace.status != TransactionTraceStatus::Succeeded as i32 {
+                tx.trace.status = if root_call.status_reverted {
+                    TransactionTraceStatus::Reverted as i32
+                } else {
+                    TransactionTraceStatus::Failed as i32
+                };
+            }
+            tx.trace.return_data = root_call.return_data.clone();
         }
 
         Ok(())
     }
 
-    /// Handle storage access event - storage slot modifications
-    async fn handle_storage_access(&mut self, event: ProcessedEvent) -> Result<()> {
-        debug!("Handling storage access");
+    fn handle_account_access(
+        &mut self,
+        account_access: monad_exec_events::ffi::monad_exec_account_access,
+        txn_index: Option<usize>,
+    ) -> Result<()> {
+        use firehose::pb::sf::ethereum::r#type::v2::{BalanceChange, BigInt as PbBigInt, NonceChange};
+        use firehose::pb::sf::ethereum::r#type::v2::balance_change::Reason as BalanceReason;
 
-        let storage_data: serde_json::Value = serde_json::from_slice(&event.firehose_data)?;
+        let prestate_balance = u256_limbs_to_bytes(&account_access.prestate.balance.limbs);
+        let modified_balance = u256_limbs_to_bytes(&account_access.modified_balance.limbs);
+        let address = ensure_address_bytes(account_access.address.bytes.to_vec());
 
-        // txn_index is Option<usize> from the event
-        // If None, these are block-level changes (associate with transaction 0)
-        let txn_index = storage_data["txn_index"].as_u64().map(|i| i as usize).unwrap_or(0);
-        // access_context: 0=BLOCK_PROLOGUE, 1=TRANSACTION, 2=BLOCK_EPILOGUE
-        let access_context = storage_data["access_context"].as_u64().unwrap_or(1) as u8;
+        debug!("ACCOUNT_ACCESS: addr={} ctx={} bal_mod={} nonce_mod={}",
+               hex::encode(&address), account_access.access_context as u8,
+               account_access.is_balance_modified, account_access.is_nonce_modified);
 
-        let storage_access = StorageAccessData {
-            address: hex::decode(storage_data["address"].as_str().unwrap_or("")).unwrap_or_default(),
-            index: storage_data["index"].as_u64().unwrap_or(0) as u32,
-            modified: storage_data["modified"].as_bool().unwrap_or(false),
-            transient: storage_data["transient"].as_bool().unwrap_or(false),
-            key: hex::decode(storage_data["key"].as_str().unwrap_or("")).unwrap_or_default(),
-            start_value: hex::decode(storage_data["start_value"].as_str().unwrap_or("")).unwrap_or_default(),
-            end_value: hex::decode(storage_data["end_value"].as_str().unwrap_or("")).unwrap_or_default(),
-        };
+        if account_access.access_context as u8 == 0 {
+            // BLOCK_PROLOGUE — buffer for finalize
+            self.system_calls_account_accesses.push((
+                address,
+                account_access.is_balance_modified,
+                prestate_balance,
+                modified_balance,
+                account_access.is_nonce_modified,
+                account_access.prestate.nonce,
+                account_access.modified_nonce,
+            ));
+            return Ok(());
+        }
 
-        // BLOCK_PROLOGUE (context = 0) storage accesses are system call related
+        let txn_index = txn_index.unwrap_or(0);
+
+        if let Some(tx) = self.txns.get_mut(&txn_index) {
+            if let Some(root_call) = tx.trace.calls.first_mut() {
+                if account_access.is_balance_modified {
+                    root_call.balance_changes.push(BalanceChange {
+                        address: address.clone(),
+                        old_value: Some(PbBigInt { bytes: prestate_balance }),
+                        new_value: Some(PbBigInt { bytes: modified_balance }),
+                        reason: BalanceReason::MonadTxPostState as i32,
+                        ordinal: 0,
+                    });
+                }
+                if account_access.is_nonce_modified {
+                    root_call.nonce_changes.push(NonceChange {
+                        address,
+                        old_value: account_access.prestate.nonce,
+                        new_value: account_access.modified_nonce,
+                        ordinal: 0,
+                    });
+                }
+            } else {
+                // Call tree not built yet, buffer until TxnEnd
+                if account_access.is_balance_modified {
+                    tx.pending_balance_changes.push(BalanceChange {
+                        address: address.clone(),
+                        old_value: Some(PbBigInt { bytes: prestate_balance }),
+                        new_value: Some(PbBigInt { bytes: modified_balance }),
+                        reason: BalanceReason::MonadTxPostState as i32,
+                        ordinal: 0,
+                    });
+                }
+                if account_access.is_nonce_modified {
+                    tx.pending_nonce_changes.push(NonceChange {
+                        address,
+                        old_value: account_access.prestate.nonce,
+                        new_value: account_access.modified_nonce,
+                        ordinal: 0,
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn handle_storage_access(
+        &mut self,
+        storage_access: monad_exec_events::ffi::monad_exec_storage_access,
+        txn_index: Option<usize>,
+    ) -> Result<()> {
+        use firehose::pb::sf::ethereum::r#type::v2::StorageChange;
+
+        let access_context = storage_access.access_context as u8;
+        let address = ensure_address_bytes(storage_access.address.bytes.to_vec());
+
         if access_context == 0 {
-            debug!("BLOCK_PROLOGUE storage access detected for address: {}", hex::encode(&storage_access.address));
-            self.system_calls_storage_accesses.push(storage_access);
-        } else {
-            self.storage_accesses.entry(txn_index).or_default().push(storage_access);
+            if storage_access.modified && !storage_access.transient {
+                self.system_calls_storage_accesses.push((
+                    address,
+                    storage_access.key.bytes.to_vec(),
+                    storage_access.start_value.bytes.to_vec(),
+                    storage_access.end_value.bytes.to_vec(),
+                ));
+            }
+            return Ok(());
+        }
+
+        if !storage_access.modified || storage_access.transient {
+            return Ok(());
+        }
+
+        let txn_index = txn_index.unwrap_or(0);
+
+        if let Some(tx) = self.txns.get_mut(&txn_index) {
+            let change = StorageChange {
+                address,
+                key: ensure_hash_bytes(storage_access.key.bytes.to_vec()),
+                old_value: ensure_hash_bytes(storage_access.start_value.bytes.to_vec()),
+                new_value: ensure_hash_bytes(storage_access.end_value.bytes.to_vec()),
+                ordinal: 0,
+            };
+            if let Some(root_call) = tx.trace.calls.first_mut() {
+                root_call.storage_changes.push(change);
+            } else {
+                tx.pending_storage_changes.push(change);
+            }
         }
 
         Ok(())
     }
 
-    /// Calculate gas price for a transaction
-    /// Standard EIP-1559 behavior:
-    /// - Type 0 (Legacy): uses max_fee_per_gas as the gas price
-    /// - Type 2 (Dynamic Fee): effective_price = min(max_fee_per_gas, base_fee_per_gas + max_priority_fee_per_gas)
     fn calculate_effective_gas_price(
         &self,
         max_fee_limbs: &[u64],
@@ -806,690 +868,160 @@ impl BlockBuilder {
         txn_type: u32,
     ) -> Vec<u8> {
         match txn_type {
-            0 => {
-                // Legacy transactions: gas_price = max_fee_per_gas
-                u256_limbs_to_bytes(max_fee_limbs)
-            }
+            0 => u256_limbs_to_bytes(max_fee_limbs),
             2 => {
-                // EIP-1559: effective_gas_price = min(max_fee_per_gas, base_fee_per_gas + max_priority_fee_per_gas)
                 let max_fee = u256_limbs_to_bytes(max_fee_limbs);
                 let priority_fee = u256_limbs_to_bytes(priority_fee_limbs);
                 let base_fee = u256_limbs_to_bytes(&self.base_fee_per_gas);
-
-                // Calculate base_fee + priority_fee
                 let sum = add_u256_bytes(&base_fee, &priority_fee);
-
-                if compare_u256_bytes(&max_fee, &sum) <= 0 {
-                    max_fee
-                } else {
-                    sum
-                }
+                if compare_u256_bytes(&max_fee, &sum) <= 0 { max_fee } else { sum }
             }
-            _ => {
-
-                u256_limbs_to_bytes(max_fee_limbs)
-            }
+            _ => u256_limbs_to_bytes(max_fee_limbs),
         }
     }
 
-    /// Build call tree from call frames
-    /// Converts flat list of call frames into hierarchical Call structures
-    fn build_call_tree(call_frames: &[CallFrameData], _txn_index: usize) -> Vec<pb::sf::ethereum::r#type::v2::Call> {
-        use pb::sf::ethereum::r#type::v2::gas_change::Reason as GasReason;
-        use pb::sf::ethereum::r#type::v2::GasChange;
-
-        // Track parent indices based on depth changes
-        // parent_stack[depth] = index of call at that depth
-        let mut parent_stack: Vec<u32> = Vec::new();
-
-        call_frames.iter().map(|frame| {
-            let depth = frame.depth as usize;
-
-            // Determine parent_index based on depth
-            let parent_index = if depth == 0 {
-                // Root call - parent is always 0
-                0
-            } else if depth <= parent_stack.len() && depth > 0 {
-                // Child call - parent is the call at depth-1
-                parent_stack[depth - 1]
-            } else {
-                // Shouldn't happen, but fallback to previous call
-                frame.index.saturating_sub(1)
-            };
-
-            // Update parent stack for this depth level
-            if depth >= parent_stack.len() {
-                parent_stack.resize(depth + 1, frame.index);
-            } else {
-                parent_stack[depth] = frame.index;
-                // Truncate stack when returning from deeper calls
-                parent_stack.truncate(depth + 1);
-            }
-
-            // Map opcode to CallType
-            let call_type = Self::opcode_to_call_type(frame.opcode);
-
-            // Map EVMC status to Firehose status
-            // EVMC_SUCCESS = 0
-            // EVMC_FAILURE = 1
-            // EVMC_REVERT = 2
-            // EVMC_OUT_OF_GAS = 3
-            let status_reverted = frame.evmc_status == 2;
-            let status_failed = frame.evmc_status != 0 && frame.evmc_status != 2;
-
-            let failure_reason = match frame.evmc_status {
-                0 => String::new(),
-                1 => "execution failed".to_string(),
-                2 => "execution reverted".to_string(),
-                3 => "out of gas".to_string(),
-                4 => "invalid instruction".to_string(),
-                5 => "undefined instruction".to_string(),
-                6 => "stack overflow".to_string(),
-                7 => "stack underflow".to_string(),
-                8 => "bad jump destination".to_string(),
-                9 => "invalid memory access".to_string(),
-                10 => "call depth exceeded".to_string(),
-                11 => "static mode violation".to_string(),
-                12 => "precompile failure".to_string(),
-                13 => "contract validation failure".to_string(),
-                14 => "argument out of range".to_string(),
-                15 => "wasm unreachable instruction".to_string(),
-                16 => "wasm trap".to_string(),
-                17 => "insufficient balance".to_string(),
-                _ => format!("unknown error (status {})", frame.evmc_status),
-            };
-
-            pb::sf::ethereum::r#type::v2::Call {
-                index: frame.index,
-                parent_index,
-                depth: frame.depth as u32,
-                call_type: call_type as i32,
-                caller: ensure_address_bytes(frame.caller.clone()),
-                address: ensure_address_bytes(frame.call_target.clone()),
-                value: Some(BigInt { bytes: frame.value.clone() }),
-                gas_limit: frame.gas,
-                gas_consumed: frame.gas_used,
-                return_data: frame.return_data.clone(),
-                input: frame.input.clone(),
-                executed_code: !frame.input.is_empty(),
-                suicide: false,
-                status_failed,
-                status_reverted,
-                failure_reason,
-                ..Default::default()
-            }
-        }).collect()
-    }
-
-    /// Map EVM opcode to CallType enum
-    fn opcode_to_call_type(opcode: u8) -> pb::sf::ethereum::r#type::v2::CallType {
-        match opcode {
-            0xF0 => pb::sf::ethereum::r#type::v2::CallType::Create,       // CREATE
-            0xF5 => pb::sf::ethereum::r#type::v2::CallType::Create,       // CREATE2
-            0xF1 => pb::sf::ethereum::r#type::v2::CallType::Call,         // CALL
-            0xF4 => pb::sf::ethereum::r#type::v2::CallType::Delegate, // DELEGATECALL
-            0xF2 => pb::sf::ethereum::r#type::v2::CallType::Callcode,     // CALLCODE
-            0xFA => pb::sf::ethereum::r#type::v2::CallType::Static,       // STATICCALL
-            _ => pb::sf::ethereum::r#type::v2::CallType::Call,            // Default to CALL
-        }
-    }
-
-    fn add_basic_gas_changes(_call: &mut pb::sf::ethereum::r#type::v2::Call, _gas_limit: u64, _gas_used: u64) {
-    }
-
-    /// Populate balance changes, nonce changes, and storage changes from account accesses
-    /// NOTE: Gas changes are now handled per-call in build_call_tree, so this function
-    /// only adds balance changes, nonce changes, and storage changes.
-    /// Returns true if a suicide (SELFDESTRUCT) was detected.
-    #[allow(clippy::too_many_arguments)]
-    fn populate_state_changes_from_accesses(
-        call: &mut pb::sf::ethereum::r#type::v2::Call,
-        account_accesses: &[AccountAccessData],
-        storage_accesses: Option<&Vec<StorageAccessData>>,
-        from: &[u8],
-        to: &[u8],
-        value: Option<&BigInt>,
-        gas_limit: u64,
-        gas_used: u64,
-        gas_price: Option<&BigInt>,
-        coinbase: &[u8],
-    ) -> bool {
-        use pb::sf::ethereum::r#type::v2::balance_change::Reason as BalanceReason;
-        use pb::sf::ethereum::r#type::v2::{BalanceChange, NonceChange, StorageChange};
-
-        let mut has_suicide = false;
-
-        // Calculate gas cost for GAS_BUY balance change
-        let gas_cost = if let Some(gp) = gas_price {
-            // gas_cost = gas_limit * gas_price
-            multiply_u256_by_u64(&gp.bytes, gas_limit)
-        } else {
-            vec![]
-        };
-
-        // Process account accesses for balance and nonce changes
-        for access in account_accesses {
-            let address = ensure_address_bytes(access.address.clone());
-
-            // Add nonce change if modified
-            if access.is_nonce_modified {
-                call.nonce_changes.push(NonceChange {
-                    address: address.clone(),
-                    old_value: access.prestate_nonce,
-                    new_value: access.modified_nonce,
-                    ordinal: 0,
-                });
-            }
-
-            // Add balance change if modified
-            if access.is_balance_modified {
-                let old_balance = access.prestate_balance.clone();
-                let new_balance = access.modified_balance.clone();
-
-                // Check if this is a SELFDESTRUCT (suicide): balance goes to exactly 0 from non-zero
-                let is_balance_zero = new_balance.is_empty() || new_balance.iter().all(|&b| b == 0);
-                let was_balance_nonzero = !old_balance.is_empty() && old_balance.iter().any(|&b| b != 0);
-                let is_suicide_withdraw = is_balance_zero && was_balance_nonzero && address == to;
-
-                // Determine the reason based on the address and suicide detection
-                let reason = if is_suicide_withdraw {
-                    has_suicide = true;
-                    BalanceReason::SuicideWithdraw
-                } else if address == from {
-                    // Check if this is a gas buy (balance decreased by gas cost)
-                    // or a transfer (balance decreased by value)
-                    if !gas_cost.is_empty() && compare_u256_bytes(&old_balance, &new_balance) > 0 {
-                        // First balance change for sender is typically GAS_BUY
-                        if call.balance_changes.iter().all(|bc| bc.address != address || bc.reason != BalanceReason::GasBuy as i32) {
-                            BalanceReason::GasBuy
-                        } else {
-                            BalanceReason::Transfer
-                        }
-                    } else {
-                        BalanceReason::Transfer
-                    }
-                } else if address == to {
-                    BalanceReason::Transfer
-                } else if address == coinbase {
-                    BalanceReason::RewardTransactionFee
-                } else if address == from && has_suicide {
-                    // If we already detected suicide, this is likely the beneficiary receiving funds
-                    BalanceReason::SuicideRefund
-                } else {
-                    BalanceReason::Unknown
-                };
-
-                call.balance_changes.push(BalanceChange {
-                    address,
-                    old_value: Some(BigInt { bytes: old_balance }),
-                    new_value: Some(BigInt { bytes: new_balance }),
-                    reason: reason as i32,
-                    ordinal: 0,
-                });
-            }
-        }
-
-        // If we have a value transfer and no transfer balance changes were added, add them
-        if let Some(val) = value {
-            if !val.bytes.is_empty() && val.bytes != vec![0u8] {
-                let has_sender_transfer = call.balance_changes.iter().any(|bc| {
-                    bc.address == from && bc.reason == BalanceReason::Transfer as i32
-                });
-                let has_receiver_transfer = call.balance_changes.iter().any(|bc| {
-                    bc.address == to && bc.reason == BalanceReason::Transfer as i32
-                });
-
-                // Add sender transfer if missing
-                if !has_sender_transfer && !from.is_empty() {
-                    call.balance_changes.push(BalanceChange {
-                        address: from.to_vec(),
-                        old_value: Some(BigInt { bytes: val.bytes.clone() }),
-                        new_value: Some(BigInt { bytes: vec![] }),
-                        reason: BalanceReason::Transfer as i32,
-                        ordinal: 0,
-                    });
-                }
-
-                // Add receiver transfer if missing
-                if !has_receiver_transfer && !to.is_empty() {
-                    call.balance_changes.push(BalanceChange {
-                        address: to.to_vec(),
-                        old_value: Some(BigInt { bytes: vec![] }),
-                        new_value: Some(BigInt { bytes: val.bytes.clone() }),
-                        reason: BalanceReason::Transfer as i32,
-                        ordinal: 0,
-                    });
-                }
-            }
-        }
-
-        // Add transaction fee reward to coinbase if not already present
-        if !coinbase.is_empty() {
-            let has_fee_reward = call.balance_changes.iter().any(|bc| {
-                bc.address == coinbase && bc.reason == BalanceReason::RewardTransactionFee as i32
-            });
-
-            if !has_fee_reward && gas_used > 0 {
-                // Calculate fee = gas_used * gas_price
-                let fee = if let Some(gp) = gas_price {
-                    multiply_u256_by_u64(&gp.bytes, gas_used)
-                } else {
-                    vec![]
-                };
-
-                if !fee.is_empty() {
-                    call.balance_changes.push(BalanceChange {
-                        address: coinbase.to_vec(),
-                        old_value: Some(BigInt { bytes: vec![] }),
-                        new_value: Some(BigInt { bytes: fee }),
-                        reason: BalanceReason::RewardTransactionFee as i32,
-                        ordinal: 0,
-                    });
-                }
-            }
-        }
-
-        // Process storage accesses
-        if let Some(storages) = storage_accesses {
-            for storage in storages {
-                if storage.modified && !storage.transient {
-                    call.storage_changes.push(StorageChange {
-                        address: ensure_address_bytes(storage.address.clone()),
-                        key: ensure_hash_bytes(storage.key.clone()),
-                        old_value: ensure_hash_bytes(storage.start_value.clone()),
-                        new_value: ensure_hash_bytes(storage.end_value.clone()),
-                        ordinal: 0,
-                    });
-                }
-            }
-        }
-
-        has_suicide
-    }
-
-    /// Create a system call from BLOCK_PROLOGUE account/storage accesses and call frames
-    /// System calls go into block.system_calls, not as transactions
-    /// Create a system call from call frames alone (when account accesses are not available)
-    fn create_system_call_from_frames(
-        &self,
-        to_address: Vec<u8>,
-        call_frames: Vec<&CallFrameData>,
-        all_storage_accesses: &[StorageAccessData],
-        index: u32,
-    ) -> pb::sf::ethereum::r#type::v2::Call {
-        use pb::sf::ethereum::r#type::v2::StorageChange;
-        use pb::sf::ethereum::r#type::v2::gas_change::Reason as GasReason;
-        use pb::sf::ethereum::r#type::v2::GasChange;
-
-        debug!("Creating system call from frames for address: {}", hex::encode(&to_address));
-
-        // System address is 0xfffffffffffffffffffffffffffffffffffffffe
-        let system_caller = hex::decode("fffffffffffffffffffffffffffffffffffffffe").unwrap();
-
-        // Use the first frame's input data
-        let input = call_frames.first().map(|frame| frame.input.clone()).unwrap_or_default();
-
-        debug!("System call input data: {} bytes", input.len());
-        if !input.is_empty() {
-            debug!("System call input hex: {}", hex::encode(&input));
-        }
-
-        let mut call = pb::sf::ethereum::r#type::v2::Call {
-            index,
-            parent_index: 0,
-            depth: 0,
-            call_type: pb::sf::ethereum::r#type::v2::CallType::Call as i32,
-            caller: system_caller,
-            address: to_address.clone(),
-            value: Some(BigInt { bytes: vec![] }),
-            gas_limit: 30_000_000,
-            gas_consumed: 0,
-            return_data: Vec::new(),
-            input,
-            executed_code: true,
-            suicide: false,
-            status_failed: false,
-            status_reverted: false,
-            failure_reason: String::new(),
-            state_reverted: false,
-            ..Default::default()
-        };
-
-        // Add storage changes that belong to this address
-        for storage in all_storage_accesses {
-            if storage.address == to_address && storage.modified && !storage.transient {
-                call.storage_changes.push(StorageChange {
-                    address: ensure_address_bytes(storage.address.clone()),
-                    key: ensure_hash_bytes(storage.key.clone()),
-                    old_value: ensure_hash_bytes(storage.start_value.clone()),
-                    new_value: ensure_hash_bytes(storage.end_value.clone()),
-                    ordinal: 0,
-                });
-            }
-        }
-
-        call
-    }
-
-    fn create_system_call(
-        &self,
-        to_address: Vec<u8>,
-        account_accesses: Vec<&AccountAccessData>,
-        all_storage_accesses: &[StorageAccessData],
-        all_call_frames: &[CallFrameData],
-        index: u32,
-    ) -> pb::sf::ethereum::r#type::v2::Call {
-        use pb::sf::ethereum::r#type::v2::{BalanceChange, NonceChange, StorageChange};
-        use pb::sf::ethereum::r#type::v2::balance_change::Reason as BalanceReason;
-        use pb::sf::ethereum::r#type::v2::gas_change::Reason as GasReason;
-        use pb::sf::ethereum::r#type::v2::GasChange;
-
-        debug!("Creating system call for address: {}", hex::encode(&to_address));
-
-        // System address is 0xfffffffffffffffffffffffffffffffffffffffe
-        let system_caller = hex::decode("fffffffffffffffffffffffffffffffffffffffe").unwrap();
-
-        // Find the call frame for this system call by matching the call_target address
-        let call_frame = all_call_frames.iter().find(|frame| frame.call_target == to_address);
-
-        // Extract input data from call frame if available
-        let input = call_frame.map(|frame| frame.input.clone()).unwrap_or_default();
-
-        debug!("System call input data: {} bytes", input.len());
-        if !input.is_empty() {
-            debug!("System call input hex: {}", hex::encode(&input));
-        }
-
-        let mut call = pb::sf::ethereum::r#type::v2::Call {
-            index,
-            parent_index: 0,
-            depth: 0,
-            call_type: pb::sf::ethereum::r#type::v2::CallType::Call as i32,
-            caller: system_caller,
-            address: to_address.clone(),
-            value: Some(BigInt { bytes: vec![] }),
-            gas_limit: 30_000_000,
-            gas_consumed: 0,
-            return_data: Vec::new(),
-            input,
-            executed_code: true,
-            suicide: false,
-            status_failed: false,
-            status_reverted: false,
-            failure_reason: String::new(),
-            state_reverted: false,
-            ..Default::default()
-        };
-
-        // Add balance and nonce changes from account accesses
-        for access in account_accesses {
-            if access.is_balance_modified {
-                call.balance_changes.push(BalanceChange {
-                    address: access.address.clone(),
-                    old_value: Some(BigInt { bytes: access.prestate_balance.clone() }),
-                    new_value: Some(BigInt { bytes: access.modified_balance.clone() }),
-                    reason: BalanceReason::Unknown as i32,
-                    ordinal: 0,
-                });
-            }
-
-            if access.is_nonce_modified {
-                call.nonce_changes.push(NonceChange {
-                    address: access.address.clone(),
-                    old_value: access.prestate_nonce,
-                    new_value: access.modified_nonce,
-                    ordinal: 0,
-                });
-            }
-        }
-
-        // Add storage changes that belong to this address
-        for storage in all_storage_accesses {
-            if storage.address == to_address && storage.modified && !storage.transient {
-                call.storage_changes.push(StorageChange {
-                    address: ensure_address_bytes(storage.address.clone()),
-                    key: ensure_hash_bytes(storage.key.clone()),
-                    old_value: ensure_hash_bytes(storage.start_value.clone()),
-                    new_value: ensure_hash_bytes(storage.end_value.clone()),
-                    ordinal: 0,
-                });
-            }
-        }
-
-        call
-    }
-
-    /// Finalize the block and return it
     fn finalize(mut self) -> Result<Block> {
         debug!("Finalizing block {}", self.block_number);
 
-        // Create system calls from BLOCK_PROLOGUE account/storage accesses or call frames
-        // These go into block.system_calls, not as transactions
-        let mut system_calls = Vec::new();
-
-        debug!("System call data before finalization: {} account accesses, {} storage accesses, {} call frames",
-               self.system_calls_account_accesses.len(),
-               self.system_calls_storage_accesses.len(),
-               self.system_calls_call_frames.len());
-
-        if !self.system_calls_account_accesses.is_empty() {
-            debug!("Creating system calls for {} BLOCK_PROLOGUE account accesses",
-                   self.system_calls_account_accesses.len());
-
-            // Group account accesses by address to create one call per system contract
-            let mut system_calls_by_address: std::collections::HashMap<Vec<u8>, Vec<&AccountAccessData>> =
-                std::collections::HashMap::new();
-
-            for acc in &self.system_calls_account_accesses {
-                system_calls_by_address.entry(acc.address.clone()).or_default().push(acc);
+        // Collect and sort transactions
+        let mut transactions: Vec<TransactionTrace> = self.txns.into_values().map(|mut tx_state| {
+            let tx = &mut tx_state.trace;
+            if tx.receipt.is_none() {
+                tx.receipt = Some(firehose::pb::sf::ethereum::r#type::v2::TransactionReceipt {
+                    cumulative_gas_used: 0,
+                    logs_bloom: vec![0u8; 256],
+                    logs: Vec::new(),
+                    ..Default::default()
+                });
             }
-
-            // Create a system call for each unique system contract address
-            for (address, accesses) in system_calls_by_address {
-                let call = self.create_system_call(
-                    address,
-                    accesses,
-                    &self.system_calls_storage_accesses,
-                    &self.system_calls_call_frames,
-                    system_calls.len() as u32,
-                );
-                system_calls.push(call);
+            if let Some(ref mut receipt) = tx.receipt {
+                receipt.logs_bloom = calculate_logs_bloom(&receipt.logs);
             }
-        } else if !self.system_calls_call_frames.is_empty() {
-            debug!("Creating system calls from {} call frames (no account accesses available)",
-                   self.system_calls_call_frames.len());
-
-            for (i, frame) in self.system_calls_call_frames.iter().enumerate() {
-                debug!("Frame {}: address={}, input={} bytes, input_hex={}",
-                       i, hex::encode(&frame.call_target), frame.input.len(), hex::encode(&frame.input));
-            }
-
-            // Create system calls from call frames alone
-            // Group by call target address
-            let mut frames_by_address: std::collections::BTreeMap<Vec<u8>, Vec<&CallFrameData>> =
-                std::collections::BTreeMap::new();
-
-            for frame in &self.system_calls_call_frames {
-                frames_by_address.entry(frame.call_target.clone()).or_default().push(frame);
-            }
-
-            // Create a system call for each unique address
-            for (address, frames) in frames_by_address {
-                debug!("Creating system call for address: {} from {} frames",
-                       hex::encode(&address), frames.len());
-                let call = self.create_system_call_from_frames(
-                    address,
-                    frames,
-                    &self.system_calls_storage_accesses,
-                    system_calls.len() as u32,
-                );
-                system_calls.push(call);
-            }
-        }
-
-        // Extract data after creating system calls
-        let call_frames = self.call_frames;
-        let account_accesses = self.account_accesses;
-        let storage_accesses = self.storage_accesses;
-        let coinbase = self.coinbase.clone();
-
-        // Move transactions from map to vec, sorted by index
-        let mut transactions: Vec<TransactionTrace> = self
-            .transactions_map.into_values().map(|tx| {
-                let mut tx = tx;
-
-                // Ensure receipt exists
-                if tx.receipt.is_none() {
-                    tx.receipt = Some(pb::sf::ethereum::r#type::v2::TransactionReceipt {
-                        cumulative_gas_used: 0,
-                        logs_bloom: vec![0u8; 256],
-                        logs: Vec::new(),
-                        ..Default::default()
-                    });
-                }
-
-                // Calculate logs bloom from actual logs
-                if let Some(ref mut receipt) = tx.receipt {
-                    receipt.logs_bloom = calculate_logs_bloom(&receipt.logs);
-                }
-
-                tx
-            })
-            .collect();
+            tx_state.trace
+        }).collect();
         transactions.sort_by_key(|tx| tx.index);
 
-        // Build call trees for each transaction
-        // If no call frames exist, create a synthetic root call
-        for tx in &mut transactions {
-            let txn_index = tx.index as usize;
-
-            if let Some(frames) = call_frames.get(&txn_index) {
-                if !frames.is_empty() {
-                    debug!("Building call tree for tx #{} with {} frames", txn_index, frames.len());
-                    tx.calls = Self::build_call_tree(frames, txn_index);
-                }
-            }
-
-            // If no calls exist, create a synthetic root call
-            // This is needed for pure ETH transfers and other transactions without EVM execution
-            if tx.calls.is_empty() {
-                debug!("Creating synthetic root call for tx #{}", txn_index);
-                let root_call = pb::sf::ethereum::r#type::v2::Call {
-                    index: 1,
-                    parent_index: 0,
-                    depth: 0,
-                    call_type: if tx.to.is_empty() || tx.to == vec![0u8; 20] {
-                        pb::sf::ethereum::r#type::v2::CallType::Create as i32
-                    } else {
-                        pb::sf::ethereum::r#type::v2::CallType::Call as i32
-                    },
-                    caller: tx.from.clone(),
-                    address: tx.to.clone(),
-                    value: tx.value.clone(),
-                    gas_limit: 0, // Pure transfers don't consume call gas
-                    gas_consumed: 0,
-                    return_data: Vec::new(),
-                    input: tx.input.clone(),
-                    executed_code: false,
-                    suicide: false,
-                    status_failed: tx.status != 1, // 1 = success
-                    status_reverted: false,
-                    failure_reason: String::new(),
-                    state_reverted: false,
-                    ..Default::default()
-                };
-                tx.calls.push(root_call);
-            }
-
-            // Populate balance changes and nonce changes from account accesses
-            if let Some(accesses) = account_accesses.get(&txn_index) {
-                debug!("Tx #{}: Found {} account accesses", txn_index, accesses.len());
-                if let Some(root_call) = tx.calls.first_mut() {
-                    let has_suicide = Self::populate_state_changes_from_accesses(
-                        root_call,
-                        accesses,
-                        storage_accesses.get(&txn_index),
-                        &tx.from,
-                        &tx.to,
-                        tx.value.as_ref(),
-                        tx.gas_limit,
-                        tx.gas_used,
-                        tx.gas_price.as_ref(),
-                        &coinbase,
-                    );
-                    // Set suicide flag if detected
-                    root_call.suicide = has_suicide;
-                    debug!("Tx #{}: After populate - {} balance changes, {} nonce changes, {} gas changes, suicide={}",
-                           txn_index,
-                           root_call.balance_changes.len(),
-                           root_call.nonce_changes.len(),
-                           root_call.gas_changes.len(),
-                           has_suicide);
-                }
-            } else {
-                debug!("Tx #{}: No account accesses found", txn_index);
-                // Even without account accesses, add basic gas changes for the root call
-                if let Some(root_call) = tx.calls.first_mut() {
-                    Self::add_basic_gas_changes(root_call, tx.gas_limit, tx.gas_used);
-                }
-            }
-        }
-
-        // Assign ordinals to transactions, calls, and all state changes
+        // Assign ordinals
         for tx in &mut transactions {
             tx.begin_ordinal = self.next_ordinal;
             self.next_ordinal += 1;
 
-            // Assign ordinals to calls and their state changes
-            for call in &mut tx.calls {
-                call.begin_ordinal = self.next_ordinal;
+            // Assign call begin/end ordinals in execution order
+            let n = tx.calls.len();
+            let mut open: Vec<usize> = Vec::new();
+            for i in 0..n {
+                let depth = tx.calls[i].depth;
+                while open.last().map(|&j| tx.calls[j].depth >= depth).unwrap_or(false) {
+                    let j = open.pop().unwrap();
+                    tx.calls[j].end_ordinal = self.next_ordinal;
+                    self.next_ordinal += 1;
+                }
+                tx.calls[i].begin_ordinal = self.next_ordinal;
                 self.next_ordinal += 1;
-
-                // Assign ordinals to gas changes
-                for gas_change in &mut call.gas_changes {
-                    gas_change.ordinal = self.next_ordinal;
-                    self.next_ordinal += 1;
-                }
-
-                // Assign ordinals to nonce changes
-                for nonce_change in &mut call.nonce_changes {
-                    nonce_change.ordinal = self.next_ordinal;
-                    self.next_ordinal += 1;
-                }
-
-                // Assign ordinals to balance changes
-                for balance_change in &mut call.balance_changes {
-                    balance_change.ordinal = self.next_ordinal;
-                    self.next_ordinal += 1;
-                }
-
-                // Assign ordinals to storage changes
-                for storage_change in &mut call.storage_changes {
-                    storage_change.ordinal = self.next_ordinal;
-                    self.next_ordinal += 1;
-                }
-
-                // Assign ordinals to logs
-                for log in &mut call.logs {
-                    log.ordinal = self.next_ordinal;
-                    self.next_ordinal += 1;
-                }
-
-                call.end_ordinal = self.next_ordinal;
+                open.push(i);
+            }
+            // Close all inner calls (depth > 0) root call stays open until after state changes
+            while open.last().map(|&j| tx.calls[j].depth > 0).unwrap_or(false) {
+                let j = open.pop().unwrap();
+                tx.calls[j].end_ordinal = self.next_ordinal;
                 self.next_ordinal += 1;
             }
 
-            // Assign ordinals to receipt logs (duplicate from calls for compatibility)
-            if let Some(ref mut receipt) = tx.receipt {
-                for log in &mut receipt.logs {
+            // depth-0 call, end ordinal assigned after state changes
+            let root_call_idx = open.pop();
+
+            // Assign log ordinals in emission order (log.index is deterministic)
+            if let Some(root_call) = tx.calls.first_mut() {
+                root_call.logs.sort_by_key(|l| l.index);
+                for log in &mut root_call.logs {
                     log.ordinal = self.next_ordinal;
                     self.next_ordinal += 1;
                 }
+            }
+
+            // Receipt logs share ordinals with their matching call logs
+            if let Some(ref mut receipt) = tx.receipt {
+                for rlog in &mut receipt.logs {
+                    if let Some(root_call) = tx.calls.first() {
+                        if let Some(clog) = root_call.logs.iter().find(|l| l.index == rlog.index) {
+                            rlog.ordinal = clog.ordinal;
+                        }
+                    }
+                }
+            }
+
+            // Assign ordinals to state changes on root call
+            if let Some(root_call) = tx.calls.first_mut() {
+                for change in &mut root_call.balance_changes {
+                    change.ordinal = self.next_ordinal;
+                    self.next_ordinal += 1;
+                }
+                for change in &mut root_call.nonce_changes {
+                    change.ordinal = self.next_ordinal;
+                    self.next_ordinal += 1;
+                }
+                for change in &mut root_call.storage_changes {
+                    change.ordinal = self.next_ordinal;
+                    self.next_ordinal += 1;
+                }
+            }
+
+            // Close root call after state changes
+            if let Some(idx) = root_call_idx {
+                tx.calls[idx].end_ordinal = self.next_ordinal;
+                self.next_ordinal += 1;
             }
 
             tx.end_ordinal = self.next_ordinal;
             self.next_ordinal += 1;
         }
+
+        // Apply system account/storage accesses to matching system calls
+        {
+            use firehose::pb::sf::ethereum::r#type::v2::{BalanceChange, BigInt as PbBigInt, NonceChange, StorageChange};
+            use firehose::pb::sf::ethereum::r#type::v2::balance_change::Reason as BalanceReason;
+
+            for (addr, bal_mod, pre_bal, mod_bal, nonce_mod, pre_nonce, mod_nonce) in self.system_calls_account_accesses.drain(..) {
+                let call = self.system_calls_calls.iter_mut().find(|c| c.address == addr);
+                if let Some(call) = call {
+                    if bal_mod {
+                        call.balance_changes.push(BalanceChange {
+                            address: addr.clone(),
+                            old_value: Some(PbBigInt { bytes: pre_bal }),
+                            new_value: Some(PbBigInt { bytes: mod_bal }),
+                            reason: BalanceReason::MonadTxPostState as i32,
+                            ordinal: 0,
+                        });
+                    }
+                    if nonce_mod {
+                        call.nonce_changes.push(NonceChange {
+                            address: addr,
+                            old_value: pre_nonce,
+                            new_value: mod_nonce,
+                            ordinal: 0,
+                        });
+                    }
+                }
+            }
+            for (addr, key, start, end) in self.system_calls_storage_accesses.drain(..) {
+                let call = self.system_calls_calls.iter_mut().find(|c| c.address == addr);
+                if let Some(call) = call {
+                    call.storage_changes.push(StorageChange {
+                        address: ensure_address_bytes(addr),
+                        key: ensure_hash_bytes(key),
+                        old_value: ensure_hash_bytes(start),
+                        new_value: ensure_hash_bytes(end),
+                        ordinal: 0,
+                    });
+                }
+            }
+        }
+
+        // Re-index system calls
+        for (i, call) in self.system_calls_calls.iter_mut().enumerate() {
+            call.index = i as u32;
+        }
+        let system_calls = self.system_calls_calls;
 
         let header = BlockHeader {
             parent_hash: self.parent_hash,
@@ -1500,6 +1032,7 @@ impl BlockBuilder {
             receipt_root: self.receipts_root,
             logs_bloom: self.logs_bloom,
             difficulty: Some(BigInt { bytes: vec![] }),
+            #[allow(deprecated)]
             total_difficulty: None,
             number: self.block_number,
             gas_limit: self.gas_limit,
@@ -1515,8 +1048,8 @@ impl BlockBuilder {
             base_fee_per_gas: Some(BigInt { bytes: u256_limbs_to_bytes(&self.base_fee_per_gas) }),
             withdrawals_root: self.withdrawals_root,
             tx_dependency: None,
-            blob_gas_used: Some(0),  // Monad doesn't support EIP-4844 blob transactions
-            excess_blob_gas: Some(0),  // Monad doesn't support EIP-4844 blob transactions
+            blob_gas_used: Some(0),
+            excess_blob_gas: Some(0),
             parent_beacon_root: vec![0u8; 32],
             requests_hash: vec![0u8; 32],
         };
@@ -1540,34 +1073,67 @@ impl BlockBuilder {
         };
 
         debug!(
-            "Finalized extended block #{}: {} txs, {} calls, {} logs, {} system_calls",
+            "Finalized block #{}: {} txs, {} calls, {} logs, {} system_calls",
             self.block_number, block.transaction_traces.len(), total_calls, total_logs, block.system_calls.len()
         );
-
-        // Debug: Log final block hash and parent hash
         debug!(
-            "Block #{} final hashes: block_hash={}, parent_hash={}",
+            "Block #{} hashes: block_hash={}, parent_hash={}",
             self.block_number,
             hex::encode(&block.hash),
-            if let Some(ref header) = block.header {
-                hex::encode(&header.parent_hash)
-            } else {
-                "NO_HEADER".to_string()
-            }
+            block.header.as_ref().map(|h| hex::encode(&h.parent_hash)).unwrap_or_default()
         );
-
-        // Debug: Log all system calls with their inputs
         for (i, syscall) in block.system_calls.iter().enumerate() {
-            debug!(
-                "Block #{} SystemCall {}: address={}, input={}",
-                self.block_number,
-                i,
-                hex::encode(&syscall.address),
-                hex::encode(&syscall.input)
-            );
+            debug!("Block #{} SystemCall {}: address={}, input={}",
+                self.block_number, i, hex::encode(&syscall.address), hex::encode(&syscall.input));
         }
 
         Ok(block)
     }
+}
 
+pub struct EventMapper {
+    blocks: std::collections::HashMap<u64, BlockBuilder>,
+    current_block_num: u64,
+}
+
+impl EventMapper {
+    pub fn new() -> Self {
+        Self {
+            blocks: std::collections::HashMap::new(),
+            current_block_num: 0,
+        }
+    }
+
+    pub fn finalize_pending(&mut self) -> Result<Option<Box<Block>>> {
+        if let Some(builder) = self.blocks.remove(&self.current_block_num) {
+            return Ok(Some(Box::new(builder.finalize()?)));
+        }
+        Ok(None)
+    }
+
+    pub async fn process_event(&mut self, event: ExecEvent) -> Result<Option<Box<Block>>> {
+        // Determine block number from BlockStart events; otherwise use current
+        let block_num = if let ExecEvent::BlockStart(ref bs) = event {
+            let num = bs.eth_block_input.number;
+            self.current_block_num = num;
+            num
+        } else {
+            self.current_block_num
+        };
+
+        let is_block_end = matches!(event, ExecEvent::BlockEnd(_));
+
+        debug!("Processing event block={}", block_num);
+
+        let builder = self.blocks.entry(block_num).or_insert_with(|| BlockBuilder::new(block_num));
+        builder.add_event_old(event)?;
+
+        if is_block_end {
+            if let Some(builder) = self.blocks.remove(&block_num) {
+                return Ok(Some(Box::new(builder.finalize()?)));
+            }
+        }
+
+        Ok(None)
+    }
 }

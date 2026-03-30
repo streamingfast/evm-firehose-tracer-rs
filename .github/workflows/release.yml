@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-      - develop
+      - feature/add-monad
     tags:
       - "v*"
   workflow_dispatch:

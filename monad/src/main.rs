@@ -8,10 +8,8 @@ use color_eyre::eyre::Result;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
-use monad_plugin::{initialize_plugin, PluginConfig};
-use monad_tracer::{FirehoseTracer, TracerConfig};
+use monad_tracer::{FirehosePlugin, FirehosePluginConfig, MonadConsumer, PluginConfig};
 
-/// Command line arguments for the Monad Firehose tracer
 #[derive(Parser, Debug)]
 #[command(name = "monad-firehose-tracer")]
 #[command(about = "Ethereum Firehose tracer for Monad blockchain")]
@@ -25,12 +23,7 @@ struct Args {
     #[arg(long, default_value = "monad")]
     network_name: String,
 
-    /// Path to Monad event ring buffer
-    #[arg(
-        long,
-        env = "MONAD_EVENT_RING_PATH",
-        default_value = "/tmp/monad_events"
-    )]
+    #[arg(long, env = "MONAD_EVENT_RING_PATH", default_value = "/tmp/monad_events")]
     monad_event_ring_path: String,
 
     /// Buffer size for event processing
@@ -52,18 +45,11 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Install color-eyre for better error reporting
     color_eyre::install()?;
 
-    // Parse command line arguments
     let args = Args::parse();
 
-    // Initialize tracing
-    let level = if args.debug {
-        Level::DEBUG
-    } else {
-        Level::INFO
-    };
+    let level = if args.debug { Level::DEBUG } else { Level::INFO };
     let subscriber = FmtSubscriber::builder().with_max_level(level).finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
@@ -73,24 +59,20 @@ async fn main() -> Result<()> {
     info!("Event ring path: {}", args.monad_event_ring_path);
     info!("Debug mode: {}", args.debug);
 
-    // Create plugin configuration
-    let plugin_config = PluginConfig {
+    let consumer_config = PluginConfig {
         event_ring_path: args.monad_event_ring_path,
         buffer_size: args.buffer_size,
         timeout_ms: args.timeout_ms,
     };
 
-    // Initialize the plugin
-    let consumer = initialize_plugin(plugin_config).await?;
+    let consumer = MonadConsumer::new(consumer_config).await?;
 
-    // Create tracer configuration
-    let tracer_config = TracerConfig::new(args.chain_id, args.network_name)
+    let tracer_config = FirehosePluginConfig::new(args.chain_id, args.network_name)
         .with_debug(args.debug)
         .with_buffer_size(args.buffer_size)
         .with_no_op(args.no_op);
 
-    // Create and start the tracer
-    let mut tracer = FirehoseTracer::new(tracer_config).with_consumer(consumer);
+    let mut tracer = FirehosePlugin::new(tracer_config).with_consumer(consumer);
 
     if args.no_op {
         info!("NO-OP MODE ENABLED: Only logging block numbers, no processing");
