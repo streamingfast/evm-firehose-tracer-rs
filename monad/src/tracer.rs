@@ -3,7 +3,7 @@
 use crate::{EventMapper, MonadConsumer, FirehosePluginConfig, TRACER_NAME, TRACER_VERSION};
 use alloy_primitives::B256;
 use eyre::Result;
-use firehose::{types::{AccessTuple, SetCodeAuthorization, TxType}, Tracer};
+use firehose::{types::{AccessTuple, SetCodeAuthorization, TxType}, Opcode, Tracer};
 use futures_util::StreamExt;
 use monad_exec_events::ExecEvent;
 use std::collections::HashMap;
@@ -297,6 +297,7 @@ impl FirehosePlugin {
             }
             ExecEvent::TxnEvmOutput { txn_index, output } => {
                 tracing::info!("txn evm output (txn={} gas_used={} status={} call_frame_count={})", txn_index, output.receipt.gas_used, output.receipt.status, output.call_frame_count);
+
                 self.ensure_in_block_and_in_pending(txn_index, "TxnEvmOutput");
 
                 if let Some(tx_event) = self.pending_tx_events.remove(&txn_index) {
@@ -389,17 +390,6 @@ impl FirehosePlugin {
 
                 self.tracer.on_call_enter(depth, txn_call_frame.opcode, from, to, &input_bytes, txn_call_frame.gas, value);
 
-                // Flush buffered logs into the root call once its open
-                if depth == 0 {
-                    let log_count = self.pending_logs.len();
-                    if log_count > 0 {
-                        tracing::trace!("flushing {} pending logs into root call", log_count);
-                    }
-                    for log in self.pending_logs.drain(..) {
-                        self.tracer.on_log(log.addr, &log.topics, &log.data, log.index);
-                    }
-                }
-
                 let evmc_status = txn_call_frame.evmc_status as i32;
 
                 if txn_call_frame.gas_used > 0 || is_precompile(&to) {
@@ -410,15 +400,22 @@ impl FirehosePlugin {
                         self.tracer.on_opcode(0, txn_call_frame.opcode, txn_call_frame.gas, txn_call_frame.gas_used, &[], depth, None);
                     }
                 }
-                self.open_calls.push(OpenCall {
-                    depth,
-                    return_bytes,
-                    gas_used: txn_call_frame.gas_used,
-                    evmc_status,
-                });
+
+                if txn_call_frame.opcode == Opcode::SelfDestruct as u8 {
+                    let err = evmc_status_to_error(evmc_status);
+                    self.tracer.on_call_exit(depth, &return_bytes, txn_call_frame.gas_used, err.as_ref().map(|e| e as &dyn std::error::Error), evmc_status != 0);
+                } else {
+                    self.open_calls.push(OpenCall {
+                        depth,
+                        return_bytes,
+                        gas_used: txn_call_frame.gas_used,
+                        evmc_status,
+                    });
+                }
             }
             ExecEvent::AccountAccessListHeader(header) => {
                 tracing::trace!("account access list header (ctx={} count={})", header.access_context, header.entry_count);
+
                 if header.access_context == AccountAccessContext::Transaction as u8 {
                     while self.open_calls.last().map_or(false, |c| c.depth > 0) {
                         let open = self.open_calls.pop().unwrap();
@@ -429,6 +426,7 @@ impl FirehosePlugin {
             }
             ExecEvent::AccountAccess(account_access) => {
                 tracing::trace!("account access (addr={:?} balance_modified={} nonce_modified={})", alloy_primitives::Address::from(account_access.address.bytes), account_access.is_balance_modified, account_access.is_nonce_modified);
+
                 let addr = alloy_primitives::Address::from(account_access.address.bytes);
                 if account_access.is_balance_modified {
                     use firehose::pb::sf::ethereum::r#type::v2::balance_change::Reason;
@@ -440,6 +438,7 @@ impl FirehosePlugin {
             }
             ExecEvent::StorageAccess(storage_access) => {
                 tracing::trace!("storage access (addr={:?} modified={} transient={})", alloy_primitives::Address::from(storage_access.address.bytes), storage_access.modified, storage_access.transient);
+
                 if storage_access.modified && !storage_access.transient {
                     let addr = alloy_primitives::Address::from(storage_access.address.bytes);
                     self.tracer.on_storage_change(addr, B256::from(storage_access.key.bytes), B256::from(storage_access.start_value.bytes), B256::from(storage_access.end_value.bytes));
@@ -448,6 +447,7 @@ impl FirehosePlugin {
 
             ExecEvent::BlockSystemCallStart { system_call_start, input_bytes } => {
                 tracing::info!("block system call start (from={:?} to={:?} opcode=0x{:02x} gas={})", alloy_primitives::Address::from(system_call_start.caller.bytes), alloy_primitives::Address::from(system_call_start.call_target.bytes), system_call_start.opcode, system_call_start.gas);
+
                 self.tracer.on_system_call_start();
                 let from = alloy_primitives::Address::from(system_call_start.caller.bytes);
                 let to = alloy_primitives::Address::from(system_call_start.call_target.bytes);
@@ -455,6 +455,7 @@ impl FirehosePlugin {
             }
             ExecEvent::BlockSystemCallEnd { system_call_end, return_bytes } => {
                 tracing::info!("block system call end (gas_used={} status={})", system_call_end.gas_used, system_call_end.evmc_status);
+
                 self.tracer.on_call_exit(0, &return_bytes, system_call_end.gas_used, None, system_call_end.evmc_status == 2);
                 self.tracer.on_system_call_end();
             }
