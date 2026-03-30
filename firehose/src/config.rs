@@ -157,9 +157,26 @@ impl Default for Rules {
     }
 }
 
+/// Identifies the chain client integration providing tracing data.
+///
+/// Different clients may have behavioral differences in how they report
+/// EVM execution results (e.g., out-of-gas handling at the inspector level),
+/// requiring client-specific reconciliation in the tracer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ChainClient {
+    #[default]
+    Unknown,
+    Reth,
+    Monad,
+}
+
 /// Config holds tracer runtime configuration
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
+    /// The chain client providing tracing data
+    #[serde(default)]
+    pub chain_client: ChainClient,
+
     /// Feature flags
     /// Enable concurrent flushing of blocks
     #[serde(default)]
@@ -240,6 +257,7 @@ impl Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            chain_client: ChainClient::default(),
             enable_concurrent_flushing: false,
             concurrent_buffer_size: default_concurrent_buffer_size(),
             output_path: None,
@@ -348,6 +366,7 @@ mod tests {
     #[test]
     fn test_config_serialization() {
         let config = Config {
+            chain_client: ChainClient::default(),
             enable_concurrent_flushing: true,
             concurrent_buffer_size: 150,
             output_path: Some("/tmp/output.log".to_string()),

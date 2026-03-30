@@ -53,7 +53,7 @@ Build from source using Cargo:
 cargo build --release
 
 # Build the Monad tracer specifically
-cargo build --release -p monad-plugin
+cargo build --release -p monad
 ```
 
 ### Mac OS X Prerequisites

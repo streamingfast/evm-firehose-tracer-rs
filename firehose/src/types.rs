@@ -215,6 +215,7 @@ impl Display for TxType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
 #[repr(u8)]
 pub enum Opcode {
+    Keccak256 = 0x20,
     Create = 0xf0,
     Call = 0xf1,
     CallCode = 0xf2,
