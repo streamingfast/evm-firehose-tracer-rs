@@ -408,6 +408,7 @@ impl FirehosePlugin {
                 let evmc_status = txn_call_frame.evmc_status as i32;
 
                 if txn_call_frame.opcode == Opcode::SelfDestruct as u8 {
+                    self.tracer.on_call_enter(depth, Opcode::Call as u8, from, to, &input_bytes, txn_call_frame.gas, value);
                     self.tracer.on_opcode(0, txn_call_frame.opcode, txn_call_frame.gas, txn_call_frame.gas_used, &[], depth, None);
                     let err = evmc_status_to_error(evmc_status);
                     self.tracer.on_call_exit(depth, &return_bytes, txn_call_frame.gas_used, err.as_ref().map(|e| e as &dyn std::error::Error), evmc_status != 0);
