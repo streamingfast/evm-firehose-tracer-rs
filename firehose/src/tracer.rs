@@ -1123,27 +1123,29 @@ impl Tracer {
 
     /// OnLog is called when a log event is emitted
     pub fn on_log(&mut self, addr: Address, topics: &[B256], data: &[u8], block_index: u32) {
-        self.ensure_in_block_and_in_trx_and_in_call();
+        firehose_trace!(
+            "log emitted (address={:?} topics={} data_len={})",
+            addr,
+            topics.len(),
+            data.len()
+        );
+
+        self.ensure_in_block_and_in_trx();
+
+        let pb_log = pb::sf::ethereum::r#type::v2::Log {
+            address: addr.0.to_vec(),
+            data: data.to_vec(),
+            index: self.transaction_log_index,
+            block_index,
+            ordinal: self.block_ordinal.next(),
+            topics: topics.iter().map(|t| t.0.to_vec()).collect(),
+        };
+        self.transaction_log_index += 1;
 
         if let Some(active_call) = self.call_stack.peek_mut() {
-            firehose_trace!(
-                "adding log to call (address={:?} call={} existing_logs={})",
-                addr,
-                active_call.index,
-                active_call.logs.len()
-            );
-
-            let pb_log = pb::sf::ethereum::r#type::v2::Log {
-                address: addr.0.to_vec(),
-                data: data.to_vec(),
-                index: self.transaction_log_index,
-                block_index,
-                ordinal: self.block_ordinal.next(),
-                topics: topics.iter().map(|t| t.0.to_vec()).collect(),
-            };
-
             active_call.logs.push(pb_log);
-            self.transaction_log_index += 1;
+        } else {
+            self.deferred_call_state.add_logs(pb_log);
         }
     }
 
