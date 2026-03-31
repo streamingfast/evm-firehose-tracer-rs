@@ -15,15 +15,6 @@ enum AccountAccessContext {
     Transaction = 1,
     BlockEpilogue = 2,
 }
-struct OpenCall {
-    depth: i32,
-    addr: alloy_primitives::Address,
-    opcode: u8,
-    return_bytes: Box<[u8]>,
-    gas_used: u64,
-    evmc_status: i32,
-}
-
 fn evmc_status_to_error(evmc_status: i32) -> Option<firehose::StringError> {
     let msg = match evmc_status {
         0 => return None,
@@ -60,8 +51,6 @@ pub struct FirehosePlugin {
     pending_tx_events: HashMap<usize, firehose::TxEvent>,
     // Logs buffered for receipt construction
     pending_receipt_logs: Vec<firehose::LogData>,
-    // Stack of open calls: enter on TxnCallFrame
-    open_calls: Vec<OpenCall>,
     block_txn_count: u64,
     last_finalized_block: u64,
     current_txn_index: u32,
@@ -80,7 +69,6 @@ impl FirehosePlugin {
             tx_end_receipt: None,
             pending_tx_events: HashMap::new(),
             pending_receipt_logs: Vec::new(),
-            open_calls: Vec::new(),
             block_txn_count: 0,
             current_txn_index: 0,
             cumulative_gas_used: 0,
@@ -97,7 +85,6 @@ impl FirehosePlugin {
             tx_end_receipt: None,
             pending_tx_events: HashMap::new(),
             pending_receipt_logs: Vec::new(),
-            open_calls: Vec::new(),
             block_txn_count: 0,
             current_txn_index: 0,
             cumulative_gas_used: 0,
@@ -120,16 +107,6 @@ impl FirehosePlugin {
                 expected,
             );
         }
-    }
-
-    fn call_exit(&mut self, depth: i32, addr: alloy_primitives::Address, opcode: u8, return_bytes: &[u8], gas_used: u64, evmc_status: i32) {
-        if evmc_status == 0 && !return_bytes.is_empty() && (opcode == Opcode::Create as u8 || opcode == Opcode::Create2 as u8) {
-            let empty_hash = firehose::utils::hash_bytes(&[]);
-            let new_hash = firehose::utils::hash_bytes(return_bytes);
-            self.tracer.on_code_change(addr, empty_hash, new_hash, &[], return_bytes);
-        }
-        let err = evmc_status_to_error(evmc_status);
-        self.tracer.on_call_exit(depth, return_bytes, gas_used, err.as_ref().map(|e| e as &dyn std::error::Error), evmc_status != 0);
     }
 
     pub fn on_blockchain_init(&mut self, node_name: &str, node_version: &str) {
@@ -327,10 +304,7 @@ impl FirehosePlugin {
             ExecEvent::TxnEnd => {
                 tracing::info!("txn end");
 
-                // Flush remaining open calls in reverse
-                while let Some(open) = self.open_calls.pop() {
-                    self.call_exit(open.depth, open.addr, open.opcode, &open.return_bytes, open.gas_used, open.evmc_status);
-                }
+                self.tracer.flush_open_calls(0);
                 let receipt_logs = std::mem::take(&mut self.pending_receipt_logs);
                 let mut bloom = alloy_primitives::Bloom::ZERO;
                 for log in &receipt_logs {
@@ -397,57 +371,36 @@ impl FirehosePlugin {
                 }
 
                 let depth = txn_call_frame.depth as i32;
-
-                // Close any open calls at depth >= incoming depth
-                while self.open_calls.last().map_or(false, |c| c.depth >= depth) {
-                    let open = self.open_calls.pop().unwrap();
-                    self.call_exit(open.depth, open.addr, open.opcode, &open.return_bytes, open.gas_used, open.evmc_status);
-                }
-
                 let from = alloy_primitives::Address::from(txn_call_frame.caller.bytes);
                 let to = alloy_primitives::Address::from(txn_call_frame.call_target.bytes);
                 let value = alloy_primitives::U256::from_limbs(txn_call_frame.value.limbs);
-
                 let evmc_status = txn_call_frame.evmc_status as i32;
+                let err = evmc_status_to_error(evmc_status);
 
-                // patch the transaction's "to" with the deployed address
+                // For root-level, patch transaction's "to" with the
+                // deployed address, for depth > 0, the deployed address is carried
+                // via on_call_enter
                 if depth == 0 && (txn_call_frame.opcode == Opcode::Create as u8 || txn_call_frame.opcode == Opcode::Create2 as u8) {
                     self.tracer.set_transaction_to(to);
                 }
 
+                // SELFDESTRUCT is atomic (enter + opcode + exit with no deferral)
                 if txn_call_frame.opcode == Opcode::SelfDestruct as u8 {
+                    self.tracer.flush_open_calls(depth);
                     self.tracer.on_call_enter(depth, Opcode::Call as u8, from, to, &input_bytes, txn_call_frame.gas, value);
                     self.tracer.on_opcode(0, Opcode::SelfDestruct as u8, txn_call_frame.gas, txn_call_frame.gas_used, &[], depth, None);
-                    self.call_exit(depth, to, Opcode::Call as u8, &return_bytes, txn_call_frame.gas_used, evmc_status);
+                    self.tracer.on_call_exit(depth, &return_bytes, txn_call_frame.gas_used, err.as_ref().map(|e| e as &dyn std::error::Error), evmc_status != 0);
                 } else {
-                    self.tracer.on_call_enter(depth, txn_call_frame.opcode, from, to, &input_bytes, txn_call_frame.gas, value);
-
-                    if txn_call_frame.gas_used > 0 || is_precompile(&to) {
-                        let err = evmc_status_to_error(evmc_status);
-                        if let Some(ref e) = err {
-                            self.tracer.on_opcode_fault(0, txn_call_frame.opcode, txn_call_frame.gas, txn_call_frame.gas_used, depth, e as &dyn std::error::Error);
-                        } else {
-                            self.tracer.on_opcode(0, txn_call_frame.opcode, txn_call_frame.gas, txn_call_frame.gas_used, &[], depth, None);
-                        }
-                    }
-                    self.open_calls.push(OpenCall {
-                        depth,
-                        addr: to,
-                        opcode: txn_call_frame.opcode,
-                        return_bytes,
-                        gas_used: txn_call_frame.gas_used,
-                        evmc_status,
-                    });
+                    let executed_code = txn_call_frame.gas_used > 0 || is_precompile(&to);
+                    self.tracer.on_call(depth, txn_call_frame.opcode, from, to, &input_bytes, txn_call_frame.gas, value, &return_bytes, txn_call_frame.gas_used, executed_code, err);
                 }
             }
             ExecEvent::AccountAccessListHeader(header) => {
                 tracing::debug!("account access list header (ctx={} count={})", header.access_context, header.entry_count);
 
                 if header.access_context == AccountAccessContext::Transaction as u8 {
-                    while self.open_calls.last().map_or(false, |c| c.depth > 0) {
-                        let open = self.open_calls.pop().unwrap();
-                        self.call_exit(open.depth, open.addr, open.opcode, &open.return_bytes, open.gas_used, open.evmc_status);
-                    }
+                    // flush all sub-calls but keep the root call open
+                    self.tracer.flush_open_calls(1);
                 }
             }
             ExecEvent::AccountAccess(account_access) => {
@@ -488,7 +441,8 @@ impl FirehosePlugin {
                 tracing::debug!("block system call end (gas_used={} status={} num_account_accesses={})", system_call_end.gas_used, system_call_end.evmc_status, system_call_end.num_account_accesses);
 
                 self.ensure_system_call_account_access_count(system_call_end.num_account_accesses);
-                self.call_exit(0, alloy_primitives::Address::ZERO, Opcode::Call as u8, &return_bytes, system_call_end.gas_used, system_call_end.evmc_status as i32);
+                let err = evmc_status_to_error(system_call_end.evmc_status as i32);
+                self.tracer.on_call_exit(0, &return_bytes, system_call_end.gas_used, err.as_ref().map(|e| e as &dyn std::error::Error), system_call_end.evmc_status != 0);
                 self.tracer.on_system_call_end();
             }
 
