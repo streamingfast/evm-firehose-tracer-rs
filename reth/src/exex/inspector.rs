@@ -98,9 +98,7 @@ impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
             InstructionResult::OutOfFunds => "insufficient balance for transfer".to_string(),
             InstructionResult::CreateInitCodeStartingEF00
             | InstructionResult::InvalidEOFInitCode
-            | InstructionResult::InvalidExtDelegateCallTarget => {
-                "execution reverted".to_string()
-            }
+            | InstructionResult::InvalidExtDelegateCallTarget => "execution reverted".to_string(),
 
             // Out-of-gas variants — Geth distinguishes CREATE vs CALL context
             InstructionResult::OutOfGas
@@ -128,9 +126,7 @@ impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
             InstructionResult::CreateContractStartingWithEF => {
                 "invalid code: must not begin with 0xef".to_string()
             }
-            InstructionResult::CreateInitCodeSizeLimit => {
-                "max initcode size exceeded".to_string()
-            }
+            InstructionResult::CreateInitCodeSizeLimit => "max initcode size exceeded".to_string(),
             InstructionResult::NonceOverflow => "nonce uint64 overflow".to_string(),
 
             // Precompile errors — best effort, the specific error message (e.g. "point is
