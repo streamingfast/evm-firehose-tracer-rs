@@ -6,7 +6,7 @@ use alloy_primitives::{Address, B256, U256};
 
 use super::{
     callstack::CallStack, config, deferred_call_state::DeferredCallState,
-    finality::FinalityStatus, ordinal::Ordinal, Config,
+    finality::FinalityStatus, open_callstack::{OpenCall, OpenCallStack}, ordinal::Ordinal, Config,
 };
 use crate::types::{BlockEvent, ReceiptData, StateReader, TxEvent};
 use crate::{
@@ -42,6 +42,7 @@ pub struct Tracer {
 
     // Call state
     call_stack: CallStack,
+    open_calls: OpenCallStack,
     deferred_call_state: DeferredCallState,
     latest_call_enter_suicided: bool,
     latest_call_enter_suicided_depth: i32, // Depth of the SELFDESTRUCT OnCallEnter
@@ -80,6 +81,7 @@ impl Tracer {
 
             // Call state
             call_stack: CallStack::new(),
+            open_calls: OpenCallStack::new(),
             deferred_call_state: DeferredCallState::new(),
             latest_call_enter_suicided: false,
             latest_call_enter_suicided_depth: 0,
@@ -104,6 +106,7 @@ impl Tracer {
         self.in_system_call = false;
 
         self.call_stack.reset();
+        self.open_calls.clear();
         self.latest_call_enter_suicided = false;
         self.deferred_call_state.reset();
     }
@@ -809,6 +812,76 @@ impl Tracer {
     // Call Lifecycle Hooks
     // ============================================================================
 
+    /// on_call records a complete call frame in one shot. The enter is processed
+    /// immediately; the exit is deferred until the next call at the same or
+    /// shallower depth arrives, or until flush_open_calls is called explicitly
+    pub fn on_call(
+        &mut self,
+        depth: i32,
+        opcode: u8,
+        from: Address,
+        to: Address,
+        input: &[u8],
+        gas: u64,
+        value: U256,
+        output: &[u8],
+        gas_used: u64,
+        executed_code: bool,
+        err: Option<super::StringError>,
+    ) {
+        // Close any open calls at depth >= incoming depth before opening the new one
+        self.flush_open_calls_at_or_below(depth);
+
+        self.on_call_enter(depth, opcode, from, to, input, gas, value);
+
+        if executed_code {
+            if let Some(ref e) = err {
+                self.on_opcode_fault(0, opcode, gas, gas_used, depth, e as &dyn std::error::Error);
+            } else {
+                self.on_opcode(0, opcode, gas, gas_used, &[], depth, None);
+            }
+        }
+
+        self.open_calls.push(OpenCall {
+            depth,
+            addr: to,
+            call_type: self.opcode_to_call_type(opcode),
+            output: output.into(),
+            gas_used,
+            failed: err.is_some(),
+            error: err,
+        });
+    }
+
+    /// Flushes all open calls whose depth is >= min_depth, closing them (deepest first)
+    /// Use min_depth = 0 to flush everything, min_depth = 1 to keep the root call open
+    pub fn flush_open_calls(&mut self, min_depth: i32) {
+        while self.open_calls.peek_depth().map_or(false, |d| d >= min_depth) {
+            let open = self.open_calls.pop().unwrap();
+            self.close_open_call(open);
+        }
+    }
+
+    /// Flushes open calls at depth >= incoming_depth to make room for a new call at that depth.
+    fn flush_open_calls_at_or_below(&mut self, incoming_depth: i32) {
+        while self.open_calls.peek_depth().map_or(false, |d| d >= incoming_depth) {
+            let open = self.open_calls.pop().unwrap();
+            self.close_open_call(open);
+        }
+    }
+
+    fn close_open_call(&mut self, open: OpenCall) {
+        // Successful CREATE: output is the deployed bytecode, emit a code change
+        let is_create = open.call_type == pb::sf::ethereum::r#type::v2::CallType::Create as i32;
+        if !open.failed && is_create && !open.output.is_empty() {
+            let empty_hash = utils::hash_bytes(&[]);
+            let new_hash = utils::hash_bytes(&open.output);
+            self.on_code_change(open.addr, empty_hash, new_hash, &[], &open.output);
+        }
+        let err = open.error.as_ref().map(|e| e as &dyn std::error::Error);
+        self.on_call_exit(open.depth, &open.output, open.gas_used, err, open.failed);
+    }
+
     /// OnCallEnter is called when entering a call
     pub fn on_call_enter(
         &mut self,
@@ -1447,10 +1520,13 @@ impl Tracer {
         }
     }
 
+    /// Sets the "to" address on the active transaction. Used for CREATE/CREATE2
+    /// to patch the deployed contract address after it is known at depth 0
     pub fn set_transaction_to(&mut self, to: Address) {
-        if let Some(trx) = &mut self.transaction {
-            trx.to = to.0.to_vec();
+        if self.transaction.is_none() {
+            panic!("set_transaction_to called outside of an active transaction");
         }
+        self.transaction.as_mut().unwrap().to = to.0.to_vec();
     }
 
 }
