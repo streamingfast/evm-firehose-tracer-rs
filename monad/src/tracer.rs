@@ -17,6 +17,8 @@ enum AccountAccessContext {
 }
 struct OpenCall {
     depth: i32,
+    addr: alloy_primitives::Address,
+    opcode: u8,
     return_bytes: Box<[u8]>,
     gas_used: u64,
     evmc_status: i32,
@@ -61,8 +63,10 @@ pub struct FirehosePlugin {
     // Stack of open calls: enter on TxnCallFrame
     open_calls: Vec<OpenCall>,
     block_txn_count: u64,
-    txn_end_count: usize,
     last_finalized_block: u64,
+    current_txn_index: u32,
+    cumulative_gas_used: u64,
+    system_call_account_access_count: u32,
 }
 
 
@@ -78,7 +82,9 @@ impl FirehosePlugin {
             pending_receipt_logs: Vec::new(),
             open_calls: Vec::new(),
             block_txn_count: 0,
-            txn_end_count: 0,
+            current_txn_index: 0,
+            cumulative_gas_used: 0,
+            system_call_account_access_count: 0,
         }
     }
 
@@ -93,7 +99,9 @@ impl FirehosePlugin {
             pending_receipt_logs: Vec::new(),
             open_calls: Vec::new(),
             block_txn_count: 0,
-            txn_end_count: 0,
+            current_txn_index: 0,
+            cumulative_gas_used: 0,
+            system_call_account_access_count: 0,
         }
     }
 
@@ -104,7 +112,22 @@ impl FirehosePlugin {
         }
     }
 
-    fn call_exit(&mut self, depth: i32, return_bytes: &[u8], gas_used: u64, evmc_status: i32) {
+    fn ensure_system_call_account_access_count(&self, expected: u32) {
+        if self.system_call_account_access_count != expected {
+            panic!(
+                "system call account access count mismatch: got {} expected {}",
+                self.system_call_account_access_count,
+                expected,
+            );
+        }
+    }
+
+    fn call_exit(&mut self, depth: i32, addr: alloy_primitives::Address, opcode: u8, return_bytes: &[u8], gas_used: u64, evmc_status: i32) {
+        if evmc_status == 0 && !return_bytes.is_empty() && (opcode == Opcode::Create as u8 || opcode == Opcode::Create2 as u8) {
+            let empty_hash = firehose::utils::hash_bytes(&[]);
+            let new_hash = firehose::utils::hash_bytes(return_bytes);
+            self.tracer.on_code_change(addr, empty_hash, new_hash, &[], return_bytes);
+        }
         let err = evmc_status_to_error(evmc_status);
         self.tracer.on_call_exit(depth, return_bytes, gas_used, err.as_ref().map(|e| e as &dyn std::error::Error), evmc_status != 0);
     }
@@ -154,10 +177,11 @@ impl FirehosePlugin {
 
         match event {
             ExecEvent::BlockStart(block_start) => {
-                tracing::info!("block start (number={} txn_count={})", block_start.eth_block_input.number, block_start.eth_block_input.txn_count);
-                // self.current_txn_idx = None;
+                tracing::debug!("block start (number={} txn_count={})", block_start.eth_block_input.number, block_start.eth_block_input.txn_count);
+
                 self.block_txn_count = block_start.eth_block_input.txn_count;
-                self.txn_end_count = 0;
+                self.current_txn_index = 0;
+                self.cumulative_gas_used = 0;
 
                 let block_number = block_start.eth_block_input.number;
                 let ei = &block_start.eth_block_input;
@@ -199,7 +223,8 @@ impl FirehosePlugin {
                 }) });
             }
             ExecEvent::BlockEnd(block_end) => {
-                tracing::info!("block end (hash={:?})", B256::from(block_end.eth_block_hash.bytes));
+                tracing::debug!("block end (hash={:?})", B256::from(block_end.eth_block_hash.bytes));
+
                 self.tracer.set_block_hash(B256::from(block_end.eth_block_hash.bytes));
                 let eo = &block_end.exec_output;
                 self.tracer.set_block_header_end_data(
@@ -216,7 +241,8 @@ impl FirehosePlugin {
                 data_bytes,
                 blob_bytes,
             } => {
-                tracing::info!("txn header start (txn={} hash={:?})", txn_index, B256::from(txn_header_start.txn_hash.bytes));
+                tracing::debug!("txn header start (txn={} hash={:?})", txn_index, B256::from(txn_header_start.txn_hash.bytes));
+
                 if self.tracer.is_in_system_call() {
                     self.tracer.on_system_call_end();
                 }
@@ -230,7 +256,7 @@ impl FirehosePlugin {
                     tx_type,
                     hash: B256::from(txn_header_start.txn_hash.bytes),
                     from: alloy_primitives::Address::from(txn_header_start.sender.bytes),
-                    to: if h.is_contract_creation { None } else { Some(alloy_primitives::Address::from(h.to.bytes)) },
+                    to: if h.is_contract_creation { Some(alloy_primitives::Address::ZERO) } else { Some(alloy_primitives::Address::from(h.to.bytes)) },
                     input: alloy_primitives::Bytes::copy_from_slice(&data_bytes),
                     value: alloy_primitives::U256::from_limbs(h.value.limbs),
                     gas: h.gas_limit,
@@ -254,7 +280,8 @@ impl FirehosePlugin {
                 txn_access_list_entry,
                 storage_key_bytes,
             } => {
-                tracing::trace!("txn access list entry (txn={} addr={:?} keys={})", txn_index, alloy_primitives::Address::from(txn_access_list_entry.entry.address.bytes), txn_access_list_entry.entry.storage_key_count);
+                tracing::debug!("txn access list entry (txn={} addr={:?} keys={})", txn_index, alloy_primitives::Address::from(txn_access_list_entry.entry.address.bytes), txn_access_list_entry.entry.storage_key_count);
+
                 self.ensure_in_block_and_in_pending(txn_index, "TxnAccessListEntry");
 
                 if let Some(tx_event) = self.pending_tx_events.get_mut(&txn_index) {
@@ -270,7 +297,8 @@ impl FirehosePlugin {
                 txn_index,
                 txn_auth_list_entry,
             } => {
-                tracing::trace!("txn auth list entry (txn={} addr={:?})", txn_index, alloy_primitives::Address::from(txn_auth_list_entry.entry.address.bytes));
+                tracing::debug!("txn auth list entry (txn={} addr={:?})", txn_index, alloy_primitives::Address::from(txn_auth_list_entry.entry.address.bytes));
+
                 self.ensure_in_block_and_in_pending(txn_index, "TxnAuthListEntry");
 
                 if let Some(tx_event) = self.pending_tx_events.get_mut(&txn_index) {
@@ -286,9 +314,10 @@ impl FirehosePlugin {
                 }
             }
             ExecEvent::TxnEvmOutput { txn_index, output } => {
-                tracing::info!("txn evm output (txn={} gas_used={} status={} call_frame_count={})", txn_index, output.receipt.gas_used, output.receipt.status, output.call_frame_count);
+                tracing::debug!("txn evm output (txn={} gas_used={} status={} call_frame_count={})", txn_index, output.receipt.gas_used, output.receipt.status, output.call_frame_count);
 
                 self.ensure_in_block_and_in_pending(txn_index, "TxnEvmOutput");
+                self.current_txn_index = txn_index as u32;
 
                 if let Some(tx_event) = self.pending_tx_events.remove(&txn_index) {
                     self.tracer.on_tx_start(tx_event, None);
@@ -297,33 +326,37 @@ impl FirehosePlugin {
             }
             ExecEvent::TxnEnd => {
                 tracing::info!("txn end");
-                self.txn_end_count += 1;
 
                 // Flush remaining open calls in reverse
                 while let Some(open) = self.open_calls.pop() {
-                    self.call_exit(open.depth, &open.return_bytes, open.gas_used, open.evmc_status);
+                    self.call_exit(open.depth, open.addr, open.opcode, &open.return_bytes, open.gas_used, open.evmc_status);
                 }
                 let receipt_logs = std::mem::take(&mut self.pending_receipt_logs);
+                let mut bloom = alloy_primitives::Bloom::ZERO;
+                for log in &receipt_logs {
+                    bloom.accrue_raw_log(log.address, &log.topics);
+                }
                 let receipt = if let Some(output) = self.tx_end_receipt.take() {
+                    self.cumulative_gas_used += output.receipt.gas_used;
                     firehose::ReceiptData{
-                        transaction_index: 0,
+                        transaction_index: self.current_txn_index,
                         gas_used: output.receipt.gas_used,
                         status: if output.receipt.status { 1 } else { 0 },
                         logs: receipt_logs,
-                        logs_bloom: [0u8; 256],
-                        cumulative_gas_used: output.receipt.gas_used,
+                        logs_bloom: *bloom.0,
+                        cumulative_gas_used: self.cumulative_gas_used,
                         blob_gas_used: 0,
                         blob_gas_price: None,
                         state_root: None,
                     }
                 } else {
                     firehose::ReceiptData{
-                        transaction_index: 0,
+                        transaction_index: self.current_txn_index,
                         gas_used: 0,
                         status: 0,
                         logs: receipt_logs,
-                        logs_bloom: [0u8; 256],
-                        cumulative_gas_used: 0,
+                        logs_bloom: *bloom.0,
+                        cumulative_gas_used: self.cumulative_gas_used,
                         blob_gas_used: 0,
                         blob_gas_price: None,
                         state_root: None,
@@ -333,7 +366,8 @@ impl FirehosePlugin {
                 self.tracer.on_tx_end(Some(&receipt), None);
             }
             ExecEvent::TxnLog { txn_index, txn_log, topic_bytes, data_bytes } => {
-                tracing::trace!("txn log (txn={} idx={} addr={:?} topics={} data_len={})", txn_index, txn_log.index, alloy_primitives::Address::from(txn_log.address.bytes), txn_log.topic_count, data_bytes.len());
+                tracing::debug!("txn log (txn={} idx={} addr={:?} topics={} data_len={})", txn_index, txn_log.index, alloy_primitives::Address::from(txn_log.address.bytes), txn_log.topic_count, data_bytes.len());
+
                 let mut topics: Vec<B256> = Vec::with_capacity(txn_log.topic_count as usize);
                 for i in 0..txn_log.topic_count as usize {
                     let start = i * 32;
@@ -356,7 +390,8 @@ impl FirehosePlugin {
                 });
             }
             ExecEvent::TxnCallFrame { txn_index, txn_call_frame, input_bytes, return_bytes } => {
-                tracing::trace!("txn call frame (txn={:?} depth={} opcode=0x{:02x} from={:?} to={:?} gas={} gas_used={} status={})", txn_index, txn_call_frame.depth, txn_call_frame.opcode, alloy_primitives::Address::from(txn_call_frame.caller.bytes), alloy_primitives::Address::from(txn_call_frame.call_target.bytes), txn_call_frame.gas, txn_call_frame.gas_used, txn_call_frame.evmc_status);
+                tracing::debug!("txn call frame (txn={:?} depth={} opcode=0x{:02x} from={:?} to={:?} gas={} gas_used={} status={})", txn_index, txn_call_frame.depth, txn_call_frame.opcode, alloy_primitives::Address::from(txn_call_frame.caller.bytes), alloy_primitives::Address::from(txn_call_frame.call_target.bytes), txn_call_frame.gas, txn_call_frame.gas_used, txn_call_frame.evmc_status);
+
                 if !self.tracer.is_in_transaction() {
                     self.tracer.on_system_call_start();
                 }
@@ -366,7 +401,7 @@ impl FirehosePlugin {
                 // Close any open calls at depth >= incoming depth
                 while self.open_calls.last().map_or(false, |c| c.depth >= depth) {
                     let open = self.open_calls.pop().unwrap();
-                    self.call_exit(open.depth, &open.return_bytes, open.gas_used, open.evmc_status);
+                    self.call_exit(open.depth, open.addr, open.opcode, &open.return_bytes, open.gas_used, open.evmc_status);
                 }
 
                 let from = alloy_primitives::Address::from(txn_call_frame.caller.bytes);
@@ -375,10 +410,15 @@ impl FirehosePlugin {
 
                 let evmc_status = txn_call_frame.evmc_status as i32;
 
+                // patch the transaction's "to" with the deployed address
+                if depth == 0 && (txn_call_frame.opcode == Opcode::Create as u8 || txn_call_frame.opcode == Opcode::Create2 as u8) {
+                    self.tracer.set_transaction_to(to);
+                }
+
                 if txn_call_frame.opcode == Opcode::SelfDestruct as u8 {
                     self.tracer.on_call_enter(depth, Opcode::Call as u8, from, to, &input_bytes, txn_call_frame.gas, value);
                     self.tracer.on_opcode(0, Opcode::SelfDestruct as u8, txn_call_frame.gas, txn_call_frame.gas_used, &[], depth, None);
-                    self.call_exit(depth, &return_bytes, txn_call_frame.gas_used, evmc_status);
+                    self.call_exit(depth, to, Opcode::Call as u8, &return_bytes, txn_call_frame.gas_used, evmc_status);
                 } else {
                     self.tracer.on_call_enter(depth, txn_call_frame.opcode, from, to, &input_bytes, txn_call_frame.gas, value);
 
@@ -392,6 +432,8 @@ impl FirehosePlugin {
                     }
                     self.open_calls.push(OpenCall {
                         depth,
+                        addr: to,
+                        opcode: txn_call_frame.opcode,
                         return_bytes,
                         gas_used: txn_call_frame.gas_used,
                         evmc_status,
@@ -399,17 +441,21 @@ impl FirehosePlugin {
                 }
             }
             ExecEvent::AccountAccessListHeader(header) => {
-                tracing::trace!("account access list header (ctx={} count={})", header.access_context, header.entry_count);
+                tracing::debug!("account access list header (ctx={} count={})", header.access_context, header.entry_count);
 
                 if header.access_context == AccountAccessContext::Transaction as u8 {
                     while self.open_calls.last().map_or(false, |c| c.depth > 0) {
                         let open = self.open_calls.pop().unwrap();
-                        self.call_exit(open.depth, &open.return_bytes, open.gas_used, open.evmc_status);
+                        self.call_exit(open.depth, open.addr, open.opcode, &open.return_bytes, open.gas_used, open.evmc_status);
                     }
                 }
             }
             ExecEvent::AccountAccess(account_access) => {
-                tracing::trace!("account access (addr={:?} balance_modified={} nonce_modified={})", alloy_primitives::Address::from(account_access.address.bytes), account_access.is_balance_modified, account_access.is_nonce_modified);
+                tracing::debug!("account access (addr={:?} balance_modified={} nonce_modified={})", alloy_primitives::Address::from(account_access.address.bytes), account_access.is_balance_modified, account_access.is_nonce_modified);
+
+                if self.tracer.is_in_system_call() {
+                    self.system_call_account_access_count += 1;
+                }
 
                 let addr = alloy_primitives::Address::from(account_access.address.bytes);
                 if account_access.is_balance_modified {
@@ -421,7 +467,7 @@ impl FirehosePlugin {
                 }
             }
             ExecEvent::StorageAccess(storage_access) => {
-                tracing::trace!("storage access (addr={:?} modified={} transient={})", alloy_primitives::Address::from(storage_access.address.bytes), storage_access.modified, storage_access.transient);
+                tracing::debug!("storage access (addr={:?} modified={} transient={})", alloy_primitives::Address::from(storage_access.address.bytes), storage_access.modified, storage_access.transient);
 
                 if storage_access.modified && !storage_access.transient {
                     let addr = alloy_primitives::Address::from(storage_access.address.bytes);
@@ -430,17 +476,19 @@ impl FirehosePlugin {
             }
 
             ExecEvent::BlockSystemCallStart { system_call_start, input_bytes } => {
-                tracing::info!("block system call start (from={:?} to={:?} opcode=0x{:02x} gas={})", alloy_primitives::Address::from(system_call_start.caller.bytes), alloy_primitives::Address::from(system_call_start.call_target.bytes), system_call_start.opcode, system_call_start.gas);
+                tracing::debug!("block system call start (from={:?} to={:?} opcode=0x{:02x} gas={})", alloy_primitives::Address::from(system_call_start.caller.bytes), alloy_primitives::Address::from(system_call_start.call_target.bytes), system_call_start.opcode, system_call_start.gas);
 
+                self.system_call_account_access_count = 0;
                 self.tracer.on_system_call_start();
                 let from = alloy_primitives::Address::from(system_call_start.caller.bytes);
                 let to = alloy_primitives::Address::from(system_call_start.call_target.bytes);
                 self.tracer.on_call_enter(0, system_call_start.opcode, from, to, &input_bytes, system_call_start.gas, alloy_primitives::U256::ZERO);
             }
             ExecEvent::BlockSystemCallEnd { system_call_end, return_bytes } => {
-                tracing::info!("block system call end (gas_used={} status={})", system_call_end.gas_used, system_call_end.evmc_status);
+                tracing::debug!("block system call end (gas_used={} status={} num_account_accesses={})", system_call_end.gas_used, system_call_end.evmc_status, system_call_end.num_account_accesses);
 
-                self.call_exit(0, &return_bytes, system_call_end.gas_used, system_call_end.evmc_status as i32);
+                self.ensure_system_call_account_access_count(system_call_end.num_account_accesses);
+                self.call_exit(0, alloy_primitives::Address::ZERO, Opcode::Call as u8, &return_bytes, system_call_end.gas_used, system_call_end.evmc_status as i32);
                 self.tracer.on_system_call_end();
             }
 
@@ -451,32 +499,32 @@ impl FirehosePlugin {
                 tracing::warn!("block reject (code={:?})", e);
             }
             ExecEvent::BlockPerfEvmEnter => {
-                tracing::trace!("block perf evm enter");
+                tracing::debug!("block perf evm enter");
             }
             ExecEvent::BlockPerfEvmExit => {
-                tracing::trace!("block perf evm exit");
+                tracing::debug!("block perf evm exit");
             }
             ExecEvent::BlockFinalized(tag) => {
                 tracing::info!("block finalized (block={} prev_last_finalized={})", tag.block_number, self.last_finalized_block);
                 self.last_finalized_block = self.last_finalized_block.max(tag.block_number);
             }
             ExecEvent::BlockQC(e) => {
-                tracing::debug!("block qc (block={} round={} epoch={})", e.block_tag.block_number, e.round, e.epoch);
+                tracing::info!("block qc (block={} round={} epoch={})", e.block_tag.block_number, e.round, e.epoch);
             }
             ExecEvent::BlockVerified(e) => {
-                tracing::debug!("block verified (block={})", e.block_number);
+                tracing::info!("block verified (block={})", e.block_number);
             }
             ExecEvent::TxnHeaderEnd => {
-                tracing::trace!("txn header end");
+                tracing::debug!("txn header end");
             }
             ExecEvent::TxnReject { txn_index, reject } => {
                 tracing::warn!("txn reject (txn={} code={:?})", txn_index, reject);
             }
             ExecEvent::TxnPerfEvmEnter => {
-                tracing::trace!("txn perf evm enter");
+                tracing::debug!("txn perf evm enter");
             }
             ExecEvent::TxnPerfEvmExit => {
-                tracing::trace!("txn perf evm exit");
+                tracing::debug!("txn perf evm exit");
             }
             ExecEvent::EvmError(e) => {
                 tracing::warn!("evm error (domain={} status={})", e.domain_id, e.status_code);

@@ -86,12 +86,6 @@ impl Tracer {
         }
     }
 
-    /// Resets all block, transaction, and call state
-    pub fn reset(&mut self) {
-        self.reset_block();
-        self.reset_transaction();
-    }
-
     /// Resets the block state only (not transaction or call state)
     fn reset_block(&mut self) {
         self.block = None;
@@ -1453,6 +1447,11 @@ impl Tracer {
         }
     }
 
+    pub fn set_transaction_to(&mut self, to: Address) {
+        if let Some(trx) = &mut self.transaction {
+            trx.to = to.0.to_vec();
+        }
+    }
 
 }
 
