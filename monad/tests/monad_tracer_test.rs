@@ -365,7 +365,7 @@ fn test_tx_contract_creation_has_no_to() {
     t.start_block_trx(0, alice_addr(), None)
         .end_block_trx(0, 21_000, true);
     t.validate(|block| {
-        assert!(block.transaction_traces[0].to.is_empty(), "contract creation should have empty to");
+        assert_eq!(block.transaction_traces[0].to, alloy_primitives::Address::ZERO.as_slice(), "contract creation uses zero address for to");
     });
 }
 
@@ -1346,4 +1346,21 @@ fn test_lfb_progression_across_multiple_blocks() {
     assert_eq!(b3, 3); assert_eq!(lib3, 3, "block 3: BlockFinalized(3) emitted after block 2");
     assert_eq!(b4, 4); assert_eq!(lib4, 3, "block 4: no new signal after block 3, lib persists");
     assert_eq!(b5, 5); assert_eq!(lib5, 4, "block 5: BlockFinalized(4) emitted after block 4");
+}
+
+/// Events that arrive before the first BlockStart are silently dropped (mid-stream start)
+/// Simulate mid-stream: a stray TxnHeaderStart arrives before any block.
+#[test]
+fn test_mid_stream_events_before_block_start_are_dropped() {
+    let mut t = MonadTracerTester::new();
+
+    t.txn_header_start(0, alice_addr(), Some(bob_addr()));
+
+    t.block_finalized(7);
+
+    emit_block(&mut t, 10);
+
+    assert_eq!(t.parse_lib_num(), 7, "stray TxnHeaderStart ignored; BlockFinalized(7) seeds lib");
+    let blocks = t.parse_all_fire_blocks();
+    assert_eq!(blocks.len(), 1, "only one block must be emitted — stray event must not create a block");
 }
