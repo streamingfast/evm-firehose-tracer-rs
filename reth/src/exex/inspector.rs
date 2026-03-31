@@ -80,15 +80,82 @@ impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
         }
     }
 
-    /// Format EVM execution failure reason to match Geth's format
-    fn failure_reason(result: reth::revm::revm::interpreter::InstructionResult) -> StringError {
+    /// Format EVM execution failure reason to match Geth's error strings.
+    ///
+    /// `is_create` distinguishes CREATE context (where OOG produces
+    /// "contract creation code storage out of gas") from CALL context ("out of gas").
+    ///
+    /// Geth reference: go-ethereum/core/vm/errors.go
+    fn failure_reason(
+        result: reth::revm::revm::interpreter::InstructionResult,
+        is_create: bool,
+    ) -> StringError {
         use reth::revm::revm::interpreter::InstructionResult;
         StringError(match result {
+            // Revert variants
             InstructionResult::Revert => "execution reverted".to_string(),
+            InstructionResult::CallTooDeep => "max call depth exceeded".to_string(),
+            InstructionResult::OutOfFunds => "insufficient balance for transfer".to_string(),
+            InstructionResult::CreateInitCodeStartingEF00
+            | InstructionResult::InvalidEOFInitCode
+            | InstructionResult::InvalidExtDelegateCallTarget => {
+                "execution reverted".to_string()
+            }
+
+            // Out-of-gas variants — Geth distinguishes CREATE vs CALL context
+            InstructionResult::OutOfGas
+            | InstructionResult::MemoryOOG
+            | InstructionResult::MemoryLimitOOG
+            | InstructionResult::PrecompileOOG
+            | InstructionResult::InvalidOperandOOG
+            | InstructionResult::ReentrancySentryOOG => {
+                if is_create {
+                    "contract creation code storage out of gas".to_string()
+                } else {
+                    "out of gas".to_string()
+                }
+            }
+
+            // Specific error variants with known Geth equivalents
             InstructionResult::InvalidFEOpcode => "invalid opcode: INVALID".to_string(),
-            other => format!("{:?}", other),
+            InstructionResult::InvalidJump => "invalid jump destination".to_string(),
+            InstructionResult::StackOverflow => "stack limit reached 1024 (1023)".to_string(),
+            InstructionResult::StackUnderflow => "stack underflow".to_string(),
+            InstructionResult::CallNotAllowedInsideStatic
+            | InstructionResult::StateChangeDuringStaticCall => "write protection".to_string(),
+            InstructionResult::CreateCollision => "contract address collision".to_string(),
+            InstructionResult::CreateContractSizeLimit => "max code size exceeded".to_string(),
+            InstructionResult::CreateContractStartingWithEF => {
+                "invalid code: must not begin with 0xef".to_string()
+            }
+            InstructionResult::CreateInitCodeSizeLimit => {
+                "max initcode size exceeded".to_string()
+            }
+            InstructionResult::NonceOverflow => "nonce uint64 overflow".to_string(),
+
+            // Precompile errors — best effort, the specific error message (e.g. "point is
+            // not on curve") is lost by the time we reach call_end since revm collapses it
+            // into a single PrecompileError variant. We use the humanized form as fallback.
+            InstructionResult::PrecompileError => "precompile error".to_string(),
+
+            // Fallback: humanize CamelCase enum variant (e.g. "OutOfOffset" → "out of offset")
+            other => humanize_instruction_result(other),
         })
     }
+}
+
+/// Converts a CamelCase enum Debug representation into lowercase words.
+/// e.g. `NotActivated` → `"not activated"`, `FatalExternalError` → `"fatal external error"`
+fn humanize_instruction_result(result: reth::revm::revm::interpreter::InstructionResult) -> String {
+    let name = format!("{:?}", result);
+    let mut words = String::with_capacity(name.len() + 4);
+    for (i, ch) in name.chars().enumerate() {
+        if ch.is_uppercase() && i > 0 {
+            words.push(' ');
+        }
+        words.push(ch.to_ascii_lowercase());
+    }
+    words
 }
 
 impl<'a, Node: FullNodeComponents, CTX> Inspector<CTX, EthInterpreter>
@@ -113,16 +180,34 @@ where
 
     /// CALL, CALLCODE, DELEGATECALL, or STATICCALL is made
     fn call(&mut self, context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
+        use reth::revm::revm::interpreter::CallScheme;
+
         let depth = context.journal().depth() as i32;
         let call_type = Self::map_call_type_opcode(&inputs.scheme);
+
+        // revm's CallInputs field semantics differ from Geth's for delegate-style calls:
+        //   - caller:           preserved msg.sender from parent context
+        //   - target_address:   the contract whose storage is used (the delegating contract)
+        //   - bytecode_address: the contract whose code actually executes
+        //
+        // Geth/Firehose expects:
+        //   - caller: the contract that issued the DELEGATECALL (= target_address)
+        //   - address: the contract whose code runs (= bytecode_address)
+        //
+        // CALLCODE is similar but only the address differs (caller is already correct).
+        let (from, to) = match inputs.scheme {
+            CallScheme::DelegateCall => (inputs.target_address, inputs.bytecode_address),
+            CallScheme::CallCode => (inputs.caller, inputs.bytecode_address),
+            _ => (inputs.caller, inputs.target_address),
+        };
 
         log_journal("call_enter", context);
 
         self.tracer.on_call_enter(
             depth,
             call_type,
-            inputs.caller,
-            inputs.target_address,
+            from,
+            to,
             inputs.input.bytes(context).as_ref(),
             inputs.gas_limit,
             inputs.value.get(),
@@ -139,7 +224,7 @@ where
         let failed = !outcome.result.is_ok();
         let is_revert = outcome.result.result.is_revert();
         let err: Option<StringError> = if failed {
-            Some(Self::failure_reason(outcome.result.result))
+            Some(Self::failure_reason(outcome.result.result, false))
         } else {
             None
         };
@@ -215,7 +300,7 @@ where
         let failed = !outcome.result.is_ok();
         let is_revert = outcome.result.result.is_revert();
         let err: Option<StringError> = if failed {
-            Some(Self::failure_reason(outcome.result.result))
+            Some(Self::failure_reason(outcome.result.result, true))
         } else {
             None
         };
