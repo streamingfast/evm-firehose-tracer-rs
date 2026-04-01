@@ -77,7 +77,7 @@ fn test_flush_open_calls_depth_1_keeps_root_open() {
 
 #[test]
 fn test_on_call_create_emits_code_change_on_close() {
-    // on_call with a successful CREATE must emit a code change when flushed
+    // on_call with a successful CREATE: caller is responsible for emitting the code change
     let contract_code = vec![0x60, 0x80, 0x60, 0x40];
     let mut tester = TracerTester::new();
     tester.start_block_trx(test_legacy_trx());
@@ -89,12 +89,18 @@ fn test_on_call_create_emits_code_change_on_close() {
         &[],
         53_000,
         alloy_primitives::U256::ZERO,
-        &contract_code,
+        contract_code.clone(),
         50_000,
-        true,
         None,
+        false,
     );
-    tester.tracer.flush_open_calls(0);
+    // Emit code change before flushing (caller's responsibility for CREATE)
+    let empty_hash = firehose::utils::hash_bytes(&[]);
+    let new_hash = firehose::utils::hash_bytes(&contract_code);
+    tester.tracer.on_code_change(bob_addr(), empty_hash, new_hash, &[], &contract_code);
+    let mut open_calls = std::mem::take(&mut tester.tracer.open_calls);
+    open_calls.flush(0, &mut tester.tracer);
+    tester.tracer.open_calls = open_calls;
     tester
         .end_block_trx(Some(success_receipt(53_000)), None, None)
         .validate_with_category("on_call", |block| {
@@ -121,12 +127,14 @@ fn test_on_call_failed_create_no_code_change() {
         &[],
         53_000,
         alloy_primitives::U256::ZERO,
-        &[],
+        vec![],
         53_000,
-        true,
         Some(StringError("execution reverted".to_string())),
+        false,
     );
-    tester.tracer.flush_open_calls(0);
+    let mut open_calls = std::mem::take(&mut tester.tracer.open_calls);
+    open_calls.flush(0, &mut tester.tracer);
+    tester.tracer.open_calls = open_calls;
     tester
         .end_block_trx(Some(success_receipt(53_000)), None, None)
         .validate_with_category("on_call", |block| {

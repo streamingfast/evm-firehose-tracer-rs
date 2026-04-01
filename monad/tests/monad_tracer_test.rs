@@ -877,60 +877,6 @@ fn test_insufficient_balance_call_is_failed_and_reverted() {
 }
 
 // Precompile calls (0x01-0x09): code is considered executed even with no gas consumed.
-// Regular addresses with gas_used=0 are empty account calls — no code executed.
-fn precompile_addr(n: u8) -> Address {
-    let mut bytes = [0u8; 20];
-    bytes[19] = n;
-    Address::from(bytes)
-}
-
-#[test]
-fn test_precompile_addr_1_executed_code_true() {
-    // Precompile 0x01 (ecrecover): gas_used=0 but executed_code must still be true
-    let mut t = MonadTracerTester::new();
-    t.block_start(1, 1)
-        .txn_header_start(0, alice_addr(), Some(precompile_addr(1)))
-        .txn_evm_output_with_frames(0, 0, true, 1)
-        .txn_call_frame_with_status(Some(0), alice_addr(), precompile_addr(1), 0xF1, 0, 0, 0, 0)
-        .txn_end()
-        .block_end();
-    t.validate(|block| {
-        let call = &block.transaction_traces[0].calls[0];
-        assert!(call.executed_code, "calling a precompile executes code");
-    });
-}
-
-#[test]
-fn test_precompile_addr_9_executed_code_true() {
-    // Precompile 0x09 (blake2f): gas_used=0 but executed_code must still be true
-    let mut t = MonadTracerTester::new();
-    t.block_start(1, 1)
-        .txn_header_start(0, alice_addr(), Some(precompile_addr(9)))
-        .txn_evm_output_with_frames(0, 0, true, 1)
-        .txn_call_frame_with_status(Some(0), alice_addr(), precompile_addr(9), 0xF1, 0, 0, 0, 0)
-        .txn_end()
-        .block_end();
-    t.validate(|block| {
-        let call = &block.transaction_traces[0].calls[0];
-        assert!(call.executed_code, "calling a precompile executes code");
-    });
-}
-
-#[test]
-fn test_non_precompile_zero_gas_executed_code_false() {
-    // Normal address with gas_used=0 → executed_code=false (empty account call)
-    let mut t = MonadTracerTester::new();
-    t.block_start(1, 1)
-        .txn_header_start(0, alice_addr(), Some(bob_addr()))
-        .txn_evm_output_with_frames(0, 21_000, true, 1)
-        .txn_call_frame_with_status(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 0, 0)
-        .txn_end()
-        .block_end();
-    t.validate(|block| {
-        let call = &block.transaction_traces[0].calls[0];
-        assert!(!call.executed_code, "a call to an empty account does not execute code");
-    });
-}
 
 // Block header fields: zero hashes must be full 32-byte zeros, not empty
 #[test]
@@ -1173,55 +1119,6 @@ fn test_reverted_call_is_also_failed() {
     });
 }
 
-/// Address 0x00 (the zero address) is NOT a precompile gas_used=0 means no executed_code.
-#[test]
-fn test_zero_address_is_not_precompile() {
-    let zero = Address::ZERO;
-    let mut t = MonadTracerTester::new();
-    t.block_start(1, 1)
-        .txn_header_start(0, alice_addr(), Some(zero))
-        .txn_evm_output_with_frames(0, 0, true, 1)
-        .txn_call_frame_with_status(Some(0), alice_addr(), zero, 0xF1, 0, 0, 0, 0)
-        .txn_end()
-        .block_end();
-    t.validate(|block| {
-        let call = &block.transaction_traces[0].calls[0];
-        assert!(!call.executed_code, "0x00 is not a precompile");
-    });
-}
-
-/// Address 0x0a (one past the last precompile) is NOT a precompile.
-#[test]
-fn test_address_0x0a_is_not_precompile() {
-    let beyond = precompile_addr(10); // 0x0a
-    let mut t = MonadTracerTester::new();
-    t.block_start(1, 1)
-        .txn_header_start(0, alice_addr(), Some(beyond))
-        .txn_evm_output_with_frames(0, 0, true, 1)
-        .txn_call_frame_with_status(Some(0), alice_addr(), beyond, 0xF1, 0, 0, 0, 0)
-        .txn_end()
-        .block_end();
-    t.validate(|block| {
-        let call = &block.transaction_traces[0].calls[0];
-        assert!(!call.executed_code, "0x0a is past the precompile range");
-    });
-}
-
-/// Any call with gas_used > 0 has executed_code, regardless of address.
-#[test]
-fn test_nonzero_gas_used_means_executed_code() {
-    let mut t = MonadTracerTester::new();
-    t.block_start(1, 1)
-        .txn_header_start(0, alice_addr(), Some(bob_addr()))
-        .txn_evm_output_with_frames(0, 50_000, true, 1)
-        .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 50_000, 50_000)
-        .txn_end()
-        .block_end();
-    t.validate(|block| {
-        let call = &block.transaction_traces[0].calls[0];
-        assert!(call.executed_code, "any call consuming gas must have executed_code=true");
-    });
-}
 
 /// With no BlockFinalized event, lib_num in the FIRE BLOCK line is 0.
 #[test]

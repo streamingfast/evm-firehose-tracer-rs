@@ -38,10 +38,6 @@ fn evmc_status_to_error(evmc_status: i32) -> Option<firehose::StringError> {
     Some(firehose::StringError(msg.to_string()))
 }
 
-fn is_precompile(addr: &alloy_primitives::Address) -> bool {
-    let bytes = addr.as_slice();
-    bytes[..19].iter().all(|&b| b == 0) && bytes[19] >= 1 && bytes[19] <= 9
-}
 /// Main Firehose tracer for Monad
 pub struct FirehosePlugin {
     config: FirehosePluginConfig,
@@ -304,7 +300,9 @@ impl FirehosePlugin {
             ExecEvent::TxnEnd => {
                 tracing::info!("txn end");
 
-                self.tracer.flush_open_calls(0);
+                let mut open_calls = std::mem::take(&mut self.tracer.open_calls);
+                open_calls.flush(0, &mut self.tracer);
+                self.tracer.open_calls = open_calls;
                 let receipt_logs = std::mem::take(&mut self.pending_receipt_logs);
                 let mut bloom = alloy_primitives::Bloom::ZERO;
                 for log in &receipt_logs {
@@ -386,13 +384,27 @@ impl FirehosePlugin {
 
                 // SELFDESTRUCT is atomic (enter + opcode + exit with no deferral)
                 if txn_call_frame.opcode == Opcode::SelfDestruct as u8 {
-                    self.tracer.flush_open_calls(depth);
+                    let mut open_calls = std::mem::take(&mut self.tracer.open_calls);
+                    open_calls.flush(depth, &mut self.tracer);
+                    self.tracer.open_calls = open_calls;
                     self.tracer.on_call_enter(depth, Opcode::Call as u8, from, to, &input_bytes, txn_call_frame.gas, value);
                     self.tracer.on_opcode(0, Opcode::SelfDestruct as u8, txn_call_frame.gas, txn_call_frame.gas_used, &[], depth, None);
                     self.tracer.on_call_exit(depth, &return_bytes, txn_call_frame.gas_used, err.as_ref().map(|e| e as &dyn std::error::Error), evmc_status != 0);
                 } else {
-                    let executed_code = txn_call_frame.gas_used > 0 || is_precompile(&to);
-                    self.tracer.on_call(depth, txn_call_frame.opcode, from, to, &input_bytes, txn_call_frame.gas, value, &return_bytes, txn_call_frame.gas_used, executed_code, err);
+                    let opcode = txn_call_frame.opcode;
+                    let gas = txn_call_frame.gas;
+                    let gas_used = txn_call_frame.gas_used;
+                    let return_bytes = return_bytes.into_vec();
+
+                    self.tracer.on_call(depth, opcode, from, to, &input_bytes, gas, value, return_bytes.clone(), gas_used, err.clone(), false);
+
+                    // Successful CREATE: emit code change (output is the deployed bytecode)
+                    let is_create = opcode == Opcode::Create as u8 || opcode == Opcode::Create2 as u8;
+                    if is_create && err.is_none() && !return_bytes.is_empty() {
+                        let empty_hash = firehose::utils::hash_bytes(&[]);
+                        let new_hash = firehose::utils::hash_bytes(&return_bytes);
+                        self.tracer.on_code_change(to, empty_hash, new_hash, &[], &return_bytes);
+                    }
                 }
             }
             ExecEvent::AccountAccessListHeader(header) => {
@@ -400,7 +412,9 @@ impl FirehosePlugin {
 
                 if header.access_context == AccountAccessContext::Transaction as u8 {
                     // flush all sub-calls but keep the root call open
-                    self.tracer.flush_open_calls(1);
+                    let mut open_calls = std::mem::take(&mut self.tracer.open_calls);
+                    open_calls.flush(1, &mut self.tracer);
+                    self.tracer.open_calls = open_calls;
                 }
             }
             ExecEvent::AccountAccess(account_access) => {

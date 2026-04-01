@@ -1,6 +1,6 @@
 use alloy_primitives::Address;
 
-use crate::StringError;
+use crate::{tracer::Tracer, StringError};
 
 /// A call frame that has been entered but not yet exited. The exit is deferred
 /// until the next call frame arrives, or until an explicit flush is requested
@@ -8,9 +8,8 @@ pub struct OpenCall {
     pub depth: i32,
     pub addr: Address,
     pub call_type: i32,
-    pub output: Box<[u8]>,
+    pub output: Vec<u8>,
     pub gas_used: u64,
-    pub failed: bool,
     pub error: Option<StringError>,
 }
 
@@ -21,9 +20,15 @@ pub struct OpenCallStack {
     stack: Vec<OpenCall>,
 }
 
+impl Default for OpenCallStack {
+    fn default() -> Self {
+        Self { stack: Vec::new() }
+    }
+}
+
 impl OpenCallStack {
     pub fn new() -> Self {
-        Self { stack: Vec::new() }
+        Self::default()
     }
 
     pub fn push(&mut self, call: OpenCall) {
@@ -40,7 +45,30 @@ impl OpenCallStack {
         self.stack.pop()
     }
 
-    pub fn clear(&mut self) {
+    /// Flushes all open calls whose depth is >= min_depth, closing them (deepest first)
+    /// Use min_depth = 0 to flush everything, min_depth = 1 to keep the root call open
+    pub fn flush(&mut self, min_depth: i32, tracer: &mut Tracer) {
+        while self.peek_depth().map_or(false, |d| d >= min_depth) {
+            let open = self.stack.pop().unwrap();
+            Self::close(open, tracer);
+        }
+    }
+
+    /// Flushes open calls at depth >= incoming_depth to make room for a new call at that depth.
+    pub fn flush_at_or_below(&mut self, incoming_depth: i32, tracer: &mut Tracer) {
+        while self.peek_depth().map_or(false, |d| d >= incoming_depth) {
+            let open = self.stack.pop().unwrap();
+            Self::close(open, tracer);
+        }
+    }
+
+    fn close(open: OpenCall, tracer: &mut Tracer) {
+        let failed = open.error.is_some();
+        let err = open.error.as_ref().map(|e| e as &dyn std::error::Error);
+        tracer.on_call_exit(open.depth, &open.output, open.gas_used, err, failed);
+    }
+
+    pub fn reset(&mut self) {
         self.stack.clear();
     }
 }

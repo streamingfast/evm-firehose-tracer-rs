@@ -228,7 +228,7 @@ pub enum Opcode {
 /// A simple error type wrapping a string message, used when passing failure
 /// reasons from EVM execution into the `&dyn std::error::Error` slots of the
 /// tracer hooks (e.g. `on_call_exit`).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StringError(pub String);
 
 impl std::fmt::Display for StringError {
