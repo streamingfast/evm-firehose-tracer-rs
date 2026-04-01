@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, Log as AlloyLog, U256};
+use alloy_primitives::{Address, Log as AlloyLog, B256, U256};
 use firehose::{Opcode, StringError};
 use reth::api::FullNodeComponents;
 use reth::revm::revm::context_interface::{ContextTr, JournalTr};
@@ -8,11 +8,19 @@ use reth::revm::revm::interpreter::{
     CreateOutcome, Interpreter,
 };
 
+struct StepContext {
+    start_journal_idx: usize,
+    opcode: u8,
+}
+
 /// FirehoseInspector captures execution traces for the Firehose format
 /// It hooks into EVM execution via the Inspector trait to build a complete call tree
 pub struct FirehoseInspector<'a, Node: FullNodeComponents> {
     tracer: &'a mut firehose::Tracer,
     _phantom: std::marker::PhantomData<Node>,
+
+    /// The last opcode executed in `step`, used to detect SSTORE for storage change tracking in `step_end`.
+    last_step: Option<StepContext>,
 }
 
 impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
@@ -20,6 +28,7 @@ impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
         Self {
             tracer,
             _phantom: std::marker::PhantomData,
+            last_step: None,
         }
     }
 
@@ -162,15 +171,55 @@ where
 {
     /// Called before each opcode executes (equivalent to Geth's OnOpcode hook)
     fn step(&mut self, interp: &mut Interpreter<EthInterpreter>, context: &mut CTX) {
+        let journal = context.journal();
+
         let pc = interp.bytecode.pc() as u64;
         let op = interp.bytecode.opcode();
         let gas = interp.gas.remaining();
-        let depth = context.journal().depth() as i32;
+        let depth = journal.depth() as i32;
+
+        self.last_step = Some(StepContext {
+            start_journal_idx: journal.journal().len(),
+            opcode: op,
+        });
 
         self.tracer.on_opcode(pc, op, gas, 0, &[], depth, None);
 
         if op == Opcode::Keccak256 as u8 {
             Self::step_keccak256(&mut self.tracer, interp);
+        }
+    }
+
+    /// Called after each opcode executes; used to detect SSTORE-induced storage changes.
+    fn step_end(&mut self, _interp: &mut Interpreter<EthInterpreter>, context: &mut CTX) {
+        let step_ctx = match self.last_step.take() {
+            Some(ctx) => ctx,
+            None => return, // No active step (e.g. not in a transaction/system call), skip
+        };
+
+        if step_ctx.opcode != Opcode::Sstore as u8 {
+            return;
+        }
+
+        use reth::revm::revm::context::JournalEntry;
+
+        let journal = context.journal();
+        let new_entries = &journal.journal()[step_ctx.start_journal_idx..];
+        for entry in new_entries {
+            if let JournalEntry::StorageChanged {
+                address,
+                key,
+                had_value,
+            } = entry
+            {
+                let new_value = context.journal().evm_state()[address].storage[key].present_value();
+                self.tracer.on_storage_change(
+                    *address,
+                    B256::from(key.to_be_bytes::<32>()),
+                    B256::from(had_value.to_be_bytes::<32>()),
+                    B256::from(new_value.to_be_bytes::<32>()),
+                );
+            }
         }
     }
 
