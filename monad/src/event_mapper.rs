@@ -1,7 +1,7 @@
 use crate::{Block, BlockHeader, TransactionTrace};
-use firehose::pb::sf::ethereum::r#type::v2::{block, BigInt, AccessTuple, CodeChange};
-use alloy_primitives::{Bloom, BloomInput, keccak256};
+use alloy_primitives::{keccak256, Bloom, BloomInput};
 use eyre::Result;
+use firehose::pb::sf::ethereum::r#type::v2::{block, AccessTuple, BigInt, CodeChange};
 use monad_exec_events::ExecEvent;
 use tracing::debug;
 
@@ -77,15 +77,47 @@ fn compare_u256_bytes(a: &[u8], b: &[u8]) -> i32 {
 }
 
 fn is_precompile_address(addr: &[u8]) -> bool {
-    matches!(addr, [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 1..=10])
+    matches!(
+        addr,
+        [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1..=10
+        ]
+    )
 }
 
 fn ensure_address_bytes(bytes: Vec<u8>) -> Vec<u8> {
-    if bytes.is_empty() { vec![0u8; 20] } else { bytes }
+    if bytes.is_empty() {
+        vec![0u8; 20]
+    } else {
+        bytes
+    }
 }
 
 fn ensure_hash_bytes(bytes: Vec<u8>) -> Vec<u8> {
-    if bytes.is_empty() { vec![0u8; 32] } else { bytes }
+    if bytes.is_empty() {
+        vec![0u8; 32]
+    } else {
+        bytes
+    }
 }
 
 fn calculate_logs_bloom(logs: &[firehose::pb::sf::ethereum::r#type::v2::Log]) -> Vec<u8> {
@@ -253,7 +285,11 @@ impl BlockBuilder {
                 txn_access_list_entry,
                 storage_key_bytes,
             } => {
-                self.handle_txn_access_list_entry(txn_index, txn_access_list_entry, storage_key_bytes)?;
+                self.handle_txn_access_list_entry(
+                    txn_index,
+                    txn_access_list_entry,
+                    storage_key_bytes,
+                )?;
             }
             ExecEvent::TxnEvmOutput { txn_index, output } => {
                 self.current_txn_idx = Some(txn_index);
@@ -262,10 +298,20 @@ impl BlockBuilder {
             ExecEvent::TxnEnd => {
                 self.handle_txn_end()?;
             }
-            ExecEvent::TxnLog { txn_index, txn_log, topic_bytes, data_bytes } => {
+            ExecEvent::TxnLog {
+                txn_index,
+                txn_log,
+                topic_bytes,
+                data_bytes,
+            } => {
                 self.handle_txn_log(txn_index, txn_log, topic_bytes, data_bytes)?;
             }
-            ExecEvent::TxnCallFrame { txn_index, txn_call_frame, input_bytes, return_bytes } => {
+            ExecEvent::TxnCallFrame {
+                txn_index,
+                txn_call_frame,
+                input_bytes,
+                return_bytes,
+            } => {
                 self.handle_call_frame(txn_index, txn_call_frame, input_bytes, return_bytes)?;
             }
             ExecEvent::AccountAccessListHeader(header) => {
@@ -289,7 +335,10 @@ impl BlockBuilder {
         Ok(())
     }
 
-    fn handle_block_start(&mut self, block_start: monad_exec_events::ffi::monad_exec_block_start) -> Result<()> {
+    fn handle_block_start(
+        &mut self,
+        block_start: monad_exec_events::ffi::monad_exec_block_start,
+    ) -> Result<()> {
         debug!("BlockStart: block #{}", self.block_number);
 
         let nonce = u64::from_le_bytes(block_start.eth_block_input.nonce.bytes);
@@ -297,8 +346,10 @@ impl BlockBuilder {
 
         self.parent_hash = ensure_hash_bytes(block_start.parent_eth_hash.bytes.to_vec());
         self.uncle_hash = ensure_hash_bytes(block_start.eth_block_input.ommers_hash.bytes.to_vec());
-        self.coinbase = ensure_address_bytes(block_start.eth_block_input.beneficiary.bytes.to_vec());
-        self.transactions_root = ensure_hash_bytes(block_start.eth_block_input.transactions_root.bytes.to_vec());
+        self.coinbase =
+            ensure_address_bytes(block_start.eth_block_input.beneficiary.bytes.to_vec());
+        self.transactions_root =
+            ensure_hash_bytes(block_start.eth_block_input.transactions_root.bytes.to_vec());
         self.difficulty = block_start.eth_block_input.difficulty;
         self.gas_limit = block_start.eth_block_input.gas_limit;
         self.timestamp = block_start.eth_block_input.timestamp;
@@ -306,19 +357,32 @@ impl BlockBuilder {
         self.mix_hash = ensure_hash_bytes(block_start.eth_block_input.prev_randao.bytes.to_vec());
         self.nonce = nonce;
         self.base_fee_per_gas = block_start.eth_block_input.base_fee_per_gas.limbs.to_vec();
-        self.withdrawals_root = ensure_hash_bytes(block_start.eth_block_input.withdrawals_root.bytes.to_vec());
+        self.withdrawals_root =
+            ensure_hash_bytes(block_start.eth_block_input.withdrawals_root.bytes.to_vec());
 
-        debug!("BLOCK_START parent_hash: {}", hex::encode(&self.parent_hash));
+        debug!(
+            "BLOCK_START parent_hash: {}",
+            hex::encode(&self.parent_hash)
+        );
         Ok(())
     }
 
-    fn handle_block_end(&mut self, block_end: monad_exec_events::ffi::monad_exec_block_end) -> Result<()> {
+    fn handle_block_end(
+        &mut self,
+        block_end: monad_exec_events::ffi::monad_exec_block_end,
+    ) -> Result<()> {
         debug!("BlockEnd: block #{}", self.block_number);
 
         self.block_hash = ensure_hash_bytes(block_end.eth_block_hash.bytes.to_vec());
         self.state_root = ensure_hash_bytes(block_end.exec_output.state_root.bytes.to_vec());
         self.receipts_root = ensure_hash_bytes(block_end.exec_output.receipts_root.bytes.to_vec());
-        self.logs_bloom = if block_end.exec_output.logs_bloom.bytes.iter().all(|&b| b == 0) {
+        self.logs_bloom = if block_end
+            .exec_output
+            .logs_bloom
+            .bytes
+            .iter()
+            .all(|&b| b == 0)
+        {
             vec![0u8; 256]
         } else {
             block_end.exec_output.logs_bloom.bytes.to_vec()
@@ -338,11 +402,14 @@ impl BlockBuilder {
     ) -> Result<()> {
         let expected_access_list_count = txn_header.txn_header.access_list_count;
 
-        self.pending_txn_headers.insert(txn_index, PendingTxnHeader {
-            txn_header,
-            data_bytes,
-            expected_access_list_count,
-        });
+        self.pending_txn_headers.insert(
+            txn_index,
+            PendingTxnHeader {
+                txn_header,
+                data_bytes,
+                expected_access_list_count,
+            },
+        );
 
         if expected_access_list_count == 0 {
             self.try_emit_txn_header(txn_index)?;
@@ -371,7 +438,10 @@ impl BlockBuilder {
             storage_keys,
         };
 
-        self.pending_access_lists.entry(txn_index).or_default().push(access_tuple);
+        self.pending_access_lists
+            .entry(txn_index)
+            .or_default()
+            .push(access_tuple);
         self.try_emit_txn_header(txn_index)?;
         Ok(())
     }
@@ -382,7 +452,8 @@ impl BlockBuilder {
             None => return Ok(()),
         };
 
-        let collected_count = self.pending_access_lists
+        let collected_count = self
+            .pending_access_lists
             .get(&txn_index)
             .map(|l| l.len())
             .unwrap_or(0);
@@ -392,17 +463,33 @@ impl BlockBuilder {
         }
 
         let pending = self.pending_txn_headers.remove(&txn_index).unwrap();
-        let access_list = self.pending_access_lists.remove(&txn_index).unwrap_or_default();
+        let access_list = self
+            .pending_access_lists
+            .remove(&txn_index)
+            .unwrap_or_default();
 
         let txn_type = pending.txn_header.txn_header.txn_type as u32;
         let max_fee_limbs = pending.txn_header.txn_header.max_fee_per_gas.limbs.to_vec();
-        let max_priority_fee_limbs = pending.txn_header.txn_header.max_priority_fee_per_gas.limbs.to_vec();
-        let gas_price = self.calculate_effective_gas_price(&max_fee_limbs, &max_priority_fee_limbs, txn_type);
+        let max_priority_fee_limbs = pending
+            .txn_header
+            .txn_header
+            .max_priority_fee_per_gas
+            .limbs
+            .to_vec();
+        let gas_price =
+            self.calculate_effective_gas_price(&max_fee_limbs, &max_priority_fee_limbs, txn_type);
 
         let value = u256_limbs_to_bytes(&pending.txn_header.txn_header.value.limbs);
         let r = u256_limbs_to_bytes(&pending.txn_header.txn_header.r.limbs);
         let s = u256_limbs_to_bytes(&pending.txn_header.txn_header.s.limbs);
-        let chain_id = pending.txn_header.txn_header.chain_id.limbs.first().copied().unwrap_or(0);
+        let chain_id = pending
+            .txn_header
+            .txn_header
+            .chain_id
+            .limbs
+            .first()
+            .copied()
+            .unwrap_or(0);
         let y_parity = pending.txn_header.txn_header.y_parity;
 
         let v = match txn_type {
@@ -411,10 +498,18 @@ impl BlockBuilder {
                 encode_v_bytes(v_value)
             }
             2 => {
-                if y_parity { vec![1] } else { vec![] }
+                if y_parity {
+                    vec![1]
+                } else {
+                    vec![]
+                }
             }
             _ => {
-                if y_parity { vec![1] } else { vec![] }
+                if y_parity {
+                    vec![1]
+                } else {
+                    vec![]
+                }
             }
         };
 
@@ -422,7 +517,11 @@ impl BlockBuilder {
         let from = ensure_address_bytes(pending.txn_header.sender.bytes.to_vec());
         let to = {
             let raw = pending.txn_header.txn_header.to.bytes.to_vec();
-            if raw.is_empty() { vec![] } else { ensure_address_bytes(raw) }
+            if raw.is_empty() {
+                vec![]
+            } else {
+                ensure_address_bytes(raw)
+            }
         };
 
         let trace = TransactionTrace {
@@ -432,15 +531,23 @@ impl BlockBuilder {
             to,
             nonce: pending.txn_header.txn_header.nonce,
             gas_limit: pending.txn_header.txn_header.gas_limit,
-            value: if value.iter().any(|&b| b != 0) { Some(BigInt { bytes: value }) } else { None },
+            value: if value.iter().any(|&b| b != 0) {
+                Some(BigInt { bytes: value })
+            } else {
+                None
+            },
             gas_price: Some(BigInt { bytes: gas_price }),
             max_fee_per_gas: if txn_type == 2 {
-                Some(BigInt { bytes: u256_limbs_to_bytes(&max_fee_limbs) })
+                Some(BigInt {
+                    bytes: u256_limbs_to_bytes(&max_fee_limbs),
+                })
             } else {
                 None
             },
             max_priority_fee_per_gas: if txn_type == 2 {
-                Some(BigInt { bytes: u256_limbs_to_bytes(&max_priority_fee_limbs) })
+                Some(BigInt {
+                    bytes: u256_limbs_to_bytes(&max_priority_fee_limbs),
+                })
             } else {
                 None
             },
@@ -455,13 +562,16 @@ impl BlockBuilder {
             ..Default::default()
         };
 
-        self.txns.insert(txn_index, TxState {
-            trace,
-            pending_calls: Vec::new(),
-            pending_balance_changes: Vec::new(),
-            pending_nonce_changes: Vec::new(),
-            pending_storage_changes: Vec::new(),
-        });
+        self.txns.insert(
+            txn_index,
+            TxState {
+                trace,
+                pending_calls: Vec::new(),
+                pending_balance_changes: Vec::new(),
+                pending_nonce_changes: Vec::new(),
+                pending_storage_changes: Vec::new(),
+            },
+        );
         Ok(())
     }
 
@@ -470,7 +580,10 @@ impl BlockBuilder {
         txn_index: usize,
         output: monad_exec_events::ffi::monad_exec_txn_evm_output,
     ) -> Result<()> {
-        debug!("TxnEvmOutput: txn_index={}, status={}, gas_used={}", txn_index, output.receipt.status, output.receipt.gas_used);
+        debug!(
+            "TxnEvmOutput: txn_index={}, status={}, gas_used={}",
+            txn_index, output.receipt.status, output.receipt.gas_used
+        );
 
         // TODO: use index if parallel
         self.cumulative_gas_used += output.receipt.gas_used;
@@ -540,7 +653,10 @@ impl BlockBuilder {
                 tx.pending_calls.push(call);
             }
         } else {
-            debug!("BLOCK_PROLOGUE call frame for: {}", hex::encode(call_frame.call_target.bytes));
+            debug!(
+                "BLOCK_PROLOGUE call frame for: {}",
+                hex::encode(call_frame.call_target.bytes)
+            );
             // System calls: group by address at finalize time — store directly
             self.system_calls_calls.push(call);
         }
@@ -579,8 +695,13 @@ impl BlockBuilder {
         let state_reverted = call_frame.evmc_status != 0;
 
         let is_create = call_frame.opcode == 0xF0 || call_frame.opcode == 0xF5;
-        let is_successful_create = is_create && call_frame.evmc_status == 0 && !return_bytes.is_empty();
-        let return_data = if is_successful_create { vec![] } else { return_bytes.to_vec() };
+        let is_successful_create =
+            is_create && call_frame.evmc_status == 0 && !return_bytes.is_empty();
+        let return_data = if is_successful_create {
+            vec![]
+        } else {
+            return_bytes.to_vec()
+        };
         let code_changes = if is_successful_create {
             let target_addr = ensure_address_bytes(call_frame.call_target.bytes.to_vec());
             // old_hash is always the empty code hash (keccak256 of empty bytes) for a new contract
@@ -603,7 +724,11 @@ impl BlockBuilder {
             call_type: call_type as i32,
             caller: ensure_address_bytes(call_frame.caller.bytes.to_vec()),
             address: normalized_call_target,
-            value: if value.iter().any(|&b| b != 0) { Some(BigInt { bytes: value }) } else { None },
+            value: if value.iter().any(|&b| b != 0) {
+                Some(BigInt { bytes: value })
+            } else {
+                None
+            },
             gas_limit: call_frame.gas,
             gas_consumed: call_frame.gas_used,
             return_data,
@@ -657,7 +782,10 @@ impl BlockBuilder {
             Self::assign_parent_indices(&mut tx.trace.calls);
 
             // Propagate state_reverted down the call tree
-            let reverted: std::collections::HashSet<u32> = tx.trace.calls.iter()
+            let reverted: std::collections::HashSet<u32> = tx
+                .trace
+                .calls
+                .iter()
                 .filter(|c| c.state_reverted)
                 .map(|c| c.index)
                 .collect();
@@ -716,11 +844,20 @@ impl BlockBuilder {
         }
 
         // Flush pending state changes onto root call
-        if !tx.pending_balance_changes.is_empty() || !tx.pending_nonce_changes.is_empty() || !tx.pending_storage_changes.is_empty() {
+        if !tx.pending_balance_changes.is_empty()
+            || !tx.pending_nonce_changes.is_empty()
+            || !tx.pending_storage_changes.is_empty()
+        {
             if let Some(root_call) = tx.trace.calls.first_mut() {
-                root_call.balance_changes.extend(std::mem::take(&mut tx.pending_balance_changes));
-                root_call.nonce_changes.extend(std::mem::take(&mut tx.pending_nonce_changes));
-                root_call.storage_changes.extend(std::mem::take(&mut tx.pending_storage_changes));
+                root_call
+                    .balance_changes
+                    .extend(std::mem::take(&mut tx.pending_balance_changes));
+                root_call
+                    .nonce_changes
+                    .extend(std::mem::take(&mut tx.pending_nonce_changes));
+                root_call
+                    .storage_changes
+                    .extend(std::mem::take(&mut tx.pending_storage_changes));
             }
         }
 
@@ -744,16 +881,22 @@ impl BlockBuilder {
         account_access: monad_exec_events::ffi::monad_exec_account_access,
         txn_index: Option<usize>,
     ) -> Result<()> {
-        use firehose::pb::sf::ethereum::r#type::v2::{BalanceChange, BigInt as PbBigInt, NonceChange};
         use firehose::pb::sf::ethereum::r#type::v2::balance_change::Reason as BalanceReason;
+        use firehose::pb::sf::ethereum::r#type::v2::{
+            BalanceChange, BigInt as PbBigInt, NonceChange,
+        };
 
         let prestate_balance = u256_limbs_to_bytes(&account_access.prestate.balance.limbs);
         let modified_balance = u256_limbs_to_bytes(&account_access.modified_balance.limbs);
         let address = ensure_address_bytes(account_access.address.bytes.to_vec());
 
-        debug!("ACCOUNT_ACCESS: addr={} ctx={} bal_mod={} nonce_mod={}",
-               hex::encode(&address), account_access.access_context as u8,
-               account_access.is_balance_modified, account_access.is_nonce_modified);
+        debug!(
+            "ACCOUNT_ACCESS: addr={} ctx={} bal_mod={} nonce_mod={}",
+            hex::encode(&address),
+            account_access.access_context as u8,
+            account_access.is_balance_modified,
+            account_access.is_nonce_modified
+        );
 
         if account_access.access_context as u8 == 0 {
             // BLOCK_PROLOGUE — buffer for finalize
@@ -776,8 +919,12 @@ impl BlockBuilder {
                 if account_access.is_balance_modified {
                     root_call.balance_changes.push(BalanceChange {
                         address: address.clone(),
-                        old_value: Some(PbBigInt { bytes: prestate_balance }),
-                        new_value: Some(PbBigInt { bytes: modified_balance }),
+                        old_value: Some(PbBigInt {
+                            bytes: prestate_balance,
+                        }),
+                        new_value: Some(PbBigInt {
+                            bytes: modified_balance,
+                        }),
                         reason: BalanceReason::MonadTxPostState as i32,
                         ordinal: 0,
                     });
@@ -795,8 +942,12 @@ impl BlockBuilder {
                 if account_access.is_balance_modified {
                     tx.pending_balance_changes.push(BalanceChange {
                         address: address.clone(),
-                        old_value: Some(PbBigInt { bytes: prestate_balance }),
-                        new_value: Some(PbBigInt { bytes: modified_balance }),
+                        old_value: Some(PbBigInt {
+                            bytes: prestate_balance,
+                        }),
+                        new_value: Some(PbBigInt {
+                            bytes: modified_balance,
+                        }),
                         reason: BalanceReason::MonadTxPostState as i32,
                         ordinal: 0,
                     });
@@ -874,7 +1025,11 @@ impl BlockBuilder {
                 let priority_fee = u256_limbs_to_bytes(priority_fee_limbs);
                 let base_fee = u256_limbs_to_bytes(&self.base_fee_per_gas);
                 let sum = add_u256_bytes(&base_fee, &priority_fee);
-                if compare_u256_bytes(&max_fee, &sum) <= 0 { max_fee } else { sum }
+                if compare_u256_bytes(&max_fee, &sum) <= 0 {
+                    max_fee
+                } else {
+                    sum
+                }
             }
             _ => u256_limbs_to_bytes(max_fee_limbs),
         }
@@ -884,21 +1039,25 @@ impl BlockBuilder {
         debug!("Finalizing block {}", self.block_number);
 
         // Collect and sort transactions
-        let mut transactions: Vec<TransactionTrace> = self.txns.into_values().map(|mut tx_state| {
-            let tx = &mut tx_state.trace;
-            if tx.receipt.is_none() {
-                tx.receipt = Some(firehose::pb::sf::ethereum::r#type::v2::TransactionReceipt {
-                    cumulative_gas_used: 0,
-                    logs_bloom: vec![0u8; 256],
-                    logs: Vec::new(),
-                    ..Default::default()
-                });
-            }
-            if let Some(ref mut receipt) = tx.receipt {
-                receipt.logs_bloom = calculate_logs_bloom(&receipt.logs);
-            }
-            tx_state.trace
-        }).collect();
+        let mut transactions: Vec<TransactionTrace> = self
+            .txns
+            .into_values()
+            .map(|mut tx_state| {
+                let tx = &mut tx_state.trace;
+                if tx.receipt.is_none() {
+                    tx.receipt = Some(firehose::pb::sf::ethereum::r#type::v2::TransactionReceipt {
+                        cumulative_gas_used: 0,
+                        logs_bloom: vec![0u8; 256],
+                        logs: Vec::new(),
+                        ..Default::default()
+                    });
+                }
+                if let Some(ref mut receipt) = tx.receipt {
+                    receipt.logs_bloom = calculate_logs_bloom(&receipt.logs);
+                }
+                tx_state.trace
+            })
+            .collect();
         transactions.sort_by_key(|tx| tx.index);
 
         // Assign ordinals
@@ -911,7 +1070,11 @@ impl BlockBuilder {
             let mut open: Vec<usize> = Vec::new();
             for i in 0..n {
                 let depth = tx.calls[i].depth;
-                while open.last().map(|&j| tx.calls[j].depth >= depth).unwrap_or(false) {
+                while open
+                    .last()
+                    .map(|&j| tx.calls[j].depth >= depth)
+                    .unwrap_or(false)
+                {
                     let j = open.pop().unwrap();
                     tx.calls[j].end_ordinal = self.next_ordinal;
                     self.next_ordinal += 1;
@@ -978,11 +1141,18 @@ impl BlockBuilder {
 
         // Apply system account/storage accesses to matching system calls
         {
-            use firehose::pb::sf::ethereum::r#type::v2::{BalanceChange, BigInt as PbBigInt, NonceChange, StorageChange};
             use firehose::pb::sf::ethereum::r#type::v2::balance_change::Reason as BalanceReason;
+            use firehose::pb::sf::ethereum::r#type::v2::{
+                BalanceChange, BigInt as PbBigInt, NonceChange, StorageChange,
+            };
 
-            for (addr, bal_mod, pre_bal, mod_bal, nonce_mod, pre_nonce, mod_nonce) in self.system_calls_account_accesses.drain(..) {
-                let call = self.system_calls_calls.iter_mut().find(|c| c.address == addr);
+            for (addr, bal_mod, pre_bal, mod_bal, nonce_mod, pre_nonce, mod_nonce) in
+                self.system_calls_account_accesses.drain(..)
+            {
+                let call = self
+                    .system_calls_calls
+                    .iter_mut()
+                    .find(|c| c.address == addr);
                 if let Some(call) = call {
                     if bal_mod {
                         call.balance_changes.push(BalanceChange {
@@ -1004,7 +1174,10 @@ impl BlockBuilder {
                 }
             }
             for (addr, key, start, end) in self.system_calls_storage_accesses.drain(..) {
-                let call = self.system_calls_calls.iter_mut().find(|c| c.address == addr);
+                let call = self
+                    .system_calls_calls
+                    .iter_mut()
+                    .find(|c| c.address == addr);
                 if let Some(call) = call {
                     call.storage_changes.push(StorageChange {
                         address: ensure_address_bytes(addr),
@@ -1045,7 +1218,9 @@ impl BlockBuilder {
             mix_hash: self.mix_hash,
             nonce: self.nonce,
             hash: self.block_hash,
-            base_fee_per_gas: Some(BigInt { bytes: u256_limbs_to_bytes(&self.base_fee_per_gas) }),
+            base_fee_per_gas: Some(BigInt {
+                bytes: u256_limbs_to_bytes(&self.base_fee_per_gas),
+            }),
             withdrawals_root: self.withdrawals_root,
             tx_dependency: None,
             blob_gas_used: Some(0),
@@ -1055,7 +1230,8 @@ impl BlockBuilder {
         };
 
         let total_calls: usize = transactions.iter().map(|tx| tx.calls.len()).sum();
-        let total_logs: usize = transactions.iter()
+        let total_logs: usize = transactions
+            .iter()
             .filter_map(|tx| tx.receipt.as_ref())
             .map(|r| r.logs.len())
             .sum();
@@ -1074,17 +1250,30 @@ impl BlockBuilder {
 
         debug!(
             "Finalized block #{}: {} txs, {} calls, {} logs, {} system_calls",
-            self.block_number, block.transaction_traces.len(), total_calls, total_logs, block.system_calls.len()
+            self.block_number,
+            block.transaction_traces.len(),
+            total_calls,
+            total_logs,
+            block.system_calls.len()
         );
         debug!(
             "Block #{} hashes: block_hash={}, parent_hash={}",
             self.block_number,
             hex::encode(&block.hash),
-            block.header.as_ref().map(|h| hex::encode(&h.parent_hash)).unwrap_or_default()
+            block
+                .header
+                .as_ref()
+                .map(|h| hex::encode(&h.parent_hash))
+                .unwrap_or_default()
         );
         for (i, syscall) in block.system_calls.iter().enumerate() {
-            debug!("Block #{} SystemCall {}: address={}, input={}",
-                self.block_number, i, hex::encode(&syscall.address), hex::encode(&syscall.input));
+            debug!(
+                "Block #{} SystemCall {}: address={}, input={}",
+                self.block_number,
+                i,
+                hex::encode(&syscall.address),
+                hex::encode(&syscall.input)
+            );
         }
 
         Ok(block)
@@ -1125,7 +1314,10 @@ impl EventMapper {
 
         debug!("Processing event block={}", block_num);
 
-        let builder = self.blocks.entry(block_num).or_insert_with(|| BlockBuilder::new(block_num));
+        let builder = self
+            .blocks
+            .entry(block_num)
+            .or_insert_with(|| BlockBuilder::new(block_num));
         builder.add_event_old(event)?;
 
         if is_block_end {

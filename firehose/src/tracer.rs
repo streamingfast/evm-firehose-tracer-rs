@@ -5,8 +5,13 @@ use std::sync::Arc;
 use alloy_primitives::{Address, B256, U256};
 
 use super::{
-    callstack::CallStack, config, deferred_call_state::DeferredCallState,
-    finality::FinalityStatus, open_callstack::{OpenCall, OpenCallStack}, ordinal::Ordinal, Config,
+    callstack::CallStack,
+    config,
+    deferred_call_state::DeferredCallState,
+    finality::FinalityStatus,
+    open_callstack::{OpenCall, OpenCallStack},
+    ordinal::Ordinal,
+    Config,
 };
 use crate::types::{BlockEvent, ReceiptData, StateReader, TxEvent};
 use crate::{
@@ -856,7 +861,11 @@ impl Tracer {
     /// Flushes all open calls whose depth is >= min_depth, closing them (deepest first)
     /// Use min_depth = 0 to flush everything, min_depth = 1 to keep the root call open
     pub fn flush_open_calls(&mut self, min_depth: i32) {
-        while self.open_calls.peek_depth().map_or(false, |d| d >= min_depth) {
+        while self
+            .open_calls
+            .peek_depth()
+            .map_or(false, |d| d >= min_depth)
+        {
             let open = self.open_calls.pop().unwrap();
             self.close_open_call(open);
         }
@@ -864,7 +873,11 @@ impl Tracer {
 
     /// Flushes open calls at depth >= incoming_depth to make room for a new call at that depth.
     fn flush_open_calls_at_or_below(&mut self, incoming_depth: i32) {
-        while self.open_calls.peek_depth().map_or(false, |d| d >= incoming_depth) {
+        while self
+            .open_calls
+            .peek_depth()
+            .map_or(false, |d| d >= incoming_depth)
+        {
             let open = self.open_calls.pop().unwrap();
             self.close_open_call(open);
         }
@@ -1528,7 +1541,6 @@ impl Tracer {
         }
         self.transaction.as_mut().unwrap().to = to.0.to_vec();
     }
-
 }
 
 /// Computes the effective gas price for a transaction based on its type and block base fee.

@@ -318,9 +318,8 @@ pub trait StateReader {
     fn exists(&self, address: Address) -> bool;
 }
 
-pub struct NoOpStateReader {
-
-} impl StateReader for NoOpStateReader {
+pub struct NoOpStateReader {}
+impl StateReader for NoOpStateReader {
     fn get_nonce(&self, _address: Address) -> u64 {
         0
     }

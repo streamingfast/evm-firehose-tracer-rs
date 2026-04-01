@@ -454,14 +454,20 @@ fn test_multiple_same_authority_different_nonces_all_valid() {
             assert_eq!(2, trx.set_code_authorizations.len());
 
             let auth1_result = &trx.set_code_authorizations[0];
-            assert_eq!(alice_addr().as_slice(), auth1_result.authority.as_ref().unwrap().as_slice());
+            assert_eq!(
+                alice_addr().as_slice(),
+                auth1_result.authority.as_ref().unwrap().as_slice()
+            );
             assert!(
                 !auth1_result.discarded,
                 "auth1 should NOT be discarded: matching nonce change 0→1 present"
             );
 
             let auth2_result = &trx.set_code_authorizations[1];
-            assert_eq!(alice_addr().as_slice(), auth2_result.authority.as_ref().unwrap().as_slice());
+            assert_eq!(
+                alice_addr().as_slice(),
+                auth2_result.authority.as_ref().unwrap().as_slice()
+            );
             assert!(
                 !auth2_result.discarded,
                 "auth2 should NOT be discarded: matching nonce change 1→2 present"
@@ -611,8 +617,8 @@ fn test_zero_r_s_signature_serializes_as_empty() {
     // normalizeSignaturePoint maps that to nil. The shared tracer must do the same.
     let auth = firehose::types::SetCodeAuthorization {
         chain_id: B256::from([
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 1,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 1,
         ]),
         address: charlie_addr(),
         nonce: 0,

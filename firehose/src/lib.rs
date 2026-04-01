@@ -1,11 +1,11 @@
 mod callstack;
 pub mod config;
 mod deferred_call_state;
-mod open_callstack;
 mod eip7702;
 pub mod finality;
 pub mod logging;
 pub mod mapper;
+mod open_callstack;
 mod ordinal;
 pub mod printer;
 mod tracer;

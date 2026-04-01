@@ -4,7 +4,9 @@
 //! event ring buffer system.
 
 use eyre::Result;
-use monad_event_ring::{DecodedEventRing, EventDecoder, EventDescriptorInfo, EventNextResult, EventPayloadResult};
+use monad_event_ring::{
+    DecodedEventRing, EventDecoder, EventDescriptorInfo, EventNextResult, EventPayloadResult,
+};
 use monad_exec_events::{ExecEvent, ExecEventDecoder, ExecEventRing};
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, Stream};
@@ -61,10 +63,7 @@ impl MonadConsumer {
 
         info!("Successfully opened Monad event ring");
 
-        Ok(Self {
-            config,
-            event_ring,
-        })
+        Ok(Self { config, event_ring })
     }
 
     /// Start consuming events and return a stream of (seqno, ExecEvent)
@@ -127,14 +126,15 @@ impl MonadConsumer {
                     }
                 }
                 EventNextResult::Ready(event_descriptor) => {
-                    let (meta, exec_event) = match event_descriptor.try_filter_map_raw(decode_with_meta) {
-                        EventPayloadResult::Expired => {
-                            warn!("Event payload expired!");
-                            continue;
-                        }
-                        EventPayloadResult::Ready(Some(pair)) => pair,
-                        EventPayloadResult::Ready(None) => continue,
-                    };
+                    let (meta, exec_event) =
+                        match event_descriptor.try_filter_map_raw(decode_with_meta) {
+                            EventPayloadResult::Expired => {
+                                warn!("Event payload expired!");
+                                continue;
+                            }
+                            EventPayloadResult::Ready(Some(pair)) => pair,
+                            EventPayloadResult::Ready(None) => continue,
+                        };
 
                     if let Err(e) = tx.send((meta.seqno, exec_event)).await {
                         warn!("Failed to send processed event: {}", e);
