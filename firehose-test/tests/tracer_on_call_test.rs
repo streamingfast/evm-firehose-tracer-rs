@@ -11,7 +11,13 @@ fn test_on_call_single_call_closed_at_tx_end() {
     let mut tester = TracerTester::new();
     tester
         .start_block_trx(test_legacy_trx())
-        .start_call(alice_addr(), bob_addr(), alloy_primitives::U256::ZERO, 21000, vec![])
+        .start_call(
+            alice_addr(),
+            bob_addr(),
+            alloy_primitives::U256::ZERO,
+            21000,
+            vec![],
+        )
         .end_call(vec![], 21000)
         .end_block_trx(Some(success_receipt(21000)), None, None)
         .validate_with_category("on_call", |block| {
@@ -27,8 +33,20 @@ fn test_on_call_nested_calls_closed_in_order() {
     let mut tester = TracerTester::new();
     tester
         .start_block_trx(test_legacy_trx())
-        .start_call(alice_addr(), bob_addr(), alloy_primitives::U256::ZERO, 100_000, vec![])
-        .start_call(bob_addr(), charlie_addr(), alloy_primitives::U256::ZERO, 50_000, vec![])
+        .start_call(
+            alice_addr(),
+            bob_addr(),
+            alloy_primitives::U256::ZERO,
+            100_000,
+            vec![],
+        )
+        .start_call(
+            bob_addr(),
+            charlie_addr(),
+            alloy_primitives::U256::ZERO,
+            50_000,
+            vec![],
+        )
         .end_call(vec![], 10_000)
         .end_call(vec![], 50_000)
         .end_block_trx(Some(success_receipt(100_000)), None, None)
@@ -55,8 +73,20 @@ fn test_flush_open_calls_depth_1_keeps_root_open() {
     let mut tester = TracerTester::new();
     tester
         .start_block_trx(test_legacy_trx())
-        .start_call(alice_addr(), bob_addr(), alloy_primitives::U256::ZERO, 100_000, vec![])
-        .start_call(bob_addr(), charlie_addr(), alloy_primitives::U256::ZERO, 50_000, vec![])
+        .start_call(
+            alice_addr(),
+            bob_addr(),
+            alloy_primitives::U256::ZERO,
+            100_000,
+            vec![],
+        )
+        .start_call(
+            bob_addr(),
+            charlie_addr(),
+            alloy_primitives::U256::ZERO,
+            50_000,
+            vec![],
+        )
         .end_call(vec![], 10_000) // depth-1 closed (simulates flush(1))
         // balance change after sub-call closes but root still open
         .balance_change(
@@ -70,8 +100,16 @@ fn test_flush_open_calls_depth_1_keeps_root_open() {
         .validate_with_category("on_call", |block| {
             let calls = &block.transaction_traces[0].calls;
             assert_eq!(2, calls.len());
-            assert_eq!(1, calls[0].balance_changes.len(), "root call should have the balance change");
-            assert_eq!(0, calls[1].balance_changes.len(), "sub-call should have no balance change");
+            assert_eq!(
+                1,
+                calls[0].balance_changes.len(),
+                "root call should have the balance change"
+            );
+            assert_eq!(
+                0,
+                calls[1].balance_changes.len(),
+                "sub-call should have no balance change"
+            );
         });
 }
 
@@ -97,7 +135,9 @@ fn test_on_call_create_emits_code_change_on_close() {
     // Emit code change before flushing (caller's responsibility for CREATE)
     let empty_hash = firehose::utils::hash_bytes(&[]);
     let new_hash = firehose::utils::hash_bytes(&contract_code);
-    tester.tracer.on_code_change(bob_addr(), empty_hash, new_hash, &[], &contract_code);
+    tester
+        .tracer
+        .on_code_change(bob_addr(), empty_hash, new_hash, &[], &contract_code);
     let mut open_calls = std::mem::take(&mut tester.tracer.open_calls);
     open_calls.flush(0, &mut tester.tracer);
     tester.tracer.open_calls = open_calls;
@@ -106,11 +146,21 @@ fn test_on_call_create_emits_code_change_on_close() {
         .validate_with_category("on_call", |block| {
             let call = &block.transaction_traces[0].calls[0];
             assert_eq!(pbeth::CallType::Create as i32, call.call_type);
-            assert_eq!(1, call.code_changes.len(), "CREATE should emit a code change");
+            assert_eq!(
+                1,
+                call.code_changes.len(),
+                "CREATE should emit a code change"
+            );
             let cc = &call.code_changes[0];
             assert_eq!(bob_addr().as_slice(), cc.address.as_slice());
-            assert!(cc.old_code.is_empty(), "old code should be empty before deployment");
-            assert_eq!(contract_code, cc.new_code, "new code should be deployed bytecode");
+            assert!(
+                cc.old_code.is_empty(),
+                "old code should be empty before deployment"
+            );
+            assert_eq!(
+                contract_code, cc.new_code,
+                "new code should be deployed bytecode"
+            );
         });
 }
 
@@ -139,6 +189,10 @@ fn test_on_call_failed_create_no_code_change() {
         .end_block_trx(Some(success_receipt(53_000)), None, None)
         .validate_with_category("on_call", |block| {
             let call = &block.transaction_traces[0].calls[0];
-            assert_eq!(0, call.code_changes.len(), "failed CREATE must not emit a code change");
+            assert_eq!(
+                0,
+                call.code_changes.len(),
+                "failed CREATE must not emit a code change"
+            );
         });
 }

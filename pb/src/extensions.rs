@@ -171,4 +171,3 @@ mod tests {
         assert_eq!(large.bytes, vec![0x12, 0x34]);
     }
 }
-

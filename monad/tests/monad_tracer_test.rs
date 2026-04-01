@@ -1,23 +1,39 @@
 use alloy_primitives::{Address, B256, U256};
-use firehose_test::{alice_addr, bob_addr, miner_addr, parse_firehose_block, system_address, InMemoryBuffer};
+use firehose_test::{
+    alice_addr, bob_addr, miner_addr, parse_firehose_block, system_address, InMemoryBuffer,
+};
 use monad_exec_events::ffi::{
     monad_c_address, monad_c_bytes32, monad_c_eth_txn_header, monad_c_eth_txn_receipt,
     monad_c_uint256_ne, monad_exec_account_access, monad_exec_account_access_list_header,
-    monad_exec_block_start, monad_exec_block_tag, monad_exec_txn_call_frame,
+    monad_exec_block_start, monad_exec_block_tag,
+    monad_exec_block_tag as monad_exec_block_finalized, monad_exec_txn_call_frame,
     monad_exec_txn_evm_output, monad_exec_txn_header_start, monad_exec_txn_log,
-    monad_exec_block_tag as monad_exec_block_finalized,
 };
 use monad_exec_events::ExecEvent;
 use monad_tracer::{FirehosePlugin, FirehosePluginConfig};
 use pb::sf::ethereum::r#type::v2 as pbeth;
 
 // FFI helpers
-fn zero_bytes32() -> monad_c_bytes32 { monad_c_bytes32 { bytes: [0u8; 32] } }
-fn zero_u256() -> monad_c_uint256_ne { monad_c_uint256_ne { limbs: [0u64; 4] } }
-fn zero_address() -> monad_c_address { monad_c_address { bytes: [0u8; 20] } }
-fn addr_to_ffi(addr: Address) -> monad_c_address { monad_c_address { bytes: addr.into() } }
-fn u256_to_ffi(v: U256) -> monad_c_uint256_ne { monad_c_uint256_ne { limbs: v.into_limbs() } }
-fn bytes32_to_ffi(b: B256) -> monad_c_bytes32 { monad_c_bytes32 { bytes: b.into() } }
+fn zero_bytes32() -> monad_c_bytes32 {
+    monad_c_bytes32 { bytes: [0u8; 32] }
+}
+fn zero_u256() -> monad_c_uint256_ne {
+    monad_c_uint256_ne { limbs: [0u64; 4] }
+}
+fn zero_address() -> monad_c_address {
+    monad_c_address { bytes: [0u8; 20] }
+}
+fn addr_to_ffi(addr: Address) -> monad_c_address {
+    monad_c_address { bytes: addr.into() }
+}
+fn u256_to_ffi(v: U256) -> monad_c_uint256_ne {
+    monad_c_uint256_ne {
+        limbs: v.into_limbs(),
+    }
+}
+fn bytes32_to_ffi(b: B256) -> monad_c_bytes32 {
+    monad_c_bytes32 { bytes: b.into() }
+}
 
 // MonadTracerTester
 struct MonadTracerTester {
@@ -31,7 +47,10 @@ impl MonadTracerTester {
         let config = FirehosePluginConfig::new(1, "test".to_string());
         let mut plugin = FirehosePlugin::new_with_writer(config, Box::new(output_buffer.clone()));
         plugin.on_blockchain_init("test", "1.0.0");
-        Self { plugin, output_buffer }
+        Self {
+            plugin,
+            output_buffer,
+        }
     }
 
     fn send(&mut self, event: ExecEvent) -> &mut Self {
@@ -42,7 +61,10 @@ impl MonadTracerTester {
     // Block lifecycle
     fn block_start(&mut self, number: u64, txn_count: u64) -> &mut Self {
         let mut bs: monad_exec_block_start = unsafe { std::mem::zeroed() };
-        bs.block_tag = monad_exec_block_tag { id: zero_bytes32(), block_number: number };
+        bs.block_tag = monad_exec_block_tag {
+            id: zero_bytes32(),
+            block_number: number,
+        };
         bs.eth_block_input.number = number;
         bs.eth_block_input.txn_count = txn_count;
         bs.eth_block_input.gas_limit = 30_000_000;
@@ -51,9 +73,18 @@ impl MonadTracerTester {
         self.send(ExecEvent::BlockStart(bs))
     }
 
-    fn block_start_with(&mut self, number: u64, gas_limit: u64, timestamp: u64, base_fee: U256) -> &mut Self {
+    fn block_start_with(
+        &mut self,
+        number: u64,
+        gas_limit: u64,
+        timestamp: u64,
+        base_fee: U256,
+    ) -> &mut Self {
         let mut bs: monad_exec_block_start = unsafe { std::mem::zeroed() };
-        bs.block_tag = monad_exec_block_tag { id: zero_bytes32(), block_number: number };
+        bs.block_tag = monad_exec_block_tag {
+            id: zero_bytes32(),
+            block_number: number,
+        };
         bs.eth_block_input.number = number;
         bs.eth_block_input.gas_limit = gas_limit;
         bs.eth_block_input.timestamp = timestamp;
@@ -70,7 +101,12 @@ impl MonadTracerTester {
     }
 
     // Transaction lifecycle
-    fn txn_header_start(&mut self, txn_index: usize, from: Address, to: Option<Address>) -> &mut Self {
+    fn txn_header_start(
+        &mut self,
+        txn_index: usize,
+        from: Address,
+        to: Option<Address>,
+    ) -> &mut Self {
         self.send(ExecEvent::TxnHeaderStart {
             txn_index,
             txn_header_start: monad_exec_txn_header_start {
@@ -86,10 +122,14 @@ impl MonadTracerTester {
                     value: u256_to_ffi(U256::from(100u64)),
                     to: to.map(addr_to_ffi).unwrap_or(zero_address()),
                     is_contract_creation: to.is_none(),
-                    r: zero_u256(), s: zero_u256(), y_parity: false,
+                    r: zero_u256(),
+                    s: zero_u256(),
+                    y_parity: false,
                     max_fee_per_blob_gas: zero_u256(),
-                    data_length: 0, blob_versioned_hash_length: 0,
-                    access_list_count: 0, auth_list_count: 0,
+                    data_length: 0,
+                    blob_versioned_hash_length: 0,
+                    access_list_count: 0,
+                    auth_list_count: 0,
                 },
             },
             data_bytes: Box::new([]),
@@ -97,7 +137,14 @@ impl MonadTracerTester {
         })
     }
 
-    fn txn_header_start_type2(&mut self, txn_index: usize, from: Address, to: Option<Address>, max_fee: u64, max_priority: u64) -> &mut Self {
+    fn txn_header_start_type2(
+        &mut self,
+        txn_index: usize,
+        from: Address,
+        to: Option<Address>,
+        max_fee: u64,
+        max_priority: u64,
+    ) -> &mut Self {
         self.send(ExecEvent::TxnHeaderStart {
             txn_index,
             txn_header_start: monad_exec_txn_header_start {
@@ -113,10 +160,14 @@ impl MonadTracerTester {
                     value: zero_u256(),
                     to: to.map(addr_to_ffi).unwrap_or(zero_address()),
                     is_contract_creation: to.is_none(),
-                    r: zero_u256(), s: zero_u256(), y_parity: false,
+                    r: zero_u256(),
+                    s: zero_u256(),
+                    y_parity: false,
                     max_fee_per_blob_gas: zero_u256(),
-                    data_length: 0, blob_versioned_hash_length: 0,
-                    access_list_count: 0, auth_list_count: 0,
+                    data_length: 0,
+                    blob_versioned_hash_length: 0,
+                    access_list_count: 0,
+                    auth_list_count: 0,
                 },
             },
             data_bytes: Box::new([]),
@@ -124,7 +175,13 @@ impl MonadTracerTester {
         })
     }
 
-    fn txn_header_start_with_nonce(&mut self, txn_index: usize, from: Address, to: Option<Address>, nonce: u64) -> &mut Self {
+    fn txn_header_start_with_nonce(
+        &mut self,
+        txn_index: usize,
+        from: Address,
+        to: Option<Address>,
+        nonce: u64,
+    ) -> &mut Self {
         self.send(ExecEvent::TxnHeaderStart {
             txn_index,
             txn_header_start: monad_exec_txn_header_start {
@@ -140,10 +197,14 @@ impl MonadTracerTester {
                     value: zero_u256(),
                     to: to.map(addr_to_ffi).unwrap_or(zero_address()),
                     is_contract_creation: to.is_none(),
-                    r: zero_u256(), s: zero_u256(), y_parity: false,
+                    r: zero_u256(),
+                    s: zero_u256(),
+                    y_parity: false,
                     max_fee_per_blob_gas: zero_u256(),
-                    data_length: 0, blob_versioned_hash_length: 0,
-                    access_list_count: 0, auth_list_count: 0,
+                    data_length: 0,
+                    blob_versioned_hash_length: 0,
+                    access_list_count: 0,
+                    auth_list_count: 0,
                 },
             },
             data_bytes: Box::new([]),
@@ -155,25 +216,50 @@ impl MonadTracerTester {
         self.txn_evm_output_with_frames(txn_index, gas_used, status, 0)
     }
 
-    fn txn_evm_output_with_frames(&mut self, txn_index: usize, gas_used: u64, status: bool, call_frame_count: u32) -> &mut Self {
+    fn txn_evm_output_with_frames(
+        &mut self,
+        txn_index: usize,
+        gas_used: u64,
+        status: bool,
+        call_frame_count: u32,
+    ) -> &mut Self {
         self.send(ExecEvent::TxnEvmOutput {
             txn_index,
             output: monad_exec_txn_evm_output {
-                receipt: monad_c_eth_txn_receipt { status, log_count: 0, gas_used },
+                receipt: monad_c_eth_txn_receipt {
+                    status,
+                    log_count: 0,
+                    gas_used,
+                },
                 call_frame_count,
             },
         })
     }
 
-    fn txn_call_frame(&mut self, txn_index: Option<usize>, from: Address, to: Address, opcode: u8, depth: u64, gas: u64, gas_used: u64) -> &mut Self {
+    fn txn_call_frame(
+        &mut self,
+        txn_index: Option<usize>,
+        from: Address,
+        to: Address,
+        opcode: u8,
+        depth: u64,
+        gas: u64,
+        gas_used: u64,
+    ) -> &mut Self {
         self.send(ExecEvent::TxnCallFrame {
             txn_index,
             txn_call_frame: monad_exec_txn_call_frame {
                 index: 0,
                 caller: addr_to_ffi(from),
                 call_target: addr_to_ffi(to),
-                opcode, value: zero_u256(), gas, gas_used,
-                evmc_status: 0, depth, input_length: 0, return_length: 0,
+                opcode,
+                value: zero_u256(),
+                gas,
+                gas_used,
+                evmc_status: 0,
+                depth,
+                input_length: 0,
+                return_length: 0,
             },
             input_bytes: Box::new([]),
             return_bytes: Box::new([]),
@@ -181,9 +267,12 @@ impl MonadTracerTester {
     }
 
     fn account_access_header(&mut self, access_context: u8) -> &mut Self {
-        self.send(ExecEvent::AccountAccessListHeader(monad_exec_account_access_list_header {
-            entry_count: 0, access_context,
-        }))
+        self.send(ExecEvent::AccountAccessListHeader(
+            monad_exec_account_access_list_header {
+                entry_count: 0,
+                access_context,
+            },
+        ))
     }
 
     fn account_access_balance(&mut self, addr: Address, old: U256, new: U256) -> &mut Self {
@@ -204,8 +293,17 @@ impl MonadTracerTester {
         self.send(ExecEvent::AccountAccess(a))
     }
 
-    fn storage_access(&mut self, addr: Address, key: B256, old: B256, new: B256, modified: bool, transient: bool) -> &mut Self {
-        let mut s: monad_exec_events::ffi::monad_exec_storage_access = unsafe { std::mem::zeroed() };
+    fn storage_access(
+        &mut self,
+        addr: Address,
+        key: B256,
+        old: B256,
+        new: B256,
+        modified: bool,
+        transient: bool,
+    ) -> &mut Self {
+        let mut s: monad_exec_events::ffi::monad_exec_storage_access =
+            unsafe { std::mem::zeroed() };
         s.address = addr_to_ffi(addr);
         s.key = bytes32_to_ffi(key);
         s.start_value = bytes32_to_ffi(old);
@@ -219,9 +317,18 @@ impl MonadTracerTester {
         self.txn_log_indexed(txn_index, addr, &[], data, 0)
     }
 
-    fn txn_log_indexed(&mut self, txn_index: usize, addr: Address, topics: &[B256], data: &[u8], index: u32) -> &mut Self {
+    fn txn_log_indexed(
+        &mut self,
+        txn_index: usize,
+        addr: Address,
+        topics: &[B256],
+        data: &[u8],
+        index: u32,
+    ) -> &mut Self {
         let mut topic_bytes: Vec<u8> = Vec::with_capacity(topics.len() * 32);
-        for t in topics { topic_bytes.extend_from_slice(t.as_slice()); }
+        for t in topics {
+            topic_bytes.extend_from_slice(t.as_slice());
+        }
         self.send(ExecEvent::TxnLog {
             txn_index,
             txn_log: monad_exec_txn_log {
@@ -235,15 +342,31 @@ impl MonadTracerTester {
         })
     }
 
-    fn txn_call_frame_with_status(&mut self, txn_index: Option<usize>, from: Address, to: Address, opcode: u8, depth: u64, gas: u64, gas_used: u64, evmc_status: i32) -> &mut Self {
+    fn txn_call_frame_with_status(
+        &mut self,
+        txn_index: Option<usize>,
+        from: Address,
+        to: Address,
+        opcode: u8,
+        depth: u64,
+        gas: u64,
+        gas_used: u64,
+        evmc_status: i32,
+    ) -> &mut Self {
         self.send(ExecEvent::TxnCallFrame {
             txn_index,
             txn_call_frame: monad_exec_txn_call_frame {
                 index: 0,
                 caller: addr_to_ffi(from),
                 call_target: addr_to_ffi(to),
-                opcode, value: zero_u256(), gas, gas_used,
-                evmc_status, depth, input_length: 0, return_length: 0,
+                opcode,
+                value: zero_u256(),
+                gas,
+                gas_used,
+                evmc_status,
+                depth,
+                input_length: 0,
+                return_length: 0,
             },
             input_bytes: Box::new([]),
             return_bytes: Box::new([]),
@@ -251,14 +374,27 @@ impl MonadTracerTester {
     }
 
     // Convenience combinators
-    fn start_block_trx(&mut self, txn_index: usize, from: Address, to: Option<Address>) -> &mut Self {
+    fn start_block_trx(
+        &mut self,
+        txn_index: usize,
+        from: Address,
+        to: Option<Address>,
+    ) -> &mut Self {
         self.block_start(100, 1)
             .txn_header_start(txn_index, from, to)
     }
 
     fn end_block_trx(&mut self, txn_index: usize, gas_used: u64, status: bool) -> &mut Self {
         self.txn_evm_output_with_frames(txn_index, gas_used, status, 1)
-            .txn_call_frame(Some(txn_index), alice_addr(), bob_addr(), 0xF1, 0, gas_used, gas_used)
+            .txn_call_frame(
+                Some(txn_index),
+                alice_addr(),
+                bob_addr(),
+                0xF1,
+                0,
+                gas_used,
+                gas_used,
+            )
             .txn_end()
             .block_end()
     }
@@ -285,7 +421,7 @@ impl MonadTracerTester {
                 // FIRE BLOCK {num} {hash} {prev_num} {prev_hash} {lib_num} {timestamp} {base64}
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 let block_num: u64 = parts[2].parse().expect("block_num is a number");
-                let lib_num: u64  = parts[6].parse().expect("lib_num is a number");
+                let lib_num: u64 = parts[6].parse().expect("lib_num is a number");
                 results.push((block_num, lib_num));
             }
         }
@@ -293,7 +429,10 @@ impl MonadTracerTester {
         results
     }
 
-    fn validate<F>(&self, f: F) where F: FnOnce(&pbeth::Block) {
+    fn validate<F>(&self, f: F)
+    where
+        F: FnOnce(&pbeth::Block),
+    {
         let block = parse_firehose_block(&self.output_buffer.get_bytes());
         f(&block);
     }
@@ -321,9 +460,20 @@ fn test_block_gas_limit_mapped() {
 #[test]
 fn test_block_timestamp_mapped() {
     let mut t = MonadTracerTester::new();
-    t.block_start_with(1, 0, 1_234_567_890, U256::ZERO).block_end();
+    t.block_start_with(1, 0, 1_234_567_890, U256::ZERO)
+        .block_end();
     t.validate(|block| {
-        assert_eq!(block.header.as_ref().unwrap().timestamp.as_ref().unwrap().seconds, 1_234_567_890);
+        assert_eq!(
+            block
+                .header
+                .as_ref()
+                .unwrap()
+                .timestamp
+                .as_ref()
+                .unwrap()
+                .seconds,
+            1_234_567_890
+        );
     });
 }
 
@@ -332,7 +482,13 @@ fn test_block_base_fee_mapped() {
     let mut t = MonadTracerTester::new();
     t.block_start_with(1, 0, 0, U256::from(7u64)).block_end();
     t.validate(|block| {
-        let base_fee = block.header.as_ref().unwrap().base_fee_per_gas.as_ref().unwrap();
+        let base_fee = block
+            .header
+            .as_ref()
+            .unwrap()
+            .base_fee_per_gas
+            .as_ref()
+            .unwrap();
         assert_eq!(base_fee.bytes, vec![7]);
     });
 }
@@ -365,7 +521,11 @@ fn test_tx_contract_creation_has_no_to() {
     t.start_block_trx(0, alice_addr(), None)
         .end_block_trx(0, 21_000, true);
     t.validate(|block| {
-        assert_eq!(block.transaction_traces[0].to, alloy_primitives::Address::ZERO.as_slice(), "contract creation uses zero address for to");
+        assert_eq!(
+            block.transaction_traces[0].to,
+            alloy_primitives::Address::ZERO.as_slice(),
+            "contract creation uses zero address for to"
+        );
     });
 }
 
@@ -431,13 +591,17 @@ fn test_txn_log_mapped() {
     t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
-        .txn_log(0, bob_addr(), &data)  // arrives before call frame
+        .txn_log(0, bob_addr(), &data) // arrives before call frame
         .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
         .txn_end()
         .block_end();
     t.validate(|block| {
         let receipt = block.transaction_traces[0].receipt.as_ref().unwrap();
-        assert_eq!(receipt.logs.len(), 1, "log must be present even though it arrived before call frame");
+        assert_eq!(
+            receipt.logs.len(),
+            1,
+            "log must be present even though it arrived before call frame"
+        );
         assert_eq!(receipt.logs[0].address, bob_addr().as_slice());
         assert_eq!(receipt.logs[0].data, data);
     });
@@ -448,8 +612,7 @@ fn test_txn_log_mapped() {
 fn test_parallel_txns_all_present() {
     // Monad can emit all TxnHeaderStarts before any TxnEvmOutput due to parallel execution
     let mut t = MonadTracerTester::new();
-    t
-        .block_start(5, 2)
+    t.block_start(5, 2)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_header_start(1, bob_addr(), Some(alice_addr()))
         .txn_evm_output(0, 21_000, true)
@@ -469,8 +632,7 @@ fn test_parallel_txns_all_present() {
 fn test_balance_change_in_tx() {
     // The call is open when they arrive, so changes attach to the active call
     let mut t = MonadTracerTester::new();
-    t
-        .block_start(1, 1)
+    t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
         .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
@@ -481,15 +643,17 @@ fn test_balance_change_in_tx() {
     t.validate(|block| {
         let calls = &block.transaction_traces[0].calls;
         assert!(!calls.is_empty(), "call must exist");
-        assert!(!calls[0].balance_changes.is_empty(), "balance change should be in call");
+        assert!(
+            !calls[0].balance_changes.is_empty(),
+            "balance change should be in call"
+        );
     });
 }
 
 #[test]
 fn test_nonce_change_in_tx() {
     let mut t = MonadTracerTester::new();
-    t
-        .block_start(1, 1)
+    t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
         .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
@@ -500,7 +664,10 @@ fn test_nonce_change_in_tx() {
     t.validate(|block| {
         let calls = &block.transaction_traces[0].calls;
         assert!(!calls.is_empty(), "call must exist");
-        assert!(!calls[0].nonce_changes.is_empty(), "nonce change should be in call");
+        assert!(
+            !calls[0].nonce_changes.is_empty(),
+            "nonce change should be in call"
+        );
     });
 }
 
@@ -508,19 +675,28 @@ fn test_nonce_change_in_tx() {
 fn test_storage_change_in_tx() {
     let key = B256::repeat_byte(0x01);
     let mut t = MonadTracerTester::new();
-    t
-        .block_start(1, 1)
+    t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
         .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
         .account_access_header(1)
-        .storage_access(bob_addr(), key, B256::ZERO, B256::repeat_byte(0x02), true, false)
+        .storage_access(
+            bob_addr(),
+            key,
+            B256::ZERO,
+            B256::repeat_byte(0x02),
+            true,
+            false,
+        )
         .txn_end()
         .block_end();
     t.validate(|block| {
         let calls = &block.transaction_traces[0].calls;
         assert!(!calls.is_empty(), "call must exist");
-        assert!(!calls[0].storage_changes.is_empty(), "storage change should be in call");
+        assert!(
+            !calls[0].storage_changes.is_empty(),
+            "storage change should be in call"
+        );
     });
 }
 
@@ -529,17 +705,26 @@ fn test_transient_storage_not_mapped() {
     // transient=true -> should NOT produce a storage change
     let key = B256::repeat_byte(0x01);
     let mut t = MonadTracerTester::new();
-    t
-        .block_start(1, 1)
+    t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output(0, 21_000, true)
         .account_access_header(1)
-        .storage_access(bob_addr(), key, B256::ZERO, B256::repeat_byte(0x02), true, true)
+        .storage_access(
+            bob_addr(),
+            key,
+            B256::ZERO,
+            B256::repeat_byte(0x02),
+            true,
+            true,
+        )
         .txn_end()
         .block_end();
     t.validate(|block| {
         let calls = &block.transaction_traces[0].calls;
-        assert!(!calls.iter().any(|c| !c.storage_changes.is_empty()), "transient storage must not be mapped");
+        assert!(
+            !calls.iter().any(|c| !c.storage_changes.is_empty()),
+            "transient storage must not be mapped"
+        );
     });
 }
 
@@ -549,8 +734,7 @@ fn test_unmodified_storage_not_mapped() {
     let key = B256::repeat_byte(0x01);
     let val = B256::repeat_byte(0xAA);
     let mut t = MonadTracerTester::new();
-    t
-        .block_start(1, 1)
+    t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output(0, 21_000, true)
         .account_access_header(1)
@@ -559,7 +743,10 @@ fn test_unmodified_storage_not_mapped() {
         .block_end();
     t.validate(|block| {
         let calls = &block.transaction_traces[0].calls;
-        assert!(!calls.iter().any(|c| !c.storage_changes.is_empty()), "unmodified storage must not be mapped");
+        assert!(
+            !calls.iter().any(|c| !c.storage_changes.is_empty()),
+            "unmodified storage must not be mapped"
+        );
     });
 }
 
@@ -655,13 +842,16 @@ fn test_logs_arrive_for_tx_whose_header_not_yet_seen() {
             .txn_header_start(0, alice_addr(), Some(bob_addr()))
             .txn_evm_output(0, 21_000, true)
             .txn_end()
-            .txn_log(1, bob_addr(), &data)  // tx1 log before tx1 header or output
+            .txn_log(1, bob_addr(), &data) // tx1 log before tx1 header or output
             .txn_header_start(1, bob_addr(), Some(alice_addr()))
             .txn_evm_output(1, 21_000, true)
             .txn_end()
             .block_end();
     });
-    assert!(result.is_err(), "expected panic: log arrived before its transaction was started");
+    assert!(
+        result.is_err(),
+        "expected panic: log arrived before its transaction was started"
+    );
 }
 
 #[test]
@@ -680,7 +870,10 @@ fn test_tx_call_frames_arrive_after_output() {
     t.validate(|block| {
         assert_eq!(block.transaction_traces.len(), 2);
         assert_eq!(block.transaction_traces[0].calls.len(), 1);
-        assert_eq!(block.transaction_traces[0].calls[0].caller, alice_addr().as_slice());
+        assert_eq!(
+            block.transaction_traces[0].calls[0].caller,
+            alice_addr().as_slice()
+        );
         // tx1 has call_frame_count=0, no TxnCallFrame arrives -> 0 calls
         assert_eq!(block.transaction_traces[1].calls.len(), 0);
     });
@@ -700,8 +893,14 @@ fn test_account_accesses_arrive_after_output_before_txn_end() {
         .block_end();
     t.validate(|block| {
         let calls = &block.transaction_traces[0].calls;
-        assert!(calls.iter().any(|c| !c.balance_changes.is_empty()), "balance change expected");
-        assert!(calls.iter().any(|c| !c.nonce_changes.is_empty()), "nonce change expected");
+        assert!(
+            calls.iter().any(|c| !c.balance_changes.is_empty()),
+            "balance change expected"
+        );
+        assert!(
+            calls.iter().any(|c| !c.nonce_changes.is_empty()),
+            "nonce change expected"
+        );
     });
 }
 
@@ -766,7 +965,11 @@ fn test_multiple_logs_before_call_frame_preserve_order() {
         .block_end();
     t.validate(|block| {
         let calls = &block.transaction_traces[0].calls;
-        assert_eq!(calls[0].logs.len(), 2, "both logs must be present in the call");
+        assert_eq!(
+            calls[0].logs.len(),
+            2,
+            "both logs must be present in the call"
+        );
         // Order preserved
         assert_eq!(calls[0].logs[0].data, [0x01]);
         assert_eq!(calls[0].logs[1].data, [0x02]);
@@ -788,8 +991,8 @@ fn test_log_from_one_tx_does_not_appear_in_next_tx() {
     let mut t = MonadTracerTester::new();
     t.block_start(1, 2)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
-        .txn_evm_output(0, 21_000, true)   // call_frame_count=0
-        .txn_log(0, bob_addr(), &data)       // log belongs to tx0, no call frame to attach it to
+        .txn_evm_output(0, 21_000, true) // call_frame_count=0
+        .txn_log(0, bob_addr(), &data) // log belongs to tx0, no call frame to attach it to
         .txn_end()
         // tx1: no logs, has a call frame
         .txn_header_start(1, bob_addr(), Some(alice_addr()))
@@ -801,7 +1004,11 @@ fn test_log_from_one_tx_does_not_appear_in_next_tx() {
         // tx1's call must have NO logs (they belonged to tx0, were cleared)
         let tx1_calls = &block.transaction_traces[1].calls;
         assert_eq!(tx1_calls.len(), 1);
-        assert_eq!(tx1_calls[0].logs.len(), 0, "log from tx0 must not appear in tx1's call");
+        assert_eq!(
+            tx1_calls[0].logs.len(),
+            0,
+            "log from tx0 must not appear in tx1's call"
+        );
     });
 }
 
@@ -814,13 +1021,28 @@ fn test_successful_call_is_not_failed() {
     t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
-        .txn_call_frame_with_status(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000, 0)
+        .txn_call_frame_with_status(
+            Some(0),
+            alice_addr(),
+            bob_addr(),
+            0xF1,
+            0,
+            21_000,
+            21_000,
+            0,
+        )
         .txn_end()
         .block_end();
     t.validate(|block| {
         let call = &block.transaction_traces[0].calls[0];
-        assert!(!call.status_failed, "successful call must not be marked failed");
-        assert!(call.failure_reason.is_empty(), "successful call must have no failure reason");
+        assert!(
+            !call.status_failed,
+            "successful call must not be marked failed"
+        );
+        assert!(
+            call.failure_reason.is_empty(),
+            "successful call must have no failure reason"
+        );
     });
 }
 
@@ -830,14 +1052,29 @@ fn test_reverted_call_is_failed_and_reverted() {
     t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, false, 1)
-        .txn_call_frame_with_status(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000, 2)
+        .txn_call_frame_with_status(
+            Some(0),
+            alice_addr(),
+            bob_addr(),
+            0xF1,
+            0,
+            21_000,
+            21_000,
+            2,
+        )
         .txn_end()
         .block_end();
     t.validate(|block| {
         let call = &block.transaction_traces[0].calls[0];
         assert!(call.status_failed, "reverted call must be marked failed");
-        assert!(call.status_reverted, "reverted call must be marked reverted");
-        assert!(!call.failure_reason.is_empty(), "reverted call must have a failure reason");
+        assert!(
+            call.status_reverted,
+            "reverted call must be marked reverted"
+        );
+        assert!(
+            !call.failure_reason.is_empty(),
+            "reverted call must have a failure reason"
+        );
     });
 }
 
@@ -847,14 +1084,26 @@ fn test_out_of_gas_call_is_failed_not_reverted() {
     t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, false, 1)
-        .txn_call_frame_with_status(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000, 3)
+        .txn_call_frame_with_status(
+            Some(0),
+            alice_addr(),
+            bob_addr(),
+            0xF1,
+            0,
+            21_000,
+            21_000,
+            3,
+        )
         .txn_end()
         .block_end();
     t.validate(|block| {
         let call = &block.transaction_traces[0].calls[0];
         assert!(call.status_failed, "OOG call must be marked failed");
         assert!(!call.status_reverted, "OOG is not a revert");
-        assert!(!call.failure_reason.is_empty(), "OOG call must have a failure reason");
+        assert!(
+            !call.failure_reason.is_empty(),
+            "OOG call must have a failure reason"
+        );
     });
 }
 
@@ -865,14 +1114,32 @@ fn test_insufficient_balance_call_is_failed_and_reverted() {
     t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, false, 1)
-        .txn_call_frame_with_status(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000, 17)
+        .txn_call_frame_with_status(
+            Some(0),
+            alice_addr(),
+            bob_addr(),
+            0xF1,
+            0,
+            21_000,
+            21_000,
+            17,
+        )
         .txn_end()
         .block_end();
     t.validate(|block| {
         let call = &block.transaction_traces[0].calls[0];
-        assert!(call.status_failed, "insufficient balance call must be marked failed");
-        assert!(call.status_reverted, "insufficient balance is treated as reverted");
-        assert!(!call.failure_reason.is_empty(), "must have a failure reason");
+        assert!(
+            call.status_failed,
+            "insufficient balance call must be marked failed"
+        );
+        assert!(
+            call.status_reverted,
+            "insufficient balance is treated as reverted"
+        );
+        assert!(
+            !call.failure_reason.is_empty(),
+            "must have a failure reason"
+        );
     });
 }
 
@@ -886,7 +1153,11 @@ fn test_block_header_requests_hash_is_zero_bytes() {
     t.validate(|block| {
         let h = block.header.as_ref().unwrap();
         // requests_hash must be 32 zero bytes, not an empty vec (which would serialize as "0x")
-        assert_eq!(h.requests_hash, vec![0u8; 32], "requests_hash must be present as 32 zero bytes");
+        assert_eq!(
+            h.requests_hash,
+            vec![0u8; 32],
+            "requests_hash must be present as 32 zero bytes"
+        );
     });
 }
 
@@ -896,7 +1167,11 @@ fn test_block_header_parent_beacon_root_is_zero_bytes() {
     t.block_start(1, 0).block_end();
     t.validate(|block| {
         let h = block.header.as_ref().unwrap();
-        assert_eq!(h.parent_beacon_root, vec![0u8; 32], "parent_beacon_root must be 32 zero bytes");
+        assert_eq!(
+            h.parent_beacon_root,
+            vec![0u8; 32],
+            "parent_beacon_root must be 32 zero bytes"
+        );
     });
 }
 
@@ -925,7 +1200,7 @@ fn test_block_header_excess_blob_gas_is_zero() {
 fn test_type0_tx_no_eip1559_fields() {
     let mut t = MonadTracerTester::new();
     t.block_start(1, 1)
-        .txn_header_start(0, alice_addr(), Some(bob_addr()))  // type=0
+        .txn_header_start(0, alice_addr(), Some(bob_addr())) // type=0
         .txn_evm_output_with_frames(0, 21_000, true, 1)
         .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
         .txn_end()
@@ -933,10 +1208,24 @@ fn test_type0_tx_no_eip1559_fields() {
     t.validate(|block| {
         let tx = &block.transaction_traces[0];
         // type 0: max_fee_per_gas and max_priority_fee_per_gas should be absent/empty
-        assert!(tx.max_fee_per_gas.is_none() || tx.max_fee_per_gas.as_ref().map(|b| b.bytes.is_empty()).unwrap_or(true),
-            "type 0 tx must not have max_fee_per_gas");
-        assert!(tx.max_priority_fee_per_gas.is_none() || tx.max_priority_fee_per_gas.as_ref().map(|b| b.bytes.is_empty()).unwrap_or(true),
-            "type 0 tx must not have max_priority_fee_per_gas");
+        assert!(
+            tx.max_fee_per_gas.is_none()
+                || tx
+                    .max_fee_per_gas
+                    .as_ref()
+                    .map(|b| b.bytes.is_empty())
+                    .unwrap_or(true),
+            "type 0 tx must not have max_fee_per_gas"
+        );
+        assert!(
+            tx.max_priority_fee_per_gas.is_none()
+                || tx
+                    .max_priority_fee_per_gas
+                    .as_ref()
+                    .map(|b| b.bytes.is_empty())
+                    .unwrap_or(true),
+            "type 0 tx must not have max_priority_fee_per_gas"
+        );
     });
 }
 
@@ -953,13 +1242,23 @@ fn test_type2_tx_has_eip1559_fields() {
         .block_end();
     t.validate(|block| {
         let tx = &block.transaction_traces[0];
-        let mfpg = tx.max_fee_per_gas.as_ref().expect("type 2 must have max_fee_per_gas");
-        let mpfpg = tx.max_priority_fee_per_gas.as_ref().expect("type 2 must have max_priority_fee_per_gas");
+        let mfpg = tx
+            .max_fee_per_gas
+            .as_ref()
+            .expect("type 2 must have max_fee_per_gas");
+        let mpfpg = tx
+            .max_priority_fee_per_gas
+            .as_ref()
+            .expect("type 2 must have max_priority_fee_per_gas");
         // Decode big-endian bytes back to u64
         let mfpg_val = U256::from_be_slice(&mfpg.bytes);
         let mpfpg_val = U256::from_be_slice(&mpfpg.bytes);
         assert_eq!(mfpg_val, U256::from(max_fee), "max_fee_per_gas mismatch");
-        assert_eq!(mpfpg_val, U256::from(max_priority), "max_priority_fee_per_gas mismatch");
+        assert_eq!(
+            mpfpg_val,
+            U256::from(max_priority),
+            "max_priority_fee_per_gas mismatch"
+        );
     });
 }
 
@@ -974,8 +1273,11 @@ fn test_call_with_no_logs_has_empty_logs() {
         .txn_end()
         .block_end();
     t.validate(|block| {
-        assert_eq!(block.transaction_traces[0].calls[0].logs.len(), 0,
-            "call with no emitted logs must have empty logs list");
+        assert_eq!(
+            block.transaction_traces[0].calls[0].logs.len(),
+            0,
+            "call with no emitted logs must have empty logs list"
+        );
     });
 }
 
@@ -998,8 +1300,16 @@ fn test_log_isolated_to_its_transaction() {
         .txn_end()
         .block_end();
     t.validate(|block| {
-        assert_eq!(block.transaction_traces[0].calls[0].logs.len(), 1, "tx0 must have its log");
-        assert_eq!(block.transaction_traces[1].calls[0].logs.len(), 0, "tx1 must not receive tx0's log");
+        assert_eq!(
+            block.transaction_traces[0].calls[0].logs.len(),
+            1,
+            "tx0 must have its log"
+        );
+        assert_eq!(
+            block.transaction_traces[1].calls[0].logs.len(),
+            0,
+            "tx1 must not receive tx0's log"
+        );
     });
 }
 
@@ -1022,8 +1332,16 @@ fn test_log_does_not_bleed_backward_into_previous_tx() {
         .txn_end()
         .block_end();
     t.validate(|block| {
-        assert_eq!(block.transaction_traces[0].calls[0].logs.len(), 0, "tx0 must not receive tx1's log");
-        assert_eq!(block.transaction_traces[1].calls[0].logs.len(), 1, "tx1 must have its log");
+        assert_eq!(
+            block.transaction_traces[0].calls[0].logs.len(),
+            0,
+            "tx0 must not receive tx1's log"
+        );
+        assert_eq!(
+            block.transaction_traces[1].calls[0].logs.len(),
+            1,
+            "tx1 must have its log"
+        );
     });
 }
 
@@ -1044,8 +1362,10 @@ fn test_receipt_log_count_matches_call_log_count() {
         let trx = &block.transaction_traces[0];
         let call_log_count: usize = trx.calls.iter().map(|c| c.logs.len()).sum();
         let receipt_log_count = trx.receipt.as_ref().unwrap().logs.len();
-        assert_eq!(call_log_count, receipt_log_count,
-            "receipt log count must equal total call log count");
+        assert_eq!(
+            call_log_count, receipt_log_count,
+            "receipt log count must equal total call log count"
+        );
         assert_eq!(receipt_log_count, 3);
     });
 }
@@ -1073,12 +1393,24 @@ fn test_successful_call_is_not_reverted() {
     t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
-        .txn_call_frame_with_status(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000, 0)
+        .txn_call_frame_with_status(
+            Some(0),
+            alice_addr(),
+            bob_addr(),
+            0xF1,
+            0,
+            21_000,
+            21_000,
+            0,
+        )
         .txn_end()
         .block_end();
     t.validate(|block| {
         let call = &block.transaction_traces[0].calls[0];
-        assert!(!call.status_reverted, "successful call must not be marked reverted");
+        assert!(
+            !call.status_reverted,
+            "successful call must not be marked reverted"
+        );
     });
 }
 
@@ -1090,7 +1422,16 @@ fn test_failed_non_revert_call_is_not_reverted() {
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, false, 1)
         // status=3 is OOG — failed but not reverted
-        .txn_call_frame_with_status(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000, 3)
+        .txn_call_frame_with_status(
+            Some(0),
+            alice_addr(),
+            bob_addr(),
+            0xF1,
+            0,
+            21_000,
+            21_000,
+            3,
+        )
         .txn_end()
         .block_end();
     t.validate(|block| {
@@ -1107,7 +1448,16 @@ fn test_reverted_call_is_also_failed() {
     t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, false, 1)
-        .txn_call_frame_with_status(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000, 2)
+        .txn_call_frame_with_status(
+            Some(0),
+            alice_addr(),
+            bob_addr(),
+            0xF1,
+            0,
+            21_000,
+            21_000,
+            2,
+        )
         .txn_end()
         .block_end();
     t.validate(|block| {
@@ -1119,7 +1469,6 @@ fn test_reverted_call_is_also_failed() {
     });
 }
 
-
 /// With no BlockFinalized event, lib_num in the FIRE BLOCK line is 0.
 #[test]
 fn test_no_block_finalized_means_lib_zero() {
@@ -1130,7 +1479,11 @@ fn test_no_block_finalized_means_lib_zero() {
         .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
         .txn_end()
         .block_end();
-    assert_eq!(t.parse_lib_num(), 0, "no BlockFinalized → lib_num must be 0");
+    assert_eq!(
+        t.parse_lib_num(),
+        0,
+        "no BlockFinalized → lib_num must be 0"
+    );
 }
 
 /// A BlockFinalized event before block execution sets the lib_num for that block.
@@ -1144,7 +1497,11 @@ fn test_block_finalized_before_block_sets_lib_num() {
         .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
         .txn_end()
         .block_end();
-    assert_eq!(t.parse_lib_num(), 5, "BlockFinalized(5) must produce lib_num=5");
+    assert_eq!(
+        t.parse_lib_num(),
+        5,
+        "BlockFinalized(5) must produce lib_num=5"
+    );
 }
 
 /// BlockFinalized arrives after block ends (the real Monad ordering):
@@ -1169,8 +1526,16 @@ fn test_block_finalized_after_block_end_reflected_in_next_block() {
         .txn_end()
         .block_end();
     let blocks = t.parse_all_fire_blocks();
-    assert_eq!(blocks[0], (20, 0), "block 20: finality not yet seen → lib=0");
-    assert_eq!(blocks[1], (21, 15), "block 21: BlockFinalized(15) seen after block 20 → lib=15");
+    assert_eq!(
+        blocks[0],
+        (20, 0),
+        "block 20: finality not yet seen → lib=0"
+    );
+    assert_eq!(
+        blocks[1],
+        (21, 15),
+        "block 21: BlockFinalized(15) seen after block 20 → lib=15"
+    );
 }
 
 /// Multiple BlockFinalized events: only the highest block number is used.
@@ -1179,14 +1544,18 @@ fn test_highest_block_finalized_wins() {
     let mut t = MonadTracerTester::new();
     t.block_finalized(3)
         .block_finalized(7)
-        .block_finalized(5)  // lower than 7, must not regress
+        .block_finalized(5) // lower than 7, must not regress
         .block_start(10, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
         .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
         .txn_end()
         .block_end();
-    assert_eq!(t.parse_lib_num(), 7, "lib_num must be the highest BlockFinalized seen, not regress");
+    assert_eq!(
+        t.parse_lib_num(),
+        7,
+        "lib_num must be the highest BlockFinalized seen, not regress"
+    );
 }
 
 /// Helper: emit a minimal single-tx block with txn_count=1.
@@ -1238,11 +1607,19 @@ fn test_lfb_progression_across_multiple_blocks() {
     let (b4, lib4) = blocks[3];
     let (b5, lib5) = blocks[4];
 
-    assert_eq!(b1, 1); assert_eq!(lib1, 0, "block 1: no signal yet");
-    assert_eq!(b2, 2); assert_eq!(lib2, 1, "block 2: BlockFinalized(1) emitted after block 1");
-    assert_eq!(b3, 3); assert_eq!(lib3, 3, "block 3: BlockFinalized(3) emitted after block 2");
-    assert_eq!(b4, 4); assert_eq!(lib4, 3, "block 4: no new signal after block 3, lib persists");
-    assert_eq!(b5, 5); assert_eq!(lib5, 4, "block 5: BlockFinalized(4) emitted after block 4");
+    assert_eq!(b1, 1);
+    assert_eq!(lib1, 0, "block 1: no signal yet");
+    assert_eq!(b2, 2);
+    assert_eq!(lib2, 1, "block 2: BlockFinalized(1) emitted after block 1");
+    assert_eq!(b3, 3);
+    assert_eq!(lib3, 3, "block 3: BlockFinalized(3) emitted after block 2");
+    assert_eq!(b4, 4);
+    assert_eq!(
+        lib4, 3,
+        "block 4: no new signal after block 3, lib persists"
+    );
+    assert_eq!(b5, 5);
+    assert_eq!(lib5, 4, "block 5: BlockFinalized(4) emitted after block 4");
 }
 
 /// Events that arrive before the first BlockStart are silently dropped (mid-stream start)
@@ -1257,7 +1634,15 @@ fn test_mid_stream_events_before_block_start_are_dropped() {
 
     emit_block(&mut t, 10);
 
-    assert_eq!(t.parse_lib_num(), 7, "stray TxnHeaderStart ignored; BlockFinalized(7) seeds lib");
+    assert_eq!(
+        t.parse_lib_num(),
+        7,
+        "stray TxnHeaderStart ignored; BlockFinalized(7) seeds lib"
+    );
     let blocks = t.parse_all_fire_blocks();
-    assert_eq!(blocks.len(), 1, "only one block must be emitted — stray event must not create a block");
+    assert_eq!(
+        blocks.len(),
+        1,
+        "only one block must be emitted — stray event must not create a block"
+    );
 }

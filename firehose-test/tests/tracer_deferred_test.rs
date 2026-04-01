@@ -725,6 +725,5 @@ fn test_all_state_types_mixed_before_during_after() {
                 call.code_changes[2].address.as_slice(),
                 "Third code change should be Charlie (after)"
             );
-
         });
 }

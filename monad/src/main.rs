@@ -23,7 +23,11 @@ struct Args {
     #[arg(long, default_value = "monad")]
     network_name: String,
 
-    #[arg(long, env = "MONAD_EVENT_RING_PATH", default_value = "/tmp/monad_events")]
+    #[arg(
+        long,
+        env = "MONAD_EVENT_RING_PATH",
+        default_value = "/tmp/monad_events"
+    )]
     monad_event_ring_path: String,
 
     /// Buffer size for event processing
@@ -49,7 +53,11 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    let level = if args.debug { Level::DEBUG } else { Level::INFO };
+    let level = if args.debug {
+        Level::DEBUG
+    } else {
+        Level::INFO
+    };
     let subscriber = FmtSubscriber::builder().with_max_level(level).finish();
     tracing::subscriber::set_global_default(subscriber)?;
 

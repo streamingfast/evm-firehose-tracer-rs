@@ -5,8 +5,13 @@ use std::sync::Arc;
 use alloy_primitives::{Address, B256, U256};
 
 use super::{
-    callstack::CallStack, config, deferred_call_state::DeferredCallState,
-    finality::FinalityStatus, open_callstack::{OpenCall, OpenCallStack}, ordinal::Ordinal, Config,
+    callstack::CallStack,
+    config,
+    deferred_call_state::DeferredCallState,
+    finality::FinalityStatus,
+    open_callstack::{OpenCall, OpenCallStack},
+    ordinal::Ordinal,
+    Config,
 };
 use crate::types::{BlockEvent, ReceiptData, StateReader, TxEvent};
 use crate::{
@@ -1496,7 +1501,6 @@ impl Tracer {
         self.ensure_in_block_and_in_trx();
         self.transaction.as_mut().unwrap().to = to.0.to_vec();
     }
-
 }
 
 /// Computes the effective gas price for a transaction based on its type and block base fee.

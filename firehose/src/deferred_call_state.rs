@@ -1,5 +1,5 @@
 use pb::sf::ethereum::r#type::v2::{
-    AccountCreation, BalanceChange, Call, CodeChange, NonceChange, StorageChange, Log
+    AccountCreation, BalanceChange, Call, CodeChange, Log, NonceChange, StorageChange,
 };
 
 /// DeferredCallState holds state changes that need to be attached to a call
