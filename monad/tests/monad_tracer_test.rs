@@ -1647,7 +1647,6 @@ fn test_mid_stream_events_before_block_start_are_dropped() {
     );
 }
 
-
 /// State changes (storage, nonce) that arrive via AccountAccess after all call frames have been
 /// flushed (via is_last) must be attributed to the root call via the deferred state path.
 /// This matches the monad event log ordering where AccountAccess events arrive after all
@@ -1669,7 +1668,7 @@ fn test_state_changes_after_is_last_flush_attributed_to_root_call() {
     // AccountAccessListHeader arrives after all frames are already flushed
     t.account_access_header(1);
 
-    // State changes arrive 
+    // State changes arrive
     t.account_access_nonce(alice_addr(), 0, 1);
     t.storage_access(
         bob_addr(),
@@ -1719,4 +1718,3 @@ fn test_state_changes_after_is_last_flush_attributed_to_root_call() {
         );
     });
 }
-

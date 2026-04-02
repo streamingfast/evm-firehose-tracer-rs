@@ -131,7 +131,11 @@ fn test_create_executed_code_true() {
             let call = &trx.calls[0];
 
             assert_eq!(pbeth::CallType::Create as i32, call.call_type);
-            assert_eq!(call.executed_code, Some(true), "ExecutedCode should be true for CREATE");
+            assert_eq!(
+                call.executed_code,
+                Some(true),
+                "ExecutedCode should be true for CREATE"
+            );
         });
 }
 
@@ -154,8 +158,7 @@ fn test_call_no_opcodes_executed_code_false() {
         .validate_with_category("executedcode", |block| {
             let call = &block.transaction_traces[0].calls[0];
             assert_eq!(
-                call.executed_code,
-                None,
+                call.executed_code, None,
                 "ExecutedCode should be None when no opcodes execute"
             );
         });

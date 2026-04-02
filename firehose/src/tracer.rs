@@ -1499,7 +1499,6 @@ impl Tracer {
             }
         }
     }
-
 }
 
 /// Computes the effective gas price for a transaction based on its type and block base fee.
