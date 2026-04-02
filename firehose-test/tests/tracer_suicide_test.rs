@@ -35,8 +35,9 @@ fn test_normal_suicide_different_beneficiary() {
 
             // Verify call is marked as suicided
             assert!(root_call.suicide, "Call should be marked as suicided");
-            assert!(
+            assert_eq!(
                 root_call.executed_code,
+                Some(true),
                 "Call should have ExecutedCode=true"
             );
 
@@ -87,7 +88,7 @@ fn test_suicide_to_self() {
 
             // Verify suicide flag
             assert!(root_call.suicide);
-            assert!(root_call.executed_code);
+            assert_eq!(root_call.executed_code, Some(true));
 
             // Balance changes for suicide-to-self
             let balance_changes = &root_call.balance_changes;
@@ -134,7 +135,7 @@ fn test_suicide_with_zero_balance() {
 
             // Still marked as suicide even with zero balance
             assert!(root_call.suicide);
-            assert!(root_call.executed_code);
+            assert_eq!(root_call.executed_code, Some(true));
 
             // Should still have balance changes
             let balance_changes = &root_call.balance_changes;
@@ -231,7 +232,7 @@ fn test_suicide_in_nested_call() {
             // Nested call (Charlie) - IS suicided
             let nested_call = &trx.calls[1];
             assert!(nested_call.suicide, "Nested call should be suicided");
-            assert!(nested_call.executed_code);
+            assert_eq!(nested_call.executed_code, Some(true));
 
             // Balance changes on the nested call
             let balance_changes = &nested_call.balance_changes;

@@ -814,6 +814,13 @@ pub struct Call {
     pub input: ::prost::alloc::vec::Vec<u8>,
     /// Indicates whether the call executed code.
     ///
+    /// When set to `true`, the call executed EVM bytecode, including precompiles.
+    /// When set to `false`, no code ran.
+    /// When absent (`None` / `nil`), the tracer does not have enough information to determine
+    /// whether code was executed. This is the case for chain-specific tracers (e.g. Monad) that
+    /// receive pre-aggregated call frame events without per-opcode visibility, making it
+    /// impossible to distinguish "code ran" from "no code ran" without additional heuristics.
+    ///
     /// Known Issues
     /// - Version 3:
     ///     This may be incorrectly set to `false` for accounts with code handling native value transfers,
@@ -822,8 +829,8 @@ pub struct Call {
     ///     and later adjusted if the tracer detects an account without code.
     ///
     ///     Fixed in `Version 4`, see <https://docs.substreams.dev/reference-material/chains-and-endpoints/ethereum-data-model> for information about block versions.
-    #[prost(bool, tag="15")]
-    pub executed_code: bool,
+    #[prost(bool, optional, tag="15")]
+    pub executed_code: ::core::option::Option<bool>,
     #[prost(bool, tag="16")]
     pub suicide: bool,
     /// hex representation of the hash -> preimage 
@@ -1484,6 +1491,20 @@ pub struct Withdrawal {
     /// Amount is the value of the withdrawal in gwei (1 gwei = 1e9 wei)
     #[prost(uint64, tag="4")]
     pub amount: u64,
+}
+/// BoolOptional and BoolRequired are test messages used to verify the wire-encoding
+/// difference between optional bool (state: true / false / nil) and plain bool
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct BoolOptional {
+    #[prost(bool, optional, tag="1")]
+    pub state: ::core::option::Option<bool>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct BoolRequired {
+    #[prost(bool, tag="1")]
+    pub state: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

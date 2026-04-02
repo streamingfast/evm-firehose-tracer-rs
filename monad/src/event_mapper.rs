@@ -685,11 +685,11 @@ impl BlockBuilder {
             && return_bytes.is_empty()
             && !is_precompile;
         let executed_code = if is_precompile {
-            true
+            Some(true)
         } else if is_pure_transfer {
-            false
+            Some(false)
         } else {
-            call_frame.gas_used > 0
+            Some(call_frame.gas_used > 0)
         };
 
         let state_reverted = call_frame.evmc_status != 0;
@@ -826,7 +826,7 @@ impl BlockBuilder {
                 gas_consumed: 0,
                 return_data: Vec::new(),
                 input: tx.trace.input.clone(),
-                executed_code: false,
+                executed_code: None,
                 suicide: false,
                 status_failed: tx.trace.status != 1,
                 status_reverted: false,

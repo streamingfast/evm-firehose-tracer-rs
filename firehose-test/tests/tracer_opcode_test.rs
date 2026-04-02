@@ -38,8 +38,9 @@ fn test_invalid_opcode_fault() {
             let call = &trx.calls[0];
 
             // ExecutedCode should be set by OnOpcodeFault
-            assert!(
+            assert_eq!(
                 call.executed_code,
+                Some(true),
                 "ExecutedCode should be set even for faulted opcodes"
             );
 
@@ -76,7 +77,7 @@ fn test_stack_underflow_fault() {
             let trx = &block.transaction_traces[0];
             let call = &trx.calls[0];
 
-            assert!(call.executed_code, "ExecutedCode should be set");
+            assert_eq!(call.executed_code, Some(true), "ExecutedCode should be set");
             assert!(call.status_failed, "Call should fail");
             assert!(call.failure_reason.contains("stack underflow"));
         });
@@ -104,7 +105,7 @@ fn test_stack_overflow_fault() {
             let trx = &block.transaction_traces[0];
             let call = &trx.calls[0];
 
-            assert!(call.executed_code);
+            assert_eq!(call.executed_code, Some(true));
             assert!(call.status_failed);
             assert!(call.failure_reason.contains("stack limit"));
         });
@@ -132,7 +133,7 @@ fn test_out_of_gas_fault() {
             let trx = &block.transaction_traces[0];
             let call = &trx.calls[0];
 
-            assert!(call.executed_code);
+            assert_eq!(call.executed_code, Some(true));
             assert!(call.status_failed);
             // Out of gas is not a revert, it's a failure
             assert!(!call.status_reverted, "Out of gas should not be reverted");
@@ -167,8 +168,9 @@ fn test_nested_call_opcode_fault() {
             let nested_call = &trx.calls[1];
 
             // Nested call should have ExecutedCode set and be failed
-            assert!(
+            assert_eq!(
                 nested_call.executed_code,
+                Some(true),
                 "Nested call should have ExecutedCode"
             );
             assert!(nested_call.status_failed, "Nested call should fail");
@@ -176,8 +178,9 @@ fn test_nested_call_opcode_fault() {
 
             // Root call should succeed and have ExecutedCode (from OpCode call)
             assert!(!root_call.status_failed, "Root call should succeed");
-            assert!(
+            assert_eq!(
                 root_call.executed_code,
+                Some(true),
                 "Root call should have ExecutedCode"
             );
         });
@@ -207,7 +210,7 @@ fn test_multiple_opcode_faults_before_exit() {
             let trx = &block.transaction_traces[0];
             let call = &trx.calls[0];
 
-            assert!(call.executed_code);
+            assert_eq!(call.executed_code, Some(true));
             assert!(call.status_failed);
             // The final error is what's recorded
             assert!(call.failure_reason.contains("final fault"));

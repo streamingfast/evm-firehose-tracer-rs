@@ -1,3 +1,4 @@
+use firehose::{Opcode, StringError};
 use firehose_test::{
     alice_addr, bob_addr, charlie_addr, success_receipt, test_legacy_trx, TracerTester,
 };
@@ -29,8 +30,9 @@ fn test_call_executed_code_true() {
             let call = &trx.calls[0];
 
             assert_eq!(pbeth::CallType::Call as i32, call.call_type);
-            assert!(
+            assert_eq!(
                 call.executed_code,
+                Some(true),
                 "ExecutedCode should be true when opcodes execute"
             );
         });
@@ -60,8 +62,9 @@ fn test_staticcall_executed_code_true() {
             let static_call = &trx.calls[1];
 
             assert_eq!(pbeth::CallType::Static as i32, static_call.call_type);
-            assert!(
+            assert_eq!(
                 static_call.executed_code,
+                Some(true),
                 "ExecutedCode should be true for STATICCALL"
             );
         });
@@ -97,8 +100,9 @@ fn test_delegatecall_executed_code_true() {
             let delegate_call = &trx.calls[1];
 
             assert_eq!(pbeth::CallType::Delegate as i32, delegate_call.call_type);
-            assert!(
+            assert_eq!(
                 delegate_call.executed_code,
+                Some(true),
                 "ExecutedCode should be true for DELEGATECALL"
             );
         });
@@ -127,6 +131,65 @@ fn test_create_executed_code_true() {
             let call = &trx.calls[0];
 
             assert_eq!(pbeth::CallType::Create as i32, call.call_type);
-            assert!(call.executed_code, "ExecutedCode should be true for CREATE");
+            assert_eq!(call.executed_code, Some(true), "ExecutedCode should be true for CREATE");
+        });
+}
+
+#[test]
+fn test_call_no_opcodes_executed_code_false() {
+    // ExecutedCode = false when a call completes with no opcodes (e.g. plain value transfer)
+    let mut tester = TracerTester::new();
+    tester
+        .start_block_trx(test_legacy_trx())
+        .start_call(
+            alice_addr(),
+            bob_addr(),
+            alloy_primitives::U256::from(100),
+            21000,
+            vec![],
+        )
+        // no opcode fired
+        .end_call(vec![], 21000)
+        .end_block_trx(Some(success_receipt(21000)), None, None)
+        .validate_with_category("executedcode", |block| {
+            let call = &block.transaction_traces[0].calls[0];
+            assert_eq!(
+                call.executed_code,
+                None,
+                "ExecutedCode should be None when no opcodes execute"
+            );
+        });
+}
+
+#[test]
+fn test_on_call_executed_code_none() {
+    // ExecutedCode is absent (None) when the call was recorded via on_call (no per-opcode
+    // visibility — e.g. Monad pre-aggregated call frame events)
+    let mut tester = TracerTester::new();
+    tester.start_block_trx(test_legacy_trx());
+    tester.tracer.on_call(
+        0,
+        Opcode::Call as u8,
+        alice_addr(),
+        bob_addr(),
+        &[0x01],
+        21000,
+        alloy_primitives::U256::ZERO,
+        vec![],
+        21000,
+        None,
+        false,
+    );
+    let mut open_calls = std::mem::take(&mut tester.tracer.open_calls);
+    open_calls.flush(0, &mut tester.tracer);
+    tester.tracer.open_calls = open_calls;
+    tester
+        .end_block_trx(Some(success_receipt(21000)), None, None)
+        .validate_with_category("executedcode", |block| {
+            let call = &block.transaction_traces[0].calls[0];
+            assert_eq!(
+                call.executed_code, None,
+                "ExecutedCode should be None when recorded via on_call (no opcode visibility)"
+            );
         });
 }

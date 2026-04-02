@@ -60,6 +60,8 @@ pub struct FirehosePlugin {
     current_txn_index: u32,
     cumulative_gas_used: u64,
     system_call_account_access_count: u32,
+    expected_call_frames: u32,
+    current_call_frame_index: u32,
 }
 
 impl FirehosePlugin {
@@ -76,6 +78,8 @@ impl FirehosePlugin {
             current_txn_index: 0,
             cumulative_gas_used: 0,
             system_call_account_access_count: 0,
+            expected_call_frames: 0,
+            current_call_frame_index: 0,
         }
     }
 
@@ -95,6 +99,8 @@ impl FirehosePlugin {
             current_txn_index: 0,
             cumulative_gas_used: 0,
             system_call_account_access_count: 0,
+            expected_call_frames: 0,
+            current_call_frame_index: 0,
         }
     }
 
@@ -375,6 +381,8 @@ impl FirehosePlugin {
 
                 self.ensure_in_block_and_in_pending(txn_index, "TxnEvmOutput");
                 self.current_txn_index = txn_index as u32;
+                self.expected_call_frames = output.call_frame_count;
+                self.current_call_frame_index = 0;
 
                 if let Some(tx_event) = self.pending_tx_events.remove(&txn_index) {
                     self.tracer.on_tx_start(tx_event, None);
@@ -477,16 +485,6 @@ impl FirehosePlugin {
                 let evmc_status = txn_call_frame.evmc_status as i32;
                 let err = evmc_status_to_error(evmc_status);
 
-                // For root-level, patch transaction's "to" with the
-                // deployed address, for depth > 0, the deployed address is carried
-                // via on_call_enter
-                if depth == 0
-                    && (txn_call_frame.opcode == Opcode::Create as u8
-                        || txn_call_frame.opcode == Opcode::Create2 as u8)
-                {
-                    self.tracer.set_transaction_to(to);
-                }
-
                 // SELFDESTRUCT is atomic (enter + opcode + exit with no deferral)
                 if txn_call_frame.opcode == Opcode::SelfDestruct as u8 {
                     let mut open_calls = std::mem::take(&mut self.tracer.open_calls);
@@ -523,6 +521,9 @@ impl FirehosePlugin {
                     let gas_used = txn_call_frame.gas_used;
                     let return_bytes = return_bytes.into_vec();
 
+                    self.current_call_frame_index += 1;
+                    let is_last = self.current_call_frame_index == self.expected_call_frames;
+
                     self.tracer.on_call(
                         depth,
                         opcode,
@@ -534,7 +535,7 @@ impl FirehosePlugin {
                         return_bytes.clone(),
                         gas_used,
                         err.clone(),
-                        false,
+                        is_last,
                     );
 
                     // Successful CREATE: emit code change (output is the deployed bytecode)

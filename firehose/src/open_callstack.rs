@@ -11,6 +11,7 @@ pub struct OpenCall {
     pub output: Vec<u8>,
     pub gas_used: u64,
     pub error: Option<StringError>,
+    pub is_last: bool,
 }
 
 /// OpenCallStack holds call frames that have been entered but not yet exited.
@@ -50,7 +51,12 @@ impl OpenCallStack {
     pub fn flush(&mut self, min_depth: i32, tracer: &mut Tracer) {
         while self.peek_depth().map_or(false, |d| d >= min_depth) {
             let open = self.stack.pop().unwrap();
+            let is_last = open.is_last;
             Self::close(open, tracer);
+            if is_last {
+                self.flush(0, tracer);
+                return;
+            }
         }
     }
 
@@ -58,7 +64,12 @@ impl OpenCallStack {
     pub fn flush_at_or_below(&mut self, incoming_depth: i32, tracer: &mut Tracer) {
         while self.peek_depth().map_or(false, |d| d >= incoming_depth) {
             let open = self.stack.pop().unwrap();
+            let is_last = open.is_last;
             Self::close(open, tracer);
+            if is_last {
+                self.flush(0, tracer);
+                return;
+            }
         }
     }
 

@@ -848,13 +848,8 @@ impl Tracer {
             output,
             gas_used,
             error: err,
+            is_last,
         });
-
-        if is_last {
-            let mut open_calls = std::mem::take(&mut self.open_calls);
-            open_calls.flush(0, self);
-            self.open_calls = open_calls;
-        }
     }
 
     /// OnCallEnter is called when entering a call
@@ -904,6 +899,16 @@ impl Tracer {
                 .maybe_populate_call_and_reset("enter", &mut call)
             {
                 panic!("failed to populate deferred state on call enter: {}", e);
+            }
+
+            // For root CREATE/CREATE2, patch the transaction's "to" with the deployed address if it hasn't been set yet
+            let is_create = call.call_type == pb::sf::ethereum::r#type::v2::CallType::Create as i32;
+            if is_create {
+                if let Some(trx) = self.transaction.as_mut() {
+                    if trx.to.iter().all(|b| *b == 0) {
+                        trx.to = to.0.to_vec();
+                    }
+                }
             }
         }
 
@@ -1208,7 +1213,7 @@ impl Tracer {
 
         // Set ExecutedCode to true
         if let Some(active_call) = self.call_stack.peek_mut() {
-            active_call.executed_code = true;
+            active_call.executed_code = Some(true);
         }
 
         // The rest of the logic expects that a call succeeded
@@ -1238,7 +1243,7 @@ impl Tracer {
 
         if let Some(active_call) = self.call_stack.peek_mut() {
             // Even faulted opcodes count as executed code
-            active_call.executed_code = true;
+            active_call.executed_code = Some(true);
         }
     }
 
@@ -1495,12 +1500,6 @@ impl Tracer {
         }
     }
 
-    /// Sets the "to" address on the active transaction. Used for CREATE/CREATE2
-    /// to patch the deployed contract address after it is known at depth 0
-    pub fn set_transaction_to(&mut self, to: Address) {
-        self.ensure_in_block_and_in_trx();
-        self.transaction.as_mut().unwrap().to = to.0.to_vec();
-    }
 }
 
 /// Computes the effective gas price for a transaction based on its type and block base fee.
