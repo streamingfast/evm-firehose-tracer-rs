@@ -1646,3 +1646,77 @@ fn test_mid_stream_events_before_block_start_are_dropped() {
         "only one block must be emitted — stray event must not create a block"
     );
 }
+
+
+/// State changes (storage, nonce) that arrive via AccountAccess after all call frames have been
+/// flushed (via is_last) must be attributed to the root call via the deferred state path.
+/// This matches the monad event log ordering where AccountAccess events arrive after all
+/// TxnCallFrame events, with no way to attribute them to a specific sub-call.
+#[test]
+fn test_state_changes_after_is_last_flush_attributed_to_root_call() {
+    let mut t = MonadTracerTester::new();
+
+    // Block with 1 transaction, 2 call frames: root (depth 0) + sub-call (depth 1)
+    t.block_start(1, 1);
+    t.txn_header_start(0, alice_addr(), Some(bob_addr()));
+    // 2 call frames
+    t.txn_evm_output_with_frames(0, 50_000, true, 2);
+    // frame 0: root call depth=0
+    t.txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 50_000, 50_000);
+    // frame 1: sub-call depth=1, is_last=true → triggers flush(0) closing all calls
+    t.txn_call_frame(Some(0), bob_addr(), miner_addr(), 0xF1, 1, 30_000, 30_000);
+
+    // AccountAccessListHeader arrives after all frames are already flushed
+    t.account_access_header(1);
+
+    // State changes arrive 
+    t.account_access_nonce(alice_addr(), 0, 1);
+    t.storage_access(
+        bob_addr(),
+        B256::ZERO,
+        B256::ZERO,
+        B256::from([1u8; 32]),
+        true,
+        false,
+    );
+
+    t.txn_end().block_end();
+
+    t.validate(|block| {
+        let calls = &block.transaction_traces[0].calls;
+        let root_call = &calls[0];
+        assert_eq!(root_call.depth, 0, "root call must be at depth 0");
+
+        // Nonce change must be on root call, not sub-call
+        assert_eq!(
+            root_call.nonce_changes.len(),
+            1,
+            "nonce change must be attributed to root call"
+        );
+        assert_eq!(root_call.nonce_changes[0].old_value, 0);
+        assert_eq!(root_call.nonce_changes[0].new_value, 1);
+
+        // Storage change must be on root call, not sub-call
+        assert_eq!(
+            root_call.storage_changes.len(),
+            1,
+            "storage change must be attributed to root call"
+        );
+        assert_eq!(root_call.storage_changes[0].new_value, vec![1u8; 32]);
+
+        // Sub-call must have no state changes
+        let sub_call = &calls[1];
+        assert_eq!(sub_call.depth, 1);
+        assert_eq!(
+            sub_call.nonce_changes.len(),
+            0,
+            "sub-call must not have nonce changes"
+        );
+        assert_eq!(
+            sub_call.storage_changes.len(),
+            0,
+            "sub-call must not have storage changes"
+        );
+    });
+}
+
