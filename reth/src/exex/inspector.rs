@@ -319,6 +319,12 @@ where
 
         log_journal("create_enter", context);
 
+        // For root-level CREATE/CREATE2 (depth 0), the TxEvent.to was None (contract creation),
+        // leaving the transaction trace's `to` field empty. Patch it now that we know the address.
+        if depth == 0 {
+            self.tracer.set_transaction_to(created_address);
+        }
+
         self.tracer.on_call_enter(
             depth,
             call_type,
