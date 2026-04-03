@@ -7,6 +7,7 @@ use eyre::Result;
 use monad_event_ring::{
     DecodedEventRing, EventDecoder, EventDescriptorInfo, EventNextResult, EventPayloadResult,
 };
+use monad_event_ring::EventRingPath;
 use monad_exec_events::{ExecEvent, ExecEventDecoder, ExecEventRing};
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, Stream};
@@ -58,7 +59,9 @@ impl MonadConsumer {
             config.event_ring_path
         );
 
-        let event_ring = ExecEventRing::new_from_path(&config.event_ring_path)
+        let ring_path = EventRingPath::resolve(&config.event_ring_path)
+            .map_err(|e| eyre::eyre!("Failed to resolve Monad event ring path: {:?}", e))?;
+        let event_ring = ExecEventRing::new(&ring_path)
             .map_err(|e| eyre::eyre!("Failed to open Monad event ring: {:?}", e))?;
 
         info!("Successfully opened Monad event ring");

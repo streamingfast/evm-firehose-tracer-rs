@@ -1491,7 +1491,6 @@ dependencies = [
  "clang-sys",
  "itertools 0.13.0",
  "log",
- "prettyplease",
  "proc-macro2",
  "quote",
  "regex",
@@ -5038,31 +5037,32 @@ dependencies = [
 [[package]]
 name = "monad-event-ring"
 version = "0.1.0"
-source = "git+https://github.com/streamingfast/monad-bft?branch=feature%2Fadd-sys-calls-v0.12.7#920e5ce7d0f1ee1ad6b061d03629607f33101798"
+source = "git+https://github.com/streamingfast/monad-bft?branch=feature%2Fadd-sys-calls-v0.12.7#d0907226bccd1942dacf25a03eed906de4c0ff9b"
 dependencies = [
  "bindgen 0.71.1",
  "cc",
  "cmake",
  "libc",
- "zstd",
 ]
 
 [[package]]
 name = "monad-exec-events"
 version = "0.1.0"
-source = "git+https://github.com/streamingfast/monad-bft?branch=feature%2Fadd-sys-calls-v0.12.7#920e5ce7d0f1ee1ad6b061d03629607f33101798"
+source = "git+https://github.com/streamingfast/monad-bft?branch=feature%2Fadd-sys-calls-v0.12.7#d0907226bccd1942dacf25a03eed906de4c0ff9b"
 dependencies = [
  "bindgen 0.71.1",
+ "cc",
  "hex",
  "itertools 0.10.5",
  "monad-event-ring",
  "serde",
+ "strum",
  "tracing",
 ]
 
 [[package]]
 name = "monad-tracer"
-version = "0.1.0"
+version = "0.14.0"
 dependencies = [
  "alloy-primitives",
  "base64 0.22.1",

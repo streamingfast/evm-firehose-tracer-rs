@@ -238,7 +238,7 @@ impl MonadTracerTester {
 
     fn txn_call_frame(
         &mut self,
-        txn_index: Option<usize>,
+        txn_index: usize,
         from: Address,
         to: Address,
         opcode: u8,
@@ -344,7 +344,7 @@ impl MonadTracerTester {
 
     fn txn_call_frame_with_status(
         &mut self,
-        txn_index: Option<usize>,
+        txn_index: usize,
         from: Address,
         to: Address,
         opcode: u8,
@@ -387,7 +387,7 @@ impl MonadTracerTester {
     fn end_block_trx(&mut self, txn_index: usize, gas_used: u64, status: bool) -> &mut Self {
         self.txn_evm_output_with_frames(txn_index, gas_used, status, 1)
             .txn_call_frame(
-                Some(txn_index),
+                txn_index,
                 alice_addr(),
                 bob_addr(),
                 0xF1,
@@ -592,7 +592,7 @@ fn test_txn_log_mapped() {
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
         .txn_log(0, bob_addr(), &data) // arrives before call frame
-        .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
+        .txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
         .txn_end()
         .block_end();
     t.validate(|block| {
@@ -635,7 +635,7 @@ fn test_balance_change_in_tx() {
     t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
-        .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
+        .txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
         .account_access_header(1)
         .account_access_balance(bob_addr(), U256::from(100u64), U256::from(200u64))
         .txn_end()
@@ -656,7 +656,7 @@ fn test_nonce_change_in_tx() {
     t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
-        .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
+        .txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
         .account_access_header(1)
         .account_access_nonce(alice_addr(), 5, 6)
         .txn_end()
@@ -678,7 +678,7 @@ fn test_storage_change_in_tx() {
     t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
-        .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
+        .txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
         .account_access_header(1)
         .storage_access(
             bob_addr(),
@@ -760,13 +760,13 @@ fn test_all_headers_before_any_output() {
         .txn_header_start(1, bob_addr(), Some(alice_addr()))
         .txn_header_start(2, miner_addr(), Some(alice_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
-        .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
+        .txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
         .txn_end()
         .txn_evm_output_with_frames(1, 22_000, true, 1)
-        .txn_call_frame(Some(1), bob_addr(), alice_addr(), 0xF1, 0, 22_000, 22_000)
+        .txn_call_frame(1, bob_addr(), alice_addr(), 0xF1, 0, 22_000, 22_000)
         .txn_end()
         .txn_evm_output_with_frames(2, 23_000, true, 1)
-        .txn_call_frame(Some(2), miner_addr(), alice_addr(), 0xF1, 0, 23_000, 23_000)
+        .txn_call_frame(2, miner_addr(), alice_addr(), 0xF1, 0, 23_000, 23_000)
         .txn_end()
         .block_end();
     t.validate(|block| {
@@ -862,7 +862,7 @@ fn test_tx_call_frames_arrive_after_output() {
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_header_start(1, bob_addr(), Some(alice_addr()))
         .txn_evm_output_with_frames(0, 50_000, true, 1)
-        .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 50_000, 50_000)
+        .txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 50_000, 50_000)
         .txn_end()
         .txn_evm_output(1, 21_000, true)
         .txn_end()
@@ -885,7 +885,7 @@ fn test_account_accesses_arrive_after_output_before_txn_end() {
     t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
-        .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
+        .txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
         .account_access_header(1) // ctx=1 = TRANSACTION
         .account_access_balance(bob_addr(), U256::from(0u64), U256::from(100u64))
         .account_access_nonce(alice_addr(), 5, 6)
@@ -917,7 +917,7 @@ fn test_log_before_call_frame_attached_to_call() {
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
         .txn_log(0, bob_addr(), &data)
-        .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
+        .txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
         .txn_end()
         .block_end();
     t.validate(|block| {
@@ -938,7 +938,7 @@ fn test_log_before_call_frame_appears_in_receipt() {
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 50_000, true, 1)
         .txn_log(0, bob_addr(), &data)
-        .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 50_000, 50_000)
+        .txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 50_000, 50_000)
         .txn_end()
         .block_end();
     t.validate(|block| {
@@ -960,7 +960,7 @@ fn test_multiple_logs_before_call_frame_preserve_order() {
         .txn_evm_output_with_frames(0, 50_000, true, 1)
         .txn_log_indexed(0, alice_addr(), &[topic1], &[0x01], 0)
         .txn_log_indexed(0, bob_addr(), &[topic2], &[0x02], 1)
-        .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 50_000, 50_000)
+        .txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 50_000, 50_000)
         .txn_end()
         .block_end();
     t.validate(|block| {
@@ -997,7 +997,7 @@ fn test_log_from_one_tx_does_not_appear_in_next_tx() {
         // tx1: no logs, has a call frame
         .txn_header_start(1, bob_addr(), Some(alice_addr()))
         .txn_evm_output_with_frames(1, 21_000, true, 1)
-        .txn_call_frame(Some(1), bob_addr(), alice_addr(), 0xF1, 0, 21_000, 21_000)
+        .txn_call_frame(1, bob_addr(), alice_addr(), 0xF1, 0, 21_000, 21_000)
         .txn_end()
         .block_end();
     t.validate(|block| {
@@ -1022,7 +1022,7 @@ fn test_successful_call_is_not_failed() {
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
         .txn_call_frame_with_status(
-            Some(0),
+            0,
             alice_addr(),
             bob_addr(),
             0xF1,
@@ -1053,7 +1053,7 @@ fn test_reverted_call_is_failed_and_reverted() {
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, false, 1)
         .txn_call_frame_with_status(
-            Some(0),
+            0,
             alice_addr(),
             bob_addr(),
             0xF1,
@@ -1085,7 +1085,7 @@ fn test_out_of_gas_call_is_failed_not_reverted() {
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, false, 1)
         .txn_call_frame_with_status(
-            Some(0),
+            0,
             alice_addr(),
             bob_addr(),
             0xF1,
@@ -1115,7 +1115,7 @@ fn test_insufficient_balance_call_is_failed_and_reverted() {
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, false, 1)
         .txn_call_frame_with_status(
-            Some(0),
+            0,
             alice_addr(),
             bob_addr(),
             0xF1,
@@ -1202,7 +1202,7 @@ fn test_type0_tx_no_eip1559_fields() {
     t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr())) // type=0
         .txn_evm_output_with_frames(0, 21_000, true, 1)
-        .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
+        .txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
         .txn_end()
         .block_end();
     t.validate(|block| {
@@ -1237,7 +1237,7 @@ fn test_type2_tx_has_eip1559_fields() {
     t.block_start(1, 1)
         .txn_header_start_type2(0, alice_addr(), Some(bob_addr()), max_fee, max_priority)
         .txn_evm_output_with_frames(0, 21_000, true, 1)
-        .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
+        .txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
         .txn_end()
         .block_end();
     t.validate(|block| {
@@ -1269,7 +1269,7 @@ fn test_call_with_no_logs_has_empty_logs() {
     t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
-        .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
+        .txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
         .txn_end()
         .block_end();
     t.validate(|block| {
@@ -1291,12 +1291,12 @@ fn test_log_isolated_to_its_transaction() {
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 50_000, true, 1)
         .txn_log(0, bob_addr(), &data)
-        .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 50_000, 50_000)
+        .txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 50_000, 50_000)
         .txn_end()
         // tx1: no logs
         .txn_header_start(1, bob_addr(), Some(alice_addr()))
         .txn_evm_output_with_frames(1, 21_000, true, 1)
-        .txn_call_frame(Some(1), bob_addr(), alice_addr(), 0xF1, 0, 21_000, 21_000)
+        .txn_call_frame(1, bob_addr(), alice_addr(), 0xF1, 0, 21_000, 21_000)
         .txn_end()
         .block_end();
     t.validate(|block| {
@@ -1322,13 +1322,13 @@ fn test_log_does_not_bleed_backward_into_previous_tx() {
         // tx0: no logs
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
-        .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
+        .txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
         .txn_end()
         // tx1: emits a log
         .txn_header_start(1, bob_addr(), Some(alice_addr()))
         .txn_evm_output_with_frames(1, 50_000, true, 1)
         .txn_log(1, alice_addr(), &data)
-        .txn_call_frame(Some(1), bob_addr(), alice_addr(), 0xF1, 0, 50_000, 50_000)
+        .txn_call_frame(1, bob_addr(), alice_addr(), 0xF1, 0, 50_000, 50_000)
         .txn_end()
         .block_end();
     t.validate(|block| {
@@ -1355,7 +1355,7 @@ fn test_receipt_log_count_matches_call_log_count() {
         .txn_log_indexed(0, alice_addr(), &[], &[0x01], 0)
         .txn_log_indexed(0, bob_addr(), &[], &[0x02], 1)
         .txn_log_indexed(0, alice_addr(), &[], &[0x03], 2)
-        .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 50_000, 50_000)
+        .txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 50_000, 50_000)
         .txn_end()
         .block_end();
     t.validate(|block| {
@@ -1377,7 +1377,7 @@ fn test_no_logs_means_empty_receipt_logs() {
     t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
-        .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
+        .txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
         .txn_end()
         .block_end();
     t.validate(|block| {
@@ -1394,7 +1394,7 @@ fn test_successful_call_is_not_reverted() {
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
         .txn_call_frame_with_status(
-            Some(0),
+            0,
             alice_addr(),
             bob_addr(),
             0xF1,
@@ -1423,7 +1423,7 @@ fn test_failed_non_revert_call_is_not_reverted() {
         .txn_evm_output_with_frames(0, 21_000, false, 1)
         // status=3 is OOG — failed but not reverted
         .txn_call_frame_with_status(
-            Some(0),
+            0,
             alice_addr(),
             bob_addr(),
             0xF1,
@@ -1449,7 +1449,7 @@ fn test_reverted_call_is_also_failed() {
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, false, 1)
         .txn_call_frame_with_status(
-            Some(0),
+            0,
             alice_addr(),
             bob_addr(),
             0xF1,
@@ -1476,7 +1476,7 @@ fn test_no_block_finalized_means_lib_zero() {
     t.block_start(10, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
-        .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
+        .txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
         .txn_end()
         .block_end();
     assert_eq!(
@@ -1494,7 +1494,7 @@ fn test_block_finalized_before_block_sets_lib_num() {
         .block_start(10, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
-        .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
+        .txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
         .txn_end()
         .block_end();
     assert_eq!(
@@ -1514,7 +1514,7 @@ fn test_block_finalized_after_block_end_reflected_in_next_block() {
     t.block_start(20, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
-        .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
+        .txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
         .txn_end()
         .block_end()
         .block_finalized(15);
@@ -1522,7 +1522,7 @@ fn test_block_finalized_after_block_end_reflected_in_next_block() {
     t.block_start(21, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
-        .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
+        .txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
         .txn_end()
         .block_end();
     let blocks = t.parse_all_fire_blocks();
@@ -1548,7 +1548,7 @@ fn test_highest_block_finalized_wins() {
         .block_start(10, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
-        .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
+        .txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
         .txn_end()
         .block_end();
     assert_eq!(
@@ -1563,7 +1563,7 @@ fn emit_block(t: &mut MonadTracerTester, number: u64) {
     t.block_start(number, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
-        .txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
+        .txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000)
         .txn_end()
         .block_end();
 }
@@ -1661,9 +1661,9 @@ fn test_state_changes_after_is_last_flush_attributed_to_root_call() {
     // 2 call frames
     t.txn_evm_output_with_frames(0, 50_000, true, 2);
     // frame 0: root call depth=0
-    t.txn_call_frame(Some(0), alice_addr(), bob_addr(), 0xF1, 0, 50_000, 50_000);
+    t.txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 50_000, 50_000);
     // frame 1: sub-call depth=1, is_last=true → triggers flush(0) closing all calls
-    t.txn_call_frame(Some(0), bob_addr(), miner_addr(), 0xF1, 1, 30_000, 30_000);
+    t.txn_call_frame(0, bob_addr(), miner_addr(), 0xF1, 1, 30_000, 30_000);
 
     // AccountAccessListHeader arrives after all frames are already flushed
     t.account_access_header(1);
