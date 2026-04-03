@@ -1,7 +1,6 @@
 //! Monad Firehose Tracer
 
 pub mod config;
-pub mod event_mapper;
 pub mod ring_consumer;
 pub mod tracer;
 

@@ -728,59 +728,6 @@ impl FirehosePlugin {
 
         self.add_event(event)?;
 
-        // TEMP
-        // if let Some(block) = self.event_mapper.process_event(event).await? {
-        //     let elapsed = start.elapsed();
-
-        //     // Update HEAD block number
-        //     self.current_head = block.number;
-
-        //     // Calculate LIB
-        //     let lib = if self.current_head > self.lib_delta {
-        //         self.current_head - self.lib_delta
-        //     } else {
-        //         0
-        //     };
-        //     self.finality.set_last_finalized_block(lib);
-
-        //     // Log block summary with metrics
-        //     let hash_short = if block.hash.len() >= 6 {
-        //         format!("{}..{}",
-        //             hex::encode(&block.hash[..3]),
-        //             hex::encode(&block.hash[block.hash.len()-3..]))
-        //     } else {
-        //         hex::encode(&block.hash)
-        //     };
-
-        //     let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
-        //     let timestamp = block.header.as_ref()
-        //         .and_then(|h| h.timestamp.as_ref())
-        //         .map(|ts| ts.seconds)
-        //         .unwrap_or(0);
-
-        //     let total_calls: usize = block.transaction_traces.iter().map(|tx| tx.calls.len()).sum();
-        //     let total_logs: usize = block.transaction_traces.iter()
-        //         .filter_map(|tx| tx.receipt.as_ref())
-        //         .map(|r| r.logs.len())
-        //         .sum();
-
-        //     info!(
-        //         "Processed new block number={} hash={} lib={} size={} txs={} calls={} logs={} timestamp={} elapsed={:.2}ms",
-        //         block.number,
-        //         hash_short,
-        //         lib,
-        //         block.size,
-        //         block.transaction_traces.len(),
-        //         total_calls,
-        //         total_logs,
-        //         timestamp,
-        //         elapsed_ms
-        //     );
-
-        //     // Print the completed block
-        //     print_block_to_firehose(&mut stdout(), *block, &self.finality);
-        // }
-
         Ok(())
     }
 }
