@@ -524,6 +524,20 @@ impl FirehosePlugin {
                     self.current_call_frame_index += 1;
                     let is_last = self.current_call_frame_index == self.expected_call_frames;
 
+                    self.tracer.on_call(
+                        depth,
+                        opcode,
+                        from,
+                        to,
+                        &input_bytes,
+                        gas,
+                        value,
+                        return_bytes.clone(),
+                        gas_used,
+                        err.clone(),
+                        is_last,
+                    );
+
                     // Successful CREATE: emit code change (output is the deployed bytecode)
                     let is_create =
                         opcode == Opcode::Create as u8 || opcode == Opcode::Create2 as u8;
@@ -533,20 +547,6 @@ impl FirehosePlugin {
                         self.tracer
                             .on_code_change(to, empty_hash, new_hash, &[], &return_bytes);
                     }
-
-                    self.tracer.on_call(
-                        depth,
-                        opcode,
-                        from,
-                        to,
-                        &input_bytes,
-                        gas,
-                        value,
-                        return_bytes,
-                        gas_used,
-                        err,
-                        is_last,
-                    );
                 }
             }
             ExecEvent::AccountAccessListHeader(header) => {
