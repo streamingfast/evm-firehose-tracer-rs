@@ -1021,16 +1021,7 @@ fn test_successful_call_is_not_failed() {
     t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
-        .txn_call_frame_with_status(
-            0,
-            alice_addr(),
-            bob_addr(),
-            0xF1,
-            0,
-            21_000,
-            21_000,
-            0,
-        )
+        .txn_call_frame_with_status(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000, 0)
         .txn_end()
         .block_end();
     t.validate(|block| {
@@ -1052,16 +1043,7 @@ fn test_reverted_call_is_failed_and_reverted() {
     t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, false, 1)
-        .txn_call_frame_with_status(
-            0,
-            alice_addr(),
-            bob_addr(),
-            0xF1,
-            0,
-            21_000,
-            21_000,
-            2,
-        )
+        .txn_call_frame_with_status(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000, 2)
         .txn_end()
         .block_end();
     t.validate(|block| {
@@ -1084,16 +1066,7 @@ fn test_out_of_gas_call_is_failed_not_reverted() {
     t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, false, 1)
-        .txn_call_frame_with_status(
-            0,
-            alice_addr(),
-            bob_addr(),
-            0xF1,
-            0,
-            21_000,
-            21_000,
-            3,
-        )
+        .txn_call_frame_with_status(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000, 3)
         .txn_end()
         .block_end();
     t.validate(|block| {
@@ -1114,16 +1087,7 @@ fn test_insufficient_balance_call_is_failed_and_reverted() {
     t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, false, 1)
-        .txn_call_frame_with_status(
-            0,
-            alice_addr(),
-            bob_addr(),
-            0xF1,
-            0,
-            21_000,
-            21_000,
-            17,
-        )
+        .txn_call_frame_with_status(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000, 17)
         .txn_end()
         .block_end();
     t.validate(|block| {
@@ -1393,16 +1357,7 @@ fn test_successful_call_is_not_reverted() {
     t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, true, 1)
-        .txn_call_frame_with_status(
-            0,
-            alice_addr(),
-            bob_addr(),
-            0xF1,
-            0,
-            21_000,
-            21_000,
-            0,
-        )
+        .txn_call_frame_with_status(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000, 0)
         .txn_end()
         .block_end();
     t.validate(|block| {
@@ -1422,16 +1377,7 @@ fn test_failed_non_revert_call_is_not_reverted() {
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, false, 1)
         // status=3 is OOG — failed but not reverted
-        .txn_call_frame_with_status(
-            0,
-            alice_addr(),
-            bob_addr(),
-            0xF1,
-            0,
-            21_000,
-            21_000,
-            3,
-        )
+        .txn_call_frame_with_status(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000, 3)
         .txn_end()
         .block_end();
     t.validate(|block| {
@@ -1448,16 +1394,7 @@ fn test_reverted_call_is_also_failed() {
     t.block_start(1, 1)
         .txn_header_start(0, alice_addr(), Some(bob_addr()))
         .txn_evm_output_with_frames(0, 21_000, false, 1)
-        .txn_call_frame_with_status(
-            0,
-            alice_addr(),
-            bob_addr(),
-            0xF1,
-            0,
-            21_000,
-            21_000,
-            2,
-        )
+        .txn_call_frame_with_status(0, alice_addr(), bob_addr(), 0xF1, 0, 21_000, 21_000, 2)
         .txn_end()
         .block_end();
     t.validate(|block| {

@@ -4,10 +4,10 @@
 //! event ring buffer system.
 
 use eyre::Result;
+use monad_event_ring::EventRingPath;
 use monad_event_ring::{
     DecodedEventRing, EventDecoder, EventDescriptorInfo, EventNextResult, EventPayloadResult,
 };
-use monad_event_ring::EventRingPath;
 use monad_exec_events::{ExecEvent, ExecEventDecoder, ExecEventRing};
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, Stream};
