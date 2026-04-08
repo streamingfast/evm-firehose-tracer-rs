@@ -183,9 +183,7 @@ fn test_on_call_executed_code_none() {
         None,
         false,
     );
-    let mut open_calls = std::mem::take(&mut tester.tracer.open_calls);
-    open_calls.flush(0, &mut tester.tracer);
-    tester.tracer.open_calls = open_calls;
+    tester.tracer.flush_open_calls(0);
     tester
         .end_block_trx(Some(success_receipt(21000)), None, None)
         .validate_with_category("executedcode", |block| {

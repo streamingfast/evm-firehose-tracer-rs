@@ -392,9 +392,8 @@ impl FirehosePlugin {
             ExecEvent::TxnEnd => {
                 tracing::info!("txn end");
 
-                let mut open_calls = std::mem::take(&mut self.tracer.open_calls);
-                open_calls.flush(0, &mut self.tracer);
-                self.tracer.open_calls = open_calls;
+                self.tracer.flush_open_calls(0);
+
                 let receipt_logs = std::mem::take(&mut self.pending_receipt_logs);
                 let mut bloom = alloy_primitives::Bloom::ZERO;
                 for log in &receipt_logs {
@@ -487,9 +486,7 @@ impl FirehosePlugin {
 
                 // SELFDESTRUCT is atomic (enter + opcode + exit with no deferral)
                 if txn_call_frame.opcode == Opcode::SelfDestruct as u8 {
-                    let mut open_calls = std::mem::take(&mut self.tracer.open_calls);
-                    open_calls.flush(depth, &mut self.tracer);
-                    self.tracer.open_calls = open_calls;
+                    self.tracer.flush_open_calls(depth);
                     self.tracer.on_call_enter(
                         depth,
                         Opcode::Call as u8,
@@ -547,6 +544,10 @@ impl FirehosePlugin {
                         self.tracer
                             .on_code_change(to, empty_hash, new_hash, &[], &return_bytes);
                     }
+
+                    if is_last {
+                        self.tracer.flush_open_calls(0);
+                    }
                 }
             }
             ExecEvent::AccountAccessListHeader(header) => {
@@ -558,9 +559,7 @@ impl FirehosePlugin {
 
                 if header.access_context == AccountAccessContext::Transaction as u8 {
                     // flush all sub-calls but keep the root call open
-                    let mut open_calls = std::mem::take(&mut self.tracer.open_calls);
-                    open_calls.flush(1, &mut self.tracer);
-                    self.tracer.open_calls = open_calls;
+                    self.tracer.flush_open_calls(1);
                 }
             }
             ExecEvent::AccountAccess(account_access) => {

@@ -138,9 +138,7 @@ fn test_on_call_create_emits_code_change_on_close() {
     tester
         .tracer
         .on_code_change(bob_addr(), empty_hash, new_hash, &[], &contract_code);
-    let mut open_calls = std::mem::take(&mut tester.tracer.open_calls);
-    open_calls.flush(0, &mut tester.tracer);
-    tester.tracer.open_calls = open_calls;
+    tester.tracer.flush_open_calls(0);
     tester
         .end_block_trx(Some(success_receipt(53_000)), None, None)
         .validate_with_category("on_call", |block| {
@@ -182,9 +180,7 @@ fn test_on_call_failed_create_no_code_change() {
         Some(StringError("execution reverted".to_string())),
         false,
     );
-    let mut open_calls = std::mem::take(&mut tester.tracer.open_calls);
-    open_calls.flush(0, &mut tester.tracer);
-    tester.tracer.open_calls = open_calls;
+    tester.tracer.flush_open_calls(0);
     tester
         .end_block_trx(Some(success_receipt(53_000)), None, None)
         .validate_with_category("on_call", |block| {

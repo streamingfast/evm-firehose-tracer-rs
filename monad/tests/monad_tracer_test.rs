@@ -1655,3 +1655,48 @@ fn test_state_changes_after_is_last_flush_attributed_to_root_call() {
         );
     });
 }
+
+// When call_frame_count matches the number of TxnCallFrame events delivered,
+// is_last fires on the final frame and flushes the stack before TxnEnd
+#[test]
+fn test_txn_end_flush_is_noop_when_is_last_fired() {
+    let mut t = MonadTracerTester::new();
+    t.block_start(1, 1)
+        .txn_header_start(0, alice_addr(), Some(bob_addr()))
+        // 2 frames declared
+        .txn_evm_output_with_frames(0, 50_000, true, 2)
+        // frame 1 of 2: root call
+        .txn_call_frame(0, alice_addr(), bob_addr(), 0xF1, 0, 50_000, 30_000)
+        // frame 2 of 2: sub-call
+        .txn_call_frame(0, bob_addr(), alice_addr(), 0xF1, 1, 20_000, 10_000)
+        // TxnEnd: flush_open_calls(0) is a no-op
+        .txn_end()
+        .block_end();
+
+    t.validate(|block| {
+        let calls = &block.transaction_traces[0].calls;
+        assert_eq!(2, calls.len(), "both calls must be recorded");
+        assert_eq!(0, calls[0].depth, "root call at depth 0");
+        assert_eq!(1, calls[1].depth, "sub-call at depth 1");
+        assert!(
+            calls[1].end_ordinal < calls[0].end_ordinal,
+            "sub-call must close before root"
+        );
+    });
+}
+
+// When call_frame_count=0 no TxnCallFrame events arrive and is_last never fires
+#[test]
+fn test_txn_end_flush_is_noop_when_no_frames_delivered() {
+    let mut t = MonadTracerTester::new();
+    t.block_start(1, 1)
+        .txn_header_start(0, alice_addr(), Some(bob_addr()))
+        .txn_evm_output(0, 21_000, true)
+        .txn_end()
+        .block_end();
+
+    t.validate(|block| {
+        let trx = &block.transaction_traces[0];
+        assert_eq!(0, trx.calls.len(), "no calls should be recorded");
+    });
+}

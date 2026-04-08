@@ -47,7 +47,7 @@ pub struct Tracer {
 
     // Call state
     call_stack: CallStack,
-    pub open_calls: OpenCallStack,
+    open_calls: OpenCallStack,
     deferred_call_state: DeferredCallState,
     latest_call_enter_suicided: bool,
     latest_call_enter_suicided_depth: i32, // Depth of the SELFDESTRUCT OnCallEnter
@@ -850,6 +850,12 @@ impl Tracer {
             error: err,
             is_last,
         });
+    }
+
+    pub fn flush_open_calls(&mut self, min_depth: i32) {
+        let mut open_calls = std::mem::take(&mut self.open_calls);
+        open_calls.flush(min_depth, self);
+        self.open_calls = open_calls;
     }
 
     /// OnCallEnter is called when entering a call
