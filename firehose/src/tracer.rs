@@ -557,11 +557,11 @@ impl Tracer {
             .map(|c| c.status_reverted)
             .unwrap_or(false);
 
-        // Step 2.5: Discard SetCode authorizations that don't have corresponding nonce changes
-        // (matching native tracer's discardUncommittedSetCodeAuthorization)
-        // This MUST happen BEFORE deferred state is populated, since we need to check
-        // the initial deferred state that was already transferred into the root call
-        Self::discard_uncommitted_set_code_authorizations(&mut trx);
+        // // Step 2.5: Discard SetCode authorizations that don't have corresponding nonce changes
+        // // (matching native tracer's discardUncommittedSetCodeAuthorization)
+        // // This MUST happen BEFORE deferred state is populated, since we need to check
+        // // the initial deferred state that was already transferred into the root call
+        // Self::discard_uncommitted_set_code_authorizations(&mut trx);
 
         // Step 3: Move any remaining deferred state to root call
         if !self.deferred_call_state.is_empty() {
@@ -574,6 +574,8 @@ impl Tracer {
                 }
             }
         }
+
+        Self::discard_uncommitted_set_code_authorizations(&mut trx);
 
         // Step 4: Populate receipt data (BEFORE state reverted)
         if let Some(receipt) = receipt {
