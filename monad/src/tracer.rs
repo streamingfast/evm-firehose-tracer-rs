@@ -628,23 +628,29 @@ impl FirehosePlugin {
                     );
                 }
                 if account_access.is_nonce_modified {
-                    self.tracer.on_nonce_change(
-                        addr,
-                        account_access.prestate.nonce,
-                        account_access.modified_nonce,
-                    );
-
-                    // EIP-7702: emit code changes for delegations confirmed by this nonce bump.
-                    // Nonce increment is the on-chain signal that the authorization was applied.
                     if let Some(new_codes) = self.pending_delegation_code_changes.remove(&addr) {
-                        let old_hash =
-                            B256::from(account_access.prestate.code_hash.bytes);
+                        let mut current_nonce = account_access.prestate.nonce;
+                        let old_hash = B256::from(account_access.prestate.code_hash.bytes);
                         for new_code in new_codes {
+                            self.tracer.on_nonce_change(addr, current_nonce, current_nonce + 1);
                             let new_hash = firehose::utils::hash_bytes(&new_code);
                             self.tracer.on_code_change(addr, old_hash, new_hash, &[], &new_code);
-                            // Update persistent delegation state for future transactions
                             self.delegation_state.set_code(addr, new_code);
+                            current_nonce += 1;
                         }
+                        if current_nonce < account_access.modified_nonce {
+                            self.tracer.on_nonce_change(
+                                addr,
+                                current_nonce,
+                                account_access.modified_nonce,
+                            );
+                        }
+                    } else {
+                        self.tracer.on_nonce_change(
+                            addr,
+                            account_access.prestate.nonce,
+                            account_access.modified_nonce,
+                        );
                     }
                 }
             }
