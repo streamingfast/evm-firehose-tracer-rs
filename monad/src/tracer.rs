@@ -1,16 +1,75 @@
 //! Main Firehose tracer implementation
 
 use crate::{MonadConsumer, MonadConsumerPlugin, TRACER_NAME, TRACER_VERSION};
-use alloy_primitives::B256;
+use alloy_primitives::{Address, B256, Bytes};
 use eyre::Result;
 use firehose::{
-    types::{AccessTuple, SetCodeAuthorization, TxType},
+    types::{AccessTuple, SetCodeAuthorization, StateReader, TxType},
     Tracer,
 };
 use futures_util::StreamExt;
 use monad_exec_events::ExecEvent;
 use std::collections::HashMap;
 use tracing::{error, info};
+
+struct DelegationStateReader {
+    delegation_code: HashMap<Address, Bytes>,
+}
+
+impl DelegationStateReader {
+    fn new() -> Self {
+        Self {
+            delegation_code: HashMap::new(),
+        }
+    }
+
+    fn set_code(&mut self, addr: Address, code: Vec<u8>) {
+        if code.is_empty() {
+            self.delegation_code.remove(&addr);
+        } else {
+            self.delegation_code.insert(addr, Bytes::from(code));
+        }
+    }
+
+    fn snapshot(&self) -> SnapshotStateReader {
+        SnapshotStateReader {
+            delegation_code: self.delegation_code.clone(),
+        }
+    }
+}
+
+/// An owned snapshot of DelegationStateReader suitable for passing to on_tx_start.
+struct SnapshotStateReader {
+    delegation_code: HashMap<Address, Bytes>,
+}
+
+impl StateReader for SnapshotStateReader {
+    fn get_nonce(&self, _address: Address) -> u64 {
+        0
+    }
+
+    fn get_code(&self, address: Address) -> Bytes {
+        self.delegation_code
+            .get(&address)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn exists(&self, _address: Address) -> bool {
+        false
+    }
+}
+
+/// Monad is a Prague-era chain (EIP-7702 active from genesis).
+fn monad_chain_config(chain_id: u64) -> firehose::ChainConfig {
+    firehose::ChainConfig {
+        chain_id,
+        shanghai_time: Some(0),
+        cancun_time: Some(0),
+        prague_time: Some(0),
+        verkle_time: None,
+    }
+}
 
 fn evmc_status_to_error(evmc_status: i32) -> Option<firehose::StringError> {
     let msg = match evmc_status {
@@ -51,6 +110,13 @@ pub struct FirehosePlugin {
     // This duplication could be avoided by reading the logs back from the Firehose tracer
     // internal call state instead of buffering them separately here
     pending_receipt_logs: Vec<firehose::LogData>,
+    // EIP-7702: delegation code changes buffered from TxnAuthListEntry (is_valid_authority=true),
+    // emitted as on_code_change when the corresponding AccountAccess arrives (is_nonce_modified=true).
+    // Vec preserves order when the same authority appears multiple times (e.g. auth2→CC then auth4→BB).
+    pending_delegation_code_changes: HashMap<Address, Vec<Vec<u8>>>,
+    // EIP-7702: persistent map of EOA → current delegation code, updated as delegations are confirmed.
+    // Passed as StateReader to on_tx_start so the shared tracer can populate addressDelegatesTo.
+    delegation_state: DelegationStateReader,
     block_txn_count: u64,
     last_finalized_block: u64,
     current_txn_index: u32,
@@ -70,6 +136,8 @@ impl FirehosePlugin {
             tx_end_receipt: None,
             pending_tx_events: HashMap::new(),
             pending_receipt_logs: Vec::new(),
+            pending_delegation_code_changes: HashMap::new(),
+            delegation_state: DelegationStateReader::new(),
             block_txn_count: 0,
             current_txn_index: 0,
             cumulative_gas_used: 0,
@@ -91,6 +159,8 @@ impl FirehosePlugin {
             tx_end_receipt: None,
             pending_tx_events: HashMap::new(),
             pending_receipt_logs: Vec::new(),
+            pending_delegation_code_changes: HashMap::new(),
+            delegation_state: DelegationStateReader::new(),
             block_txn_count: 0,
             current_txn_index: 0,
             cumulative_gas_used: 0,
@@ -120,7 +190,7 @@ impl FirehosePlugin {
     }
 
     pub fn on_blockchain_init(&mut self, node_name: &str, node_version: &str) {
-        let chain_config = firehose::ChainConfig::new(self.config.chain_id);
+        let chain_config = monad_chain_config(self.config.chain_id);
         self.tracer
             .on_blockchain_init(node_name, node_version, chain_config);
     }
@@ -133,7 +203,7 @@ impl FirehosePlugin {
     pub async fn start(&mut self) -> Result<()> {
         info!("Starting Firehose tracer");
 
-        let chain_config = firehose::ChainConfig::new(self.config.chain_id);
+        let chain_config = monad_chain_config(self.config.chain_id);
         self.tracer
             .on_blockchain_init(TRACER_NAME, TRACER_VERSION, chain_config);
 
@@ -364,6 +434,26 @@ impl FirehosePlugin {
                         s: B256::from(alloy_primitives::U256::from_limbs(e.s.limbs).to_be_bytes()),
                     });
                 }
+
+                // EIP-7702: buffer delegation code change for valid authorities.
+                // AccountAccess (is_nonce_modified=true) will confirm the auth was applied.
+                if txn_auth_list_entry.is_valid_authority {
+                    let authority =
+                        alloy_primitives::Address::from(txn_auth_list_entry.authority.bytes);
+                    let target =
+                        alloy_primitives::Address::from(txn_auth_list_entry.entry.address.bytes);
+                    let new_code = if target.is_zero() {
+                        vec![]
+                    } else {
+                        let mut code = vec![0xef, 0x01, 0x00];
+                        code.extend_from_slice(target.as_slice());
+                        code
+                    };
+                    self.pending_delegation_code_changes
+                        .entry(authority)
+                        .or_default()
+                        .push(new_code);
+                }
             }
             ExecEvent::TxnEvmOutput { txn_index, output } => {
                 tracing::debug!(
@@ -380,7 +470,8 @@ impl FirehosePlugin {
                 self.current_call_frame_index = 0;
 
                 if let Some(tx_event) = self.pending_tx_events.remove(&txn_index) {
-                    self.tracer.on_tx_start(tx_event, None);
+                    let state_reader = Box::new(self.delegation_state.snapshot());
+                    self.tracer.on_tx_start(tx_event, Some(state_reader));
                 }
                 self.tx_end_receipt = Some(output);
             }
@@ -421,6 +512,7 @@ impl FirehosePlugin {
                     }
                 };
 
+                self.pending_delegation_code_changes.clear();
                 self.tracer.on_tx_end(Some(&receipt), None);
             }
             ExecEvent::TxnLog {
@@ -541,6 +633,19 @@ impl FirehosePlugin {
                         account_access.prestate.nonce,
                         account_access.modified_nonce,
                     );
+
+                    // EIP-7702: emit code changes for delegations confirmed by this nonce bump.
+                    // Nonce increment is the on-chain signal that the authorization was applied.
+                    if let Some(new_codes) = self.pending_delegation_code_changes.remove(&addr) {
+                        let old_hash =
+                            B256::from(account_access.prestate.code_hash.bytes);
+                        for new_code in new_codes {
+                            let new_hash = firehose::utils::hash_bytes(&new_code);
+                            self.tracer.on_code_change(addr, old_hash, new_hash, &[], &new_code);
+                            // Update persistent delegation state for future transactions
+                            self.delegation_state.set_code(addr, new_code);
+                        }
+                    }
                 }
             }
             ExecEvent::StorageAccess(storage_access) => {
