@@ -214,6 +214,14 @@ fn test_blob_transaction_type() {
 
             assert!(!trx.blob_hashes.is_empty(), "BlobHashes should be present");
             assert_eq!(1, trx.blob_hashes.len(), "Should have one blob hash");
+
+            // EIP-4844: blob_gas = GAS_PER_BLOB (131072) * num_blobs
+            assert!(trx.blob_gas.is_some(), "BlobGas should be present");
+            assert_eq!(
+                131072_u64,
+                trx.blob_gas.unwrap(),
+                "BlobGas should be GAS_PER_BLOB * 1 blob"
+            );
         });
 }
 

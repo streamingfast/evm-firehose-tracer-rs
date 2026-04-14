@@ -491,6 +491,11 @@ impl Tracer {
                 .max_priority_fee_per_gas
                 .and_then(utils::u256_to_protobuf),
             access_list,
+            blob_gas: if event.blob_hashes.is_empty() {
+                None
+            } else {
+                Some(131072_u64 * event.blob_hashes.len() as u64)
+            },
             blob_gas_fee_cap: event.blob_gas_fee_cap.and_then(utils::u256_to_protobuf),
             blob_hashes,
             set_code_authorizations,
