@@ -192,3 +192,148 @@ fn test_on_call_failed_create_no_code_change() {
             );
         });
 }
+
+#[test]
+fn test_on_call_is_last_flushes_automatically() {
+    // is_last=true on the final call must flush without a manual flush_open_calls
+    let mut tester = TracerTester::new();
+    tester.start_block_trx(test_legacy_trx());
+    tester.tracer.on_call(
+        0,
+        Opcode::Call as u8,
+        alice_addr(),
+        bob_addr(),
+        &[],
+        21_000,
+        alloy_primitives::U256::ZERO,
+        vec![],
+        21_000,
+        None,
+        true,
+    );
+    tester
+        .end_block_trx(Some(success_receipt(21_000)), None, None)
+        .validate_with_category("on_call", |block| {
+            assert_eq!(1, block.transaction_traces[0].calls.len());
+        });
+}
+
+#[test]
+fn test_on_call_is_last_flushes_all_open_frames() {
+    // is_last=true on the deepest call must flush all pending frames (root + sub-call)
+    let mut tester = TracerTester::new();
+    tester.start_block_trx(test_legacy_trx());
+    tester.tracer.on_call(
+        0,
+        Opcode::Call as u8,
+        alice_addr(),
+        bob_addr(),
+        &[],
+        100_000,
+        alloy_primitives::U256::ZERO,
+        vec![],
+        50_000,
+        None,
+        false,
+    );
+    // Sub-call
+    tester.tracer.on_call(
+        1,
+        Opcode::Call as u8,
+        bob_addr(),
+        charlie_addr(),
+        &[],
+        50_000,
+        alloy_primitives::U256::ZERO,
+        vec![],
+        10_000,
+        None,
+        true,
+    );
+    tester
+        .end_block_trx(Some(success_receipt(100_000)), None, None)
+        .validate_with_category("on_call", |block| {
+            let calls = &block.transaction_traces[0].calls;
+            assert_eq!(2, calls.len(), "both root and sub-call must be recorded");
+            assert!(
+                calls[1].end_ordinal < calls[0].end_ordinal,
+                "sub-call must close before root"
+            );
+        });
+}
+
+#[test]
+fn test_on_call_selfdestruct_is_atomic() {
+    // SELFDESTRUCT via on_call: atomic enter+opcode+exit, no deferral, no manual flush needed
+    let mut tester = TracerTester::new();
+    tester.start_block_trx(test_legacy_trx());
+    tester.tracer.on_call(
+        0,
+        Opcode::SelfDestruct as u8,
+        alice_addr(),
+        bob_addr(),
+        &[],
+        21_000,
+        alloy_primitives::U256::ZERO,
+        vec![],
+        21_000,
+        None,
+        true,
+    );
+    tester
+        .end_block_trx(Some(success_receipt(21_000)), None, None)
+        .validate_with_category("on_call", |block| {
+            let calls = &block.transaction_traces[0].calls;
+            assert_eq!(1, calls.len());
+            assert_eq!(
+                pbeth::CallType::Call as i32,
+                calls[0].call_type,
+                "selfdestruct enters as CALL type"
+            );
+        });
+}
+
+#[test]
+fn test_on_call_selfdestruct_closes_open_parent() {
+    // SELFDESTRUCT as sub-call: parent stays open, selfdestruct is atomic, is_last flushes all
+    let mut tester = TracerTester::new();
+    tester.start_block_trx(test_legacy_trx());
+    tester.tracer.on_call(
+        0,
+        Opcode::Call as u8,
+        alice_addr(),
+        bob_addr(),
+        &[],
+        100_000,
+        alloy_primitives::U256::ZERO,
+        vec![],
+        50_000,
+        None,
+        false,
+    );
+    tester.tracer.on_call(
+        1,
+        Opcode::SelfDestruct as u8,
+        bob_addr(),
+        charlie_addr(),
+        &[],
+        50_000,
+        alloy_primitives::U256::ZERO,
+        vec![],
+        10_000,
+        None,
+        true,
+    );
+    tester
+        .end_block_trx(Some(success_receipt(100_000)), None, None)
+        .validate_with_category("on_call", |block| {
+            let calls = &block.transaction_traces[0].calls;
+            assert_eq!(2, calls.len(), "root + selfdestruct sub-call");
+            assert_eq!(0, calls[0].depth, "root at depth 0");
+            assert_eq!(1, calls[1].depth, "selfdestruct at depth 1");
+            assert!(
+                calls[1].end_ordinal < calls[0].end_ordinal,
+                "selfdestruct must close before root"
+            );
+        });
+}

@@ -4,7 +4,7 @@ pub mod config;
 pub mod ring_consumer;
 pub mod tracer;
 
-pub use config::FirehosePluginConfig;
+pub use config::MonadConsumerPlugin;
 pub use ring_consumer::{MonadConsumer, PluginConfig};
 pub use tracer::FirehosePlugin;
 

@@ -1,17 +1,12 @@
-use alloy_primitives::Address;
-
 use crate::{tracer::Tracer, StringError};
 
 /// A call frame that has been entered but not yet exited. The exit is deferred
 /// until the next call frame arrives, or until an explicit flush is requested
 pub struct OpenCall {
     pub depth: i32,
-    pub addr: Address,
-    pub call_type: i32,
     pub output: Vec<u8>,
     pub gas_used: u64,
     pub error: Option<StringError>,
-    pub is_last: bool,
 }
 
 /// OpenCallStack holds call frames that have been entered but not yet exited.
@@ -51,12 +46,7 @@ impl OpenCallStack {
     pub fn flush(&mut self, min_depth: i32, tracer: &mut Tracer) {
         while self.peek_depth().map_or(false, |d| d >= min_depth) {
             let open = self.stack.pop().unwrap();
-            let is_last = open.is_last;
             Self::close(open, tracer);
-            if is_last {
-                self.flush(0, tracer);
-                return;
-            }
         }
     }
 
@@ -64,12 +54,7 @@ impl OpenCallStack {
     pub fn flush_at_or_below(&mut self, incoming_depth: i32, tracer: &mut Tracer) {
         while self.peek_depth().map_or(false, |d| d >= incoming_depth) {
             let open = self.stack.pop().unwrap();
-            let is_last = open.is_last;
             Self::close(open, tracer);
-            if is_last {
-                self.flush(0, tracer);
-                return;
-            }
         }
     }
 

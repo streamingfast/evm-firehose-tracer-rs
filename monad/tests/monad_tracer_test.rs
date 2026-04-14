@@ -1,16 +1,18 @@
 use alloy_primitives::{Address, B256, U256};
+use firehose::Opcode;
 use firehose_test::{
     alice_addr, bob_addr, miner_addr, parse_firehose_block, system_address, InMemoryBuffer,
 };
 use monad_exec_events::ffi::{
-    monad_c_address, monad_c_bytes32, monad_c_eth_txn_header, monad_c_eth_txn_receipt,
-    monad_c_uint256_ne, monad_exec_account_access, monad_exec_account_access_list_header,
-    monad_exec_block_start, monad_exec_block_tag,
-    monad_exec_block_tag as monad_exec_block_finalized, monad_exec_txn_call_frame,
-    monad_exec_txn_evm_output, monad_exec_txn_header_start, monad_exec_txn_log,
+    monad_c_access_list_entry, monad_c_address, monad_c_bytes32, monad_c_eth_txn_header,
+    monad_c_eth_txn_receipt, monad_c_uint256_ne, monad_exec_account_access,
+    monad_exec_account_access_list_header, monad_exec_block_start, monad_exec_block_tag,
+    monad_exec_block_tag as monad_exec_block_finalized, monad_exec_txn_access_list_entry,
+    monad_exec_txn_call_frame, monad_exec_txn_evm_output, monad_exec_txn_header_start,
+    monad_exec_txn_log,
 };
 use monad_exec_events::ExecEvent;
-use monad_tracer::{FirehosePlugin, FirehosePluginConfig};
+use monad_tracer::{FirehosePlugin, MonadConsumerPlugin};
 use pb::sf::ethereum::r#type::v2 as pbeth;
 
 // FFI helpers
@@ -44,7 +46,7 @@ struct MonadTracerTester {
 impl MonadTracerTester {
     fn new() -> Self {
         let output_buffer = InMemoryBuffer::new();
-        let config = FirehosePluginConfig::new(1, "test".to_string());
+        let config = MonadConsumerPlugin::new(1);
         let mut plugin = FirehosePlugin::new_with_writer(config, Box::new(output_buffer.clone()));
         plugin.on_blockchain_init("test", "1.0.0");
         Self {
@@ -209,6 +211,26 @@ impl MonadTracerTester {
             },
             data_bytes: Box::new([]),
             blob_bytes: Box::new([]),
+        })
+    }
+
+    fn txn_access_list_entry(
+        &mut self,
+        txn_index: usize,
+        addr: Address,
+        key_count: u32,
+        storage_key_bytes: Vec<u8>,
+    ) -> &mut Self {
+        self.send(ExecEvent::TxnAccessListEntry {
+            txn_index,
+            txn_access_list_entry: monad_exec_txn_access_list_entry {
+                index: 0,
+                entry: monad_c_access_list_entry {
+                    address: addr_to_ffi(addr),
+                    storage_key_count: key_count,
+                },
+            },
+            storage_key_bytes: storage_key_bytes.into_boxed_slice(),
         })
     }
 
@@ -521,10 +543,9 @@ fn test_tx_contract_creation_has_no_to() {
     t.start_block_trx(0, alice_addr(), None)
         .end_block_trx(0, 21_000, true);
     t.validate(|block| {
-        assert_eq!(
-            block.transaction_traces[0].to,
-            alloy_primitives::Address::ZERO.as_slice(),
-            "contract creation uses zero address for to"
+        assert!(
+            block.transaction_traces[0].to.is_empty(),
+            "contract creation has empty to before call frame resolves the deployed address"
         );
     });
 }
@@ -1698,5 +1719,198 @@ fn test_txn_end_flush_is_noop_when_no_frames_delivered() {
     t.validate(|block| {
         let trx = &block.transaction_traces[0];
         assert_eq!(0, trx.calls.len(), "no calls should be recorded");
+    });
+}
+
+// blob_bytes is a flat byte array of 32-byte hashes, verify they are correctly split.
+#[test]
+fn test_blob_hashes_exact_multiple_of_32() {
+    let mut t = MonadTracerTester::new();
+    let hash1 = B256::repeat_byte(0x01);
+    let hash2 = B256::repeat_byte(0x02);
+    let blob_bytes: Vec<u8> = hash1.iter().chain(hash2.iter()).copied().collect();
+
+    t.block_start(1, 1);
+    t.send(ExecEvent::TxnHeaderStart {
+        txn_index: 0,
+        txn_header_start: monad_exec_txn_header_start {
+            txn_hash: zero_bytes32(),
+            sender: addr_to_ffi(alice_addr()),
+            txn_header: monad_c_eth_txn_header {
+                txn_type: 3,
+                chain_id: zero_u256(),
+                nonce: 0,
+                gas_limit: 21_000,
+                max_fee_per_gas: u256_to_ffi(U256::from(1_000_000_000u64)),
+                max_priority_fee_per_gas: zero_u256(),
+                value: zero_u256(),
+                to: addr_to_ffi(bob_addr()),
+                is_contract_creation: false,
+                r: zero_u256(),
+                s: zero_u256(),
+                y_parity: false,
+                max_fee_per_blob_gas: u256_to_ffi(U256::from(1u64)),
+                data_length: 0,
+                blob_versioned_hash_length: 2,
+                access_list_count: 0,
+                auth_list_count: 0,
+            },
+        },
+        data_bytes: Box::new([]),
+        blob_bytes: blob_bytes.into_boxed_slice(),
+    });
+    t.txn_evm_output(0, 21_000, true).txn_end().block_end();
+
+    t.validate(|block| {
+        let trx = &block.transaction_traces[0];
+        assert_eq!(trx.blob_hashes, vec![hash1.to_vec(), hash2.to_vec()]);
+    });
+}
+
+// blob_bytes length not a multiple of 32
+#[test]
+#[should_panic]
+fn test_blob_hashes_non_multiple_of_32_panics() {
+    let mut t = MonadTracerTester::new();
+    let blob_bytes: Vec<u8> = vec![0u8; 33];
+
+    t.block_start(1, 1);
+    t.send(ExecEvent::TxnHeaderStart {
+        txn_index: 0,
+        txn_header_start: monad_exec_txn_header_start {
+            txn_hash: zero_bytes32(),
+            sender: addr_to_ffi(alice_addr()),
+            txn_header: monad_c_eth_txn_header {
+                txn_type: 3,
+                chain_id: zero_u256(),
+                nonce: 0,
+                gas_limit: 21_000,
+                max_fee_per_gas: u256_to_ffi(U256::from(1_000_000_000u64)),
+                max_priority_fee_per_gas: zero_u256(),
+                value: zero_u256(),
+                to: addr_to_ffi(bob_addr()),
+                is_contract_creation: false,
+                r: zero_u256(),
+                s: zero_u256(),
+                y_parity: false,
+                max_fee_per_blob_gas: u256_to_ffi(U256::from(1u64)),
+                data_length: 0,
+                blob_versioned_hash_length: 1,
+                access_list_count: 0,
+                auth_list_count: 0,
+            },
+        },
+        data_bytes: Box::new([]),
+        blob_bytes: blob_bytes.into_boxed_slice(),
+    });
+}
+
+#[test]
+fn test_storage_keys_exact_32_bytes() {
+    let mut tester = MonadTracerTester::new();
+    tester.block_start(1, 1);
+    tester.txn_header_start(0, alice_addr(), Some(bob_addr()));
+
+    let key = [0xabu8; 32];
+    tester.txn_access_list_entry(0, bob_addr(), 1, key.to_vec());
+
+    tester.txn_evm_output(0, 21_000, true);
+    tester.txn_end();
+    tester.block_end();
+
+    tester.validate(|block| {
+        let trx = &block.transaction_traces[0];
+        assert_eq!(1, trx.access_list.len());
+        assert_eq!(1, trx.access_list[0].storage_keys.len());
+        assert_eq!(key.to_vec(), trx.access_list[0].storage_keys[0]);
+    });
+}
+
+#[test]
+fn test_storage_keys_multiple_exact_32_bytes() {
+    let mut tester = MonadTracerTester::new();
+    tester.block_start(1, 1);
+    tester.txn_header_start(0, alice_addr(), Some(bob_addr()));
+
+    let mut bytes = vec![0xaau8; 32];
+    bytes.extend_from_slice(&[0xbbu8; 32]);
+    tester.txn_access_list_entry(0, bob_addr(), 2, bytes);
+
+    tester.txn_evm_output(0, 21_000, true);
+    tester.txn_end();
+    tester.block_end();
+
+    tester.validate(|block| {
+        let keys = &block.transaction_traces[0].access_list[0].storage_keys;
+        assert_eq!(2, keys.len());
+        assert_eq!(vec![0xaau8; 32], keys[0]);
+        assert_eq!(vec![0xbbu8; 32], keys[1]);
+    });
+}
+
+#[test]
+fn test_storage_keys_empty() {
+    let mut tester = MonadTracerTester::new();
+    tester.block_start(1, 1);
+    tester.txn_header_start(0, alice_addr(), Some(bob_addr()));
+
+    tester.txn_access_list_entry(0, bob_addr(), 0, vec![]);
+
+    tester.txn_evm_output(0, 21_000, true);
+    tester.txn_end();
+    tester.block_end();
+
+    tester.validate(|block| {
+        let keys = &block.transaction_traces[0].access_list[0].storage_keys;
+        assert_eq!(0, keys.len());
+    });
+}
+
+#[test]
+#[should_panic]
+fn test_storage_keys_less_than_32_bytes_panics() {
+    let mut tester = MonadTracerTester::new();
+    tester.block_start(1, 1);
+    tester.txn_header_start(0, alice_addr(), Some(bob_addr()));
+    tester.txn_access_list_entry(0, bob_addr(), 1, vec![0u8; 31]);
+    tester.txn_evm_output(0, 21_000, true);
+    tester.txn_end();
+    tester.block_end();
+}
+
+#[test]
+#[should_panic]
+fn test_storage_keys_more_than_32_bytes_not_multiple_panics() {
+    let mut tester = MonadTracerTester::new();
+    tester.block_start(1, 1);
+    tester.txn_header_start(0, alice_addr(), Some(bob_addr()));
+    tester.txn_access_list_entry(0, bob_addr(), 2, vec![0u8; 33]);
+    tester.txn_evm_output(0, 21_000, true);
+    tester.txn_end();
+    tester.block_end();
+}
+
+#[test]
+fn test_selfdestruct_counts_toward_call_frame_index() {
+    // A selfdestruct followed by a regular call: call_frame_count=2.
+    // If selfdestruct didn't increment current_call_frame_index, is_last would
+    // fire on the selfdestruct instead of the final regular call, leaving the
+    // regular call unflushed
+    let mut tester = MonadTracerTester::new();
+    tester.block_start(1, 1);
+    tester.txn_header_start(0, alice_addr(), Some(bob_addr()));
+    tester.txn_evm_output_with_frames(0, 50_000, true, 2);
+
+    // Frame 1: selfdestruct (not last)
+    tester.txn_call_frame(0, alice_addr(), bob_addr(), Opcode::SelfDestruct as u8, 0, 21_000, 10_000);
+    // Frame 2: regular call (last) — must be flushed by is_last, not earlier
+    tester.txn_call_frame(0, alice_addr(), bob_addr(), Opcode::Call as u8, 0, 21_000, 10_000);
+
+    tester.txn_end();
+    tester.block_end();
+
+    tester.validate(|block| {
+        let calls = &block.transaction_traces[0].calls;
+        assert_eq!(2, calls.len(), "both selfdestruct and regular call must be recorded");
     });
 }

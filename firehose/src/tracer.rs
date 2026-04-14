@@ -844,17 +844,32 @@ impl Tracer {
         open_calls.flush_at_or_below(depth, self);
         self.open_calls = open_calls;
 
-        self.on_call_enter(depth, opcode, from, to, input, gas, value);
+        if opcode == Opcode::SelfDestruct as u8 {
+            // SELFDESTRUCT is atomic: enter as CALL, emit the opcode, exit immediately
+            self.on_call_enter(depth, Opcode::Call as u8, from, to, input, gas, value);
+            self.on_opcode(0, Opcode::SelfDestruct as u8, gas, gas_used, &[], depth, None);
+            let failed = err.is_some();
+            self.on_call_exit(
+                depth,
+                &output,
+                gas_used,
+                err.as_ref().map(|e| e as &dyn std::error::Error),
+                failed,
+            );
+        } else {
+            self.on_call_enter(depth, opcode, from, to, input, gas, value);
 
-        self.open_calls.push(OpenCall {
-            depth,
-            addr: to,
-            call_type: self.opcode_to_call_type(opcode),
-            output,
-            gas_used,
-            error: err,
-            is_last,
-        });
+            self.open_calls.push(OpenCall {
+                depth,
+                output,
+                gas_used,
+                error: err,
+            });
+        }
+
+        if is_last {
+            self.flush_open_calls(0);
+        }
     }
 
     pub fn flush_open_calls(&mut self, min_depth: i32) {
@@ -916,7 +931,7 @@ impl Tracer {
             let is_create = call.call_type == pb::sf::ethereum::r#type::v2::CallType::Create as i32;
             if is_create {
                 if let Some(trx) = self.transaction.as_mut() {
-                    if trx.to.iter().all(|b| *b == 0) {
+                    if trx.to.is_empty() {
                         trx.to = to.0.to_vec();
                     }
                 }
@@ -1234,9 +1249,13 @@ impl Tracer {
 
         // Mark SELFDESTRUCT opcode
         if op == Opcode::SelfDestruct as u8 {
-            if let Some(active_call) = self.call_stack.peek_mut() {
-                active_call.suicide = true;
-            }
+            self.mark_active_call_suicide();
+        }
+    }
+
+    pub fn mark_active_call_suicide(&mut self) {
+        if let Some(active_call) = self.call_stack.peek_mut() {
+            active_call.suicide = true;
         }
     }
 

@@ -8,7 +8,7 @@ use color_eyre::eyre::Result;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
-use monad_tracer::{FirehosePlugin, FirehosePluginConfig, MonadConsumer, PluginConfig};
+use monad_tracer::{FirehosePlugin, MonadConsumer, MonadConsumerPlugin, PluginConfig};
 
 #[derive(Parser, Debug)]
 #[command(name = "monad-firehose-tracer")]
@@ -32,7 +32,7 @@ struct Args {
 
     /// Buffer size for event processing
     #[arg(long, default_value = "1024")]
-    buffer_size: usize,
+    event_channel_buffer_size: usize,
 
     /// Timeout for event consumption in milliseconds
     #[arg(long, default_value = "1000")]
@@ -69,15 +69,14 @@ async fn main() -> Result<()> {
 
     let consumer_config = PluginConfig {
         event_ring_path: args.monad_event_ring_path,
-        buffer_size: args.buffer_size,
-        timeout_ms: args.timeout_ms,
+        event_channel_buffer_size: args.event_channel_buffer_size,
     };
 
     let consumer = MonadConsumer::new(consumer_config).await?;
 
-    let tracer_config = FirehosePluginConfig::new(args.chain_id, args.network_name)
+    let tracer_config = MonadConsumerPlugin::new(args.chain_id)
         .with_debug(args.debug)
-        .with_buffer_size(args.buffer_size)
+        .with_event_channel_buffer_size(args.event_channel_buffer_size)
         .with_no_op(args.no_op);
 
     let mut tracer = FirehosePlugin::new(tracer_config).with_consumer(consumer);

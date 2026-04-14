@@ -3,37 +3,33 @@ use serde::{Deserialize, Serialize};
 
 /// Configuration for the Firehose tracer for Monad
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FirehosePluginConfig {
+pub struct MonadConsumerPlugin {
     /// Chain ID for the blockchain
     pub chain_id: u64,
-    /// Network name (e.g., "monad", "monad-testnet")
-    pub network_name: String,
     /// Enable debug mode
     pub debug: bool,
     /// Buffer size for event processing
-    pub buffer_size: usize,
+    pub event_channel_buffer_size: usize,
     /// Enable no-op mode
     pub no_op: bool,
 }
 
-impl Default for FirehosePluginConfig {
+impl Default for MonadConsumerPlugin {
     fn default() -> Self {
         Self {
             chain_id: 1,
-            network_name: "monad".to_string(),
             debug: false,
-            buffer_size: 1024,
+            event_channel_buffer_size: 1024,
             no_op: false,
         }
     }
 }
 
-impl FirehosePluginConfig {
+impl MonadConsumerPlugin {
     /// Create a new tracer configuration
-    pub fn new(chain_id: u64, network_name: String) -> Self {
+    pub fn new(chain_id: u64) -> Self {
         Self {
             chain_id,
-            network_name,
             ..Default::default()
         }
     }
@@ -45,8 +41,8 @@ impl FirehosePluginConfig {
     }
 
     /// Set buffer size
-    pub fn with_buffer_size(mut self, buffer_size: usize) -> Self {
-        self.buffer_size = buffer_size;
+    pub fn with_event_channel_buffer_size(mut self, event_channel_buffer_size: usize) -> Self {
+        self.event_channel_buffer_size = event_channel_buffer_size;
         self
     }
 

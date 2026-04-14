@@ -1,6 +1,6 @@
 //! Main Firehose tracer implementation
 
-use crate::{FirehosePluginConfig, MonadConsumer, TRACER_NAME, TRACER_VERSION};
+use crate::{MonadConsumer, MonadConsumerPlugin, TRACER_NAME, TRACER_VERSION};
 use alloy_primitives::B256;
 use eyre::Result;
 use firehose::{
@@ -12,12 +12,6 @@ use monad_exec_events::ExecEvent;
 use std::collections::HashMap;
 use tracing::{error, info};
 
-#[repr(u8)]
-enum AccountAccessContext {
-    BlockPrologue = 0,
-    Transaction = 1,
-    BlockEpilogue = 2,
-}
 fn evmc_status_to_error(evmc_status: i32) -> Option<firehose::StringError> {
     let msg = match evmc_status {
         0 => return None,
@@ -48,12 +42,14 @@ fn evmc_status_to_error(evmc_status: i32) -> Option<firehose::StringError> {
 
 /// Main Firehose tracer for Monad
 pub struct FirehosePlugin {
-    config: FirehosePluginConfig,
+    config: MonadConsumerPlugin,
     consumer: Option<MonadConsumer>,
     pub tracer: Tracer,
     tx_end_receipt: Option<monad_exec_events::ffi::monad_exec_txn_evm_output>,
     pending_tx_events: HashMap<usize, firehose::TxEvent>,
     // Logs buffered for receipt construction
+    // This duplication could be avoided by reading the logs back from the Firehose tracer
+    // internal call state instead of buffering them separately here
     pending_receipt_logs: Vec<firehose::LogData>,
     block_txn_count: u64,
     last_finalized_block: u64,
@@ -65,7 +61,7 @@ pub struct FirehosePlugin {
 }
 
 impl FirehosePlugin {
-    pub fn new(config: FirehosePluginConfig) -> Self {
+    pub fn new(config: MonadConsumerPlugin) -> Self {
         Self {
             config,
             consumer: None,
@@ -84,7 +80,7 @@ impl FirehosePlugin {
     }
 
     pub fn new_with_writer(
-        config: FirehosePluginConfig,
+        config: MonadConsumerPlugin,
         writer: Box<dyn std::io::Write + Send>,
     ) -> Self {
         Self {
@@ -135,10 +131,7 @@ impl FirehosePlugin {
     }
 
     pub async fn start(&mut self) -> Result<()> {
-        info!(
-            "Starting Firehose tracer for network: {}",
-            self.config.network_name
-        );
+        info!("Starting Firehose tracer");
 
         let chain_config = firehose::ChainConfig::new(self.config.chain_id);
         self.tracer
@@ -166,6 +159,8 @@ impl FirehosePlugin {
     }
 
     pub fn add_event(&mut self, event: ExecEvent) -> Result<()> {
+        // Drop events until we see the first BlockStart, protects against scenarios where
+        // tracer started mid-block or mid-stream
         if !self.tracer.is_in_block()
             && !matches!(
                 event,
@@ -264,22 +259,22 @@ impl FirehosePlugin {
                     B256::from(txn_header_start.txn_hash.bytes)
                 );
 
-                if self.tracer.is_in_system_call() {
-                    self.tracer.on_system_call_end();
-                }
+                // if self.tracer.is_in_system_call() {
+                //     self.tracer.on_system_call_end();
+                // }
 
                 let h = &txn_header_start.txn_header;
                 let blob_gas_fee_cap =
                     alloy_primitives::U256::from_limbs(h.max_fee_per_blob_gas.limbs);
                 let tx_type = TxType::try_from(h.txn_type as u8).unwrap_or(TxType::Legacy);
                 // max_fee_per_gas and max_priority_fee_per_gas only apply to EIP-1559
-                let is_eip1559 = h.txn_type >= 2;
+                let is_eip1559 = h.txn_type >= firehose::TxType::DynamicFee as u8;
                 let tx_event = firehose::TxEvent {
                     tx_type,
                     hash: B256::from(txn_header_start.txn_hash.bytes),
                     from: alloy_primitives::Address::from(txn_header_start.sender.bytes),
                     to: if h.is_contract_creation {
-                        Some(alloy_primitives::Address::ZERO)
+                        None
                     } else {
                         Some(alloy_primitives::Address::from(h.to.bytes))
                     },
@@ -392,7 +387,7 @@ impl FirehosePlugin {
             ExecEvent::TxnEnd => {
                 tracing::info!("txn end");
 
-                self.tracer.flush_open_calls(0);
+                // self.tracer.flush_open_calls(0);
 
                 let receipt_logs = std::mem::take(&mut self.pending_receipt_logs);
                 let mut bloom = alloy_primitives::Bloom::ZERO;
@@ -473,9 +468,9 @@ impl FirehosePlugin {
             } => {
                 tracing::debug!("txn call frame (txn={:?} depth={} opcode=0x{:02x} from={:?} to={:?} gas={} gas_used={} status={})", txn_index, txn_call_frame.depth, txn_call_frame.opcode, alloy_primitives::Address::from(txn_call_frame.caller.bytes), alloy_primitives::Address::from(txn_call_frame.call_target.bytes), txn_call_frame.gas, txn_call_frame.gas_used, txn_call_frame.evmc_status);
 
-                if !self.tracer.is_in_transaction() {
-                    self.tracer.on_system_call_start();
-                }
+                // if !self.tracer.is_in_transaction() {
+                //     self.tracer.on_system_call_start();
+                // }
 
                 let depth = txn_call_frame.depth as i32;
                 let from = alloy_primitives::Address::from(txn_call_frame.caller.bytes);
@@ -484,70 +479,35 @@ impl FirehosePlugin {
                 let evmc_status = txn_call_frame.evmc_status as i32;
                 let err = evmc_status_to_error(evmc_status);
 
-                // SELFDESTRUCT is atomic (enter + opcode + exit with no deferral)
-                if txn_call_frame.opcode == Opcode::SelfDestruct as u8 {
-                    self.tracer.flush_open_calls(depth);
-                    self.tracer.on_call_enter(
-                        depth,
-                        Opcode::Call as u8,
-                        from,
-                        to,
-                        &input_bytes,
-                        txn_call_frame.gas,
-                        value,
-                    );
-                    self.tracer.on_opcode(
-                        0,
-                        Opcode::SelfDestruct as u8,
-                        txn_call_frame.gas,
-                        txn_call_frame.gas_used,
-                        &[],
-                        depth,
-                        None,
-                    );
-                    self.tracer.on_call_exit(
-                        depth,
-                        &return_bytes,
-                        txn_call_frame.gas_used,
-                        err.as_ref().map(|e| e as &dyn std::error::Error),
-                        evmc_status != 0,
-                    );
-                } else {
-                    let opcode = txn_call_frame.opcode;
-                    let gas = txn_call_frame.gas;
-                    let gas_used = txn_call_frame.gas_used;
-                    let return_bytes = return_bytes.into_vec();
+                self.current_call_frame_index += 1;
+                let is_last = self.current_call_frame_index == self.expected_call_frames;
 
-                    self.current_call_frame_index += 1;
-                    let is_last = self.current_call_frame_index == self.expected_call_frames;
+                let opcode = txn_call_frame.opcode;
+                let gas = txn_call_frame.gas;
+                let gas_used = txn_call_frame.gas_used;
+                let return_bytes = return_bytes.into_vec();
 
-                    self.tracer.on_call(
-                        depth,
-                        opcode,
-                        from,
-                        to,
-                        &input_bytes,
-                        gas,
-                        value,
-                        return_bytes.clone(),
-                        gas_used,
-                        err.clone(),
-                        is_last,
-                    );
+                self.tracer.on_call(
+                    depth,
+                    opcode,
+                    from,
+                    to,
+                    &input_bytes,
+                    gas,
+                    value,
+                    return_bytes.clone(),
+                    gas_used,
+                    err.clone(),
+                    is_last,
+                );
 
-                    // Successful CREATE: emit code change (output is the deployed bytecode)
-                    let is_create =
-                        opcode == Opcode::Create as u8 || opcode == Opcode::Create2 as u8;
-                    if is_create && err.is_none() && !return_bytes.is_empty() {
-                        let empty_hash = firehose::utils::hash_bytes(&[]);
-                        let new_hash = firehose::utils::hash_bytes(&return_bytes);
-                        self.tracer
-                            .on_code_change(to, empty_hash, new_hash, &[], &return_bytes);
-                    }
-
-                    if is_last {
-                        self.tracer.flush_open_calls(0);
-                    }
+                // Successful CREATE: emit code change (output is the deployed bytecode)
+                let is_create = opcode == Opcode::Create as u8 || opcode == Opcode::Create2 as u8;
+                if is_create && err.is_none() && !return_bytes.is_empty() {
+                    let empty_hash = firehose::utils::hash_bytes(&[]);
+                    let new_hash = firehose::utils::hash_bytes(&return_bytes);
+                    self.tracer
+                        .on_code_change(to, empty_hash, new_hash, &[], &return_bytes);
                 }
             }
             ExecEvent::AccountAccessListHeader(header) => {
@@ -557,10 +517,10 @@ impl FirehosePlugin {
                     header.entry_count
                 );
 
-                if header.access_context == AccountAccessContext::Transaction as u8 {
-                    // flush all sub-calls but keep the root call open
-                    self.tracer.flush_open_calls(1);
-                }
+                // if header.access_context == AccountAccessContext::Transaction as u8 {
+                //     // flush all sub-calls but keep the root call open
+                //     self.tracer.flush_open_calls(1);
+                // }
             }
             ExecEvent::AccountAccess(account_access) => {
                 tracing::debug!(

@@ -16,16 +16,14 @@ use tracing::{error, info, warn};
 #[derive(Debug, Clone)]
 pub struct PluginConfig {
     pub event_ring_path: String,
-    pub buffer_size: usize,
-    pub timeout_ms: u64,
+    pub event_channel_buffer_size: usize,
 }
 
 impl Default for PluginConfig {
     fn default() -> Self {
         Self {
             event_ring_path: "/tmp/monad_events".to_string(),
-            buffer_size: 1024,
-            timeout_ms: 1000,
+            event_channel_buffer_size: 1024,
         }
     }
 }
@@ -73,7 +71,7 @@ impl MonadConsumer {
     pub async fn start_consuming(self) -> Result<impl Stream<Item = (u64, ExecEvent)>> {
         info!("Starting Monad event consumption");
 
-        let (tx, rx) = mpsc::channel(self.config.buffer_size);
+        let (tx, rx) = mpsc::channel(self.config.event_channel_buffer_size);
 
         // Spawn the event consumption task
         tokio::spawn(async move {
