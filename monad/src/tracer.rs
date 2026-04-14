@@ -5,7 +5,7 @@ use alloy_primitives::B256;
 use eyre::Result;
 use firehose::{
     types::{AccessTuple, SetCodeAuthorization, TxType},
-    Opcode, Tracer,
+    Tracer,
 };
 use futures_util::StreamExt;
 use monad_exec_events::ExecEvent;
@@ -495,20 +495,11 @@ impl FirehosePlugin {
                     &input_bytes,
                     gas,
                     value,
-                    return_bytes.clone(),
+                    return_bytes,
                     gas_used,
-                    err.clone(),
+                    err,
                     is_last,
                 );
-
-                // Successful CREATE: emit code change (output is the deployed bytecode)
-                let is_create = opcode == Opcode::Create as u8 || opcode == Opcode::Create2 as u8;
-                if is_create && err.is_none() && !return_bytes.is_empty() {
-                    let empty_hash = firehose::utils::hash_bytes(&[]);
-                    let new_hash = firehose::utils::hash_bytes(&return_bytes);
-                    self.tracer
-                        .on_code_change(to, empty_hash, new_hash, &[], &return_bytes);
-                }
             }
             ExecEvent::AccountAccessListHeader(header) => {
                 tracing::debug!(

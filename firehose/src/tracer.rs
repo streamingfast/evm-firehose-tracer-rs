@@ -517,6 +517,8 @@ impl Tracer {
         // Validate state: Must be in block and in transaction
         self.ensure_in_block_and_in_trx();
 
+        self.flush_open_calls(0);
+
         // Complete the transaction
         if let Some(trx) = self.transaction.take() {
             let completed_trx = self.complete_transaction(trx, receipt, err);
@@ -858,6 +860,14 @@ impl Tracer {
             );
         } else {
             self.on_call_enter(depth, opcode, from, to, input, gas, value);
+
+            // Successful CREATE: emit code change
+            let is_create = opcode == Opcode::Create as u8 || opcode == Opcode::Create2 as u8;
+            if is_create && err.is_none() && !output.is_empty() {
+                let empty_hash = utils::hash_bytes(&[]);
+                let new_hash = utils::hash_bytes(&output);
+                self.on_code_change(to, empty_hash, new_hash, &[], &output);
+            }
 
             self.open_calls.push(OpenCall {
                 depth,
