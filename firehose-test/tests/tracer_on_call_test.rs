@@ -115,7 +115,7 @@ fn test_flush_open_calls_depth_1_keeps_root_open() {
 
 #[test]
 fn test_on_call_create_emits_code_change_on_close() {
-    // on_call with a successful CREATE: caller is responsible for emitting the code change
+    // on_call with a successful CREATE: shared tracer emits the code change automatically
     let contract_code = vec![0x60, 0x80, 0x60, 0x40];
     let mut tester = TracerTester::new();
     tester.start_block_trx(test_legacy_trx());
@@ -132,12 +132,6 @@ fn test_on_call_create_emits_code_change_on_close() {
         None,
         false,
     );
-    // Emit code change before flushing (caller's responsibility for CREATE)
-    let empty_hash = firehose::utils::hash_bytes(&[]);
-    let new_hash = firehose::utils::hash_bytes(&contract_code);
-    tester
-        .tracer
-        .on_code_change(bob_addr(), empty_hash, new_hash, &[], &contract_code);
     tester.tracer.flush_open_calls(0);
     tester
         .end_block_trx(Some(success_receipt(53_000)), None, None)
