@@ -1902,15 +1902,35 @@ fn test_selfdestruct_counts_toward_call_frame_index() {
     tester.txn_evm_output_with_frames(0, 50_000, true, 2);
 
     // Frame 1: selfdestruct (not last)
-    tester.txn_call_frame(0, alice_addr(), bob_addr(), Opcode::SelfDestruct as u8, 0, 21_000, 10_000);
+    tester.txn_call_frame(
+        0,
+        alice_addr(),
+        bob_addr(),
+        Opcode::SelfDestruct as u8,
+        0,
+        21_000,
+        10_000,
+    );
     // Frame 2: regular call (last) — must be flushed by is_last, not earlier
-    tester.txn_call_frame(0, alice_addr(), bob_addr(), Opcode::Call as u8, 0, 21_000, 10_000);
+    tester.txn_call_frame(
+        0,
+        alice_addr(),
+        bob_addr(),
+        Opcode::Call as u8,
+        0,
+        21_000,
+        10_000,
+    );
 
     tester.txn_end();
     tester.block_end();
 
     tester.validate(|block| {
         let calls = &block.transaction_traces[0].calls;
-        assert_eq!(2, calls.len(), "both selfdestruct and regular call must be recorded");
+        assert_eq!(
+            2,
+            calls.len(),
+            "both selfdestruct and regular call must be recorded"
+        );
     });
 }

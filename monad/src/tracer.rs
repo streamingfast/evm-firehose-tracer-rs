@@ -1,7 +1,7 @@
 //! Main Firehose tracer implementation
 
 use crate::{MonadConsumer, MonadConsumerPlugin, TRACER_NAME, TRACER_VERSION};
-use alloy_primitives::{Address, B256, Bytes};
+use alloy_primitives::{Address, Bytes, B256};
 use eyre::Result;
 use firehose::{
     types::{AccessTuple, SetCodeAuthorization, StateReader, TxType},
@@ -111,11 +111,8 @@ pub struct FirehosePlugin {
     // internal call state instead of buffering them separately here
     pending_receipt_logs: Vec<firehose::LogData>,
     // EIP-7702: delegation code changes buffered from TxnAuthListEntry (is_valid_authority=true),
-    // emitted as on_code_change when the corresponding AccountAccess arrives (is_nonce_modified=true).
-    // Vec preserves order when the same authority appears multiple times (e.g. auth2→CC then auth4→BB).
+    // emitted as on_code_change when the corresponding AccountAccess arrives (is_nonce_modified=true)
     pending_delegation_code_changes: HashMap<Address, Vec<Vec<u8>>>,
-    // EIP-7702: persistent map of EOA → current delegation code, updated as delegations are confirmed.
-    // Passed as StateReader to on_tx_start so the shared tracer can populate addressDelegatesTo.
     delegation_state: DelegationStateReader,
     block_txn_count: u64,
     last_finalized_block: u64,
@@ -470,6 +467,8 @@ impl FirehosePlugin {
                 self.current_call_frame_index = 0;
 
                 if let Some(tx_event) = self.pending_tx_events.remove(&txn_index) {
+                    // EIP-7702: pass current delegation state so the shared tracer can
+                    // populate addressDelegatesTo on calls to already-delegated EOAs.
                     let state_reader = Box::new(self.delegation_state.snapshot());
                     self.tracer.on_tx_start(tx_event, Some(state_reader));
                 }
@@ -512,6 +511,7 @@ impl FirehosePlugin {
                     }
                 };
 
+                // EIP-7702: discard unconfirmed delegations (tx reverted or auth never applied)
                 self.pending_delegation_code_changes.clear();
                 self.tracer.on_tx_end(Some(&receipt), None);
             }
@@ -629,15 +629,19 @@ impl FirehosePlugin {
                 }
                 if account_access.is_nonce_modified {
                     if let Some(new_codes) = self.pending_delegation_code_changes.remove(&addr) {
+                        // EIP-7702: one synthetic nonce+code change per applied auth entry.
                         let mut current_nonce = account_access.prestate.nonce;
                         let old_hash = B256::from(account_access.prestate.code_hash.bytes);
                         for new_code in new_codes {
-                            self.tracer.on_nonce_change(addr, current_nonce, current_nonce + 1);
+                            self.tracer
+                                .on_nonce_change(addr, current_nonce, current_nonce + 1);
                             let new_hash = firehose::utils::hash_bytes(&new_code);
-                            self.tracer.on_code_change(addr, old_hash, new_hash, &[], &new_code);
+                            self.tracer
+                                .on_code_change(addr, old_hash, new_hash, &[], &new_code);
                             self.delegation_state.set_code(addr, new_code);
                             current_nonce += 1;
                         }
+                        // remaining bump if addr was also the tx sender
                         if current_nonce < account_access.modified_nonce {
                             self.tracer.on_nonce_change(
                                 addr,
