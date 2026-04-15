@@ -1012,7 +1012,12 @@ impl Tracer {
 
         // Pop call from stack
         if let Some(mut call) = self.call_stack.pop() {
-            firehose_debug!("call exit (depth={} gas_used={})", depth, gas_used);
+            firehose_debug!(
+                "call exit (depth={} gas_used={} err={:?})",
+                depth,
+                gas_used,
+                err
+            );
 
             call.gas_consumed = gas_used;
 
