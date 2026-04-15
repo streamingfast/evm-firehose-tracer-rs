@@ -1504,6 +1504,17 @@ impl Tracer {
         self.call_stack.has_active_call()
     }
 
+    /// Override the `address_delegates_to` field on the current active call.
+    ///
+    /// Called from the inspector after `on_call_enter` when the EVM state reveals
+    /// a delegation that the pre-block state reader may have missed (e.g. a delegation
+    /// established by an earlier transaction in the same block).
+    pub fn set_current_call_address_delegates_to(&mut self, address: Address) {
+        if let Some(active_call) = self.call_stack.peek_mut() {
+            active_call.address_delegates_to = Some(address.0.to_vec());
+        }
+    }
+
     pub fn is_in_system_call(&self) -> bool {
         self.in_system_call
     }

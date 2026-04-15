@@ -1,5 +1,5 @@
 use alloy_primitives::{Address, Log as AlloyLog, B256, U256};
-use firehose::{Opcode, StringError};
+use firehose::{pb, Opcode, StringError};
 use reth::api::FullNodeComponents;
 use reth::revm::revm::context_interface::{ContextTr, JournalTr};
 use reth::revm::revm::inspector::{Inspector, JournalExt};
@@ -7,6 +7,8 @@ use reth::revm::revm::interpreter::{
     interpreter::EthInterpreter, interpreter_types::Jumps, CallInputs, CallOutcome, CreateInputs,
     CreateOutcome, Interpreter,
 };
+use reth::revm::revm::primitives::KECCAK_EMPTY;
+use std::collections::HashMap;
 
 struct StepContext {
     start_journal_idx: usize,
@@ -21,6 +23,20 @@ pub struct FirehoseInspector<'a, Node: FullNodeComponents> {
 
     /// The last opcode executed in `step`, used to detect SSTORE for storage change tracking in `step_end`.
     last_step: Option<StepContext>,
+
+    /// Index into the journal up to which balance/nonce/code changes have already been processed.
+    /// Advances at each call/create entry and exit to avoid processing the same entries twice.
+    journal_processed_up_to: usize,
+
+    /// Tracks the last balance emitted for each address within the current transaction.
+    /// Used to determine the delta for post-execution balance changes (gas refund, miner fee)
+    /// that happen after all inspector call hooks but before commit.
+    balance_tracker: HashMap<Address, U256>,
+
+    /// Tracks addresses for which a code change has already been emitted in the current
+    /// transaction, to avoid double-emitting changes that are detected both via pre-execution
+    /// state comparison (EIP-7702) and journal entries (CREATE/SELFDESTRUCT).
+    code_change_tracker: std::collections::HashSet<Address>,
 }
 
 impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
@@ -29,6 +45,9 @@ impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
             tracer,
             _phantom: std::marker::PhantomData,
             last_step: None,
+            journal_processed_up_to: 0,
+            balance_tracker: HashMap::new(),
+            code_change_tracker: std::collections::HashSet::new(),
         }
     }
 
@@ -76,6 +95,332 @@ impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
             let hash = alloy_primitives::keccak256(&buf);
             tracer.on_keccak_preimage(hash, &buf);
         }
+    }
+
+    /// Process new balance/nonce/code journal entries since the last scan and emit the
+    /// corresponding tracer events. Called at strategic points:
+    ///  - BEFORE on_call_enter in `call`/`create` hooks (so parent entries stay on parent)
+    ///  - BEFORE on_call_exit in `call_end`/`create_end` hooks (so child entries stay on child)
+    fn process_journal_changes<CTX>(&mut self, context: &mut CTX)
+    where
+        CTX: ContextTr,
+        CTX::Journal: JournalExt,
+    {
+        use reth::revm::revm::context::JournalEntry;
+
+        let journal_len = context.journal().journal().len();
+
+        // Handle journal rollback: when a call reverts, revm truncates journal entries
+        // from that call's execution. If our pointer is past the new end, snap it to the
+        // current length so we don't re-process parent entries that were already emitted.
+        if self.journal_processed_up_to > journal_len {
+            self.journal_processed_up_to = journal_len;
+        }
+
+        if self.journal_processed_up_to == journal_len {
+            return;
+        }
+
+        // Collect the entries we need to process (clone to avoid borrow conflicts when reading state)
+        let entries: Vec<_> = context.journal().journal()[self.journal_processed_up_to..journal_len]
+            .iter()
+            .cloned()
+            .collect();
+        self.journal_processed_up_to = journal_len;
+
+        let reason = pb::sf::ethereum::r#type::v2::balance_change::Reason::Transfer;
+
+        for entry in entries {
+            match entry {
+                JournalEntry::BalanceChange { address, old_balance } => {
+                    let new_balance = context
+                        .journal()
+                        .evm_state()
+                        .get(&address)
+                        .map(|a| a.info.balance)
+                        .unwrap_or(U256::ZERO);
+                    self.tracer.on_balance_change(address, old_balance, new_balance, reason);
+                    self.balance_tracker.insert(address, new_balance);
+                }
+                JournalEntry::BalanceTransfer { from, to, balance } => {
+                    let evm_state = context.journal().evm_state();
+                    let new_from = evm_state.get(&from).map(|a| a.info.balance).unwrap_or(U256::ZERO);
+                    let old_from = new_from.saturating_add(balance);
+                    let new_to = evm_state.get(&to).map(|a| a.info.balance).unwrap_or(U256::ZERO);
+                    let old_to = new_to.saturating_sub(balance);
+
+                    self.tracer.on_balance_change(from, old_from, new_from, reason);
+                    self.balance_tracker.insert(from, new_from);
+                    self.tracer.on_balance_change(to, old_to, new_to, reason);
+                    self.balance_tracker.insert(to, new_to);
+                }
+                JournalEntry::NonceChange { address, previous_nonce } => {
+                    let new_nonce = context
+                        .journal()
+                        .evm_state()
+                        .get(&address)
+                        .map(|a| a.info.nonce)
+                        .unwrap_or(0);
+                    self.tracer.on_nonce_change(address, previous_nonce, new_nonce);
+                }
+                JournalEntry::NonceBump { address } => {
+                    // NonceBump is only pushed by EIP-7702 delegate().
+                    // If the address is in code_change_tracker it was already handled
+                    // (with correct intermediate values) by process_eip7702_auth_list.
+                    if !self.code_change_tracker.contains(&address) {
+                        let new_nonce = context
+                            .journal()
+                            .evm_state()
+                            .get(&address)
+                            .map(|a| a.info.nonce)
+                            .unwrap_or(0);
+                        let old_nonce = new_nonce.saturating_sub(1);
+                        self.tracer.on_nonce_change(address, old_nonce, new_nonce);
+                    }
+                }
+                JournalEntry::CodeChange { address } => {
+                    if !self.code_change_tracker.contains(&address) {
+                        let account = context.journal().evm_state().get(&address);
+                        if let Some(account) = account {
+                            let new_hash = account.info.code_hash;
+                            let new_code = account
+                                .info
+                                .code
+                                .as_ref()
+                                .map(|b| b.original_bytes())
+                                .unwrap_or_default();
+                            // CodeChange is always from empty code to new code (revert restores to KECCAK_EMPTY)
+                            self.tracer.on_code_change(
+                                address,
+                                KECCAK_EMPTY,
+                                new_hash,
+                                &[],
+                                new_code.as_ref(),
+                            );
+                            self.code_change_tracker.insert(address);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Process EIP-7702 auth list delegations that occur during pre-execution.
+    ///
+    /// `apply_eip7702_auth_list` runs before the first call frame and applies each valid
+    /// authorization in order, potentially modifying the same authority account multiple
+    /// times (e.g. auth2 sets wallet2→setterCC, then auth4 overwrites wallet2→setterBB).
+    ///
+    /// A state-comparison approach (original_info vs current info) only sees the NET change
+    /// and loses intermediate states. We replay the auth list locally, tracking per-authority
+    /// state initialized from `original_info`, to emit one code change and one nonce change
+    /// per applied auth in chronological order.
+    ///
+    /// After the replay all processed authority addresses are inserted into
+    /// `code_change_tracker` so that `process_journal_changes` skips the corresponding
+    /// `CodeChange` and `NonceBump` journal entries (preventing double-emission).
+    ///
+    /// Must be called at root-call entry (depth=0) AFTER `on_call_enter`.
+    fn process_eip7702_auth_list<CTX>(&mut self, context: &mut CTX)
+    where
+        CTX: ContextTr,
+        CTX::Journal: JournalExt,
+    {
+        use reth::revm::revm::context_interface::{transaction::AuthorizationTr, Cfg, Transaction};
+        use reth::revm::revm::Database as _;
+
+        if context.tx().authorization_list_len() == 0 {
+            return;
+        }
+
+        let chain_id = context.cfg().chain_id();
+
+        // Collect auth list to avoid simultaneous borrows on `context.tx()` and
+        // `context.journal()` inside the loop.
+        let auths: Vec<(Option<Address>, U256, u64, Address)> = context
+            .tx()
+            .authorization_list()
+            .map(|a| (a.authority(), a.chain_id(), a.nonce(), a.address()))
+            .collect();
+
+        // Per-authority running state: (nonce, code_hash, code_bytes).
+        // Initialized lazily from original_info on first auth for that address.
+        let mut auth_tracker: HashMap<Address, (u64, B256, Vec<u8>)> = HashMap::new();
+
+        // The sender's nonce is bumped by deduct_caller BEFORE apply_auth_list runs.
+        // original_info.nonce still holds the pre-tx nonce, so for the sender we must
+        // add 1 to match the nonce that apply_auth_list will see.
+        let tx_sender = context.tx().caller();
+
+        for (maybe_authority, auth_chain_id, auth_nonce, target_address) in auths {
+            // 1. Chain ID must be zero (wildcard) or match the current chain.
+            if !auth_chain_id.is_zero() && auth_chain_id != U256::from(chain_id) {
+                continue;
+            }
+
+            // 2. Nonce must be < u64::MAX.
+            if auth_nonce == u64::MAX {
+                continue;
+            }
+
+            // 3. Authority must be recoverable via ecrecover.
+            let authority = match maybe_authority {
+                Some(a) => a,
+                None => continue,
+            };
+
+            // Initialize tracker for this authority from original_info on first encounter.
+            if !auth_tracker.contains_key(&authority) {
+                // First, read nonce and code_hash from evm_state (immutable borrow on journal).
+                let (mut nonce, code_hash, code_loaded) = if let Some(acc) =
+                    context.journal().evm_state().get(&authority)
+                {
+                    let code = acc
+                        .original_info
+                        .code
+                        .as_ref()
+                        .map(|b| b.original_bytes().to_vec());
+                    (acc.original_info.nonce, acc.original_info.code_hash, code)
+                } else {
+                    (0, KECCAK_EMPTY, Some(Vec::new()))
+                };
+
+                // Sender's nonce was already incremented by deduct_caller.
+                if authority == tx_sender {
+                    nonce += 1;
+                }
+
+                // If code wasn't loaded in original_info (common when load_account skips
+                // code loading), fetch it from the database via code_by_hash.
+                let code_bytes = match code_loaded {
+                    Some(bytes) => bytes,
+                    None if code_hash == KECCAK_EMPTY => Vec::new(),
+                    None => context
+                        .db_mut()
+                        .code_by_hash(code_hash)
+                        .ok()
+                        .map(|b| b.original_bytes().to_vec())
+                        .unwrap_or_default(),
+                };
+
+                auth_tracker.insert(authority, (nonce, code_hash, code_bytes));
+            }
+            let (tracked_nonce, tracked_code_hash, tracked_code) =
+                auth_tracker.get_mut(&authority).unwrap();
+
+            // 4. Code must be empty or an EIP-7702 delegation designator.
+            let code_eligible = *tracked_code_hash == KECCAK_EMPTY
+                || (tracked_code.len() == 23 && tracked_code.starts_with(&[0xef, 0x01, 0x00]));
+            if !code_eligible {
+                continue;
+            }
+
+            // 5. Nonce in the auth must match the authority's current nonce.
+            if auth_nonce != *tracked_nonce {
+                continue;
+            }
+
+            // Valid auth: compute the new code that delegate() will set.
+            let (new_hash, new_code) = if target_address.is_zero() {
+                (KECCAK_EMPTY, Vec::new())
+            } else {
+                let mut raw = [0u8; 23];
+                raw[0] = 0xef;
+                raw[1] = 0x01;
+                raw[2] = 0x00;
+                raw[3..].copy_from_slice(target_address.as_slice());
+                let hash = alloy_primitives::keccak256(raw);
+                (hash, raw.to_vec())
+            };
+
+            let old_hash = *tracked_code_hash;
+            let old_code = tracked_code.clone();
+            let old_nonce = *tracked_nonce;
+
+            // Emit code change only when the hash actually differs.
+            if old_hash != new_hash {
+                self.tracer
+                    .on_code_change(authority, old_hash, new_hash, &old_code, &new_code);
+            }
+            // Always emit nonce change for each applied auth.
+            self.tracer.on_nonce_change(authority, old_nonce, old_nonce + 1);
+
+            // Advance per-authority tracker.
+            *tracked_nonce = old_nonce + 1;
+            *tracked_code_hash = new_hash;
+            *tracked_code = new_code;
+
+            // Mark processed so process_journal_changes skips the CodeChange and NonceBump
+            // journal entries that revm emitted for this auth.
+            self.code_change_tracker.insert(authority);
+        }
+    }
+
+    /// Emit post-execution balance changes: gas refund to sender and miner fee to coinbase.
+    ///
+    /// In Geth, these are emitted by `OnBalanceChange` hooks inside `reimburse_caller` and
+    /// `reward_beneficiary`. In revm, no inspector hooks fire during post_execution, so we
+    /// explicitly compute and emit them using the Ethereum gas accounting rules.
+    ///
+    /// Must be called after `execute_transaction_without_commit` returns. Uses `balance_tracker`
+    /// for the sender's last-known balance and `get_pre_tx_balance` for the coinbase's pre-tx
+    /// balance (State<DB> still holds pre-tx balances at this point).
+    ///
+    /// Resets `balance_tracker`, `code_change_tracker`, and `journal_processed_up_to`
+    /// so the inspector is ready for the next transaction.
+    pub fn process_post_tx_balance_changes<F>(
+        &mut self,
+        sender: Address,
+        coinbase: Address,
+        gas_limit: u64,
+        gas_used: u64,
+        effective_gas_price: u128,
+        base_fee: u64,
+        mut get_pre_tx_balance: F,
+    ) where
+        F: FnMut(Address) -> U256,
+    {
+        use pb::sf::ethereum::r#type::v2::balance_change::Reason;
+
+        // Gas refund to sender: reimburse unused gas at effective_gas_price.
+        // gas_used from ExecutionResult already accounts for the capped refund counter,
+        // so remaining_gas = gas_limit - gas_used includes both unspent gas and EVM refunds.
+        let remaining_gas = gas_limit.saturating_sub(gas_used);
+        if remaining_gas > 0 {
+            let refund_amount = U256::from(remaining_gas) * U256::from(effective_gas_price);
+            let old_balance = self
+                .balance_tracker
+                .get(&sender)
+                .copied()
+                .unwrap_or_else(|| get_pre_tx_balance(sender));
+            let new_balance = old_balance + refund_amount;
+            self.tracer.on_balance_change(sender, old_balance, new_balance, Reason::GasRefund);
+        }
+
+        // Coinbase reward: the priority fee portion of consumed gas.
+        // Post-EIP-1559 the base fee is burned, only the tip goes to the coinbase.
+        // Pre-EIP-1559 (base_fee == 0) the entire gas price goes to coinbase.
+        let priority_fee_per_gas = effective_gas_price.saturating_sub(base_fee as u128);
+        if gas_used > 0 && priority_fee_per_gas > 0 {
+            let reward_amount = U256::from(gas_used) * U256::from(priority_fee_per_gas);
+            let old_balance = self
+                .balance_tracker
+                .get(&coinbase)
+                .copied()
+                .unwrap_or_else(|| get_pre_tx_balance(coinbase));
+            let new_balance = old_balance + reward_amount;
+            self.tracer.on_balance_change(
+                coinbase,
+                old_balance,
+                new_balance,
+                Reason::RewardTransactionFee,
+            );
+        }
+
+        self.balance_tracker.clear();
+        self.code_change_tracker.clear();
+        self.journal_processed_up_to = 0;
     }
 
     /// Map EVM call scheme to Firehose call type opcode
@@ -248,6 +593,48 @@ where
 
         log_journal("call_enter", context);
 
+        // Process journal entries BEFORE pushing the child call. This ensures that
+        // entries from the parent's execution (including the parent call's own value
+        // transfer BalanceTransfer) are attributed to the parent call, not the child.
+        //
+        // In Geth, OnEnter fires first (pushing the call), then Transfer runs and
+        // OnBalanceChange fires (on the newly-pushed call). revm's journal captures
+        // the same entries but they're only visible at the NEXT inspector hook. By
+        // processing here (before pushing), the parent's BalanceTransfer from a
+        // previous call setup lands on the parent. The current call's own value
+        // transfer will be created by revm AFTER this hook returns and processed
+        // at the next call/call_end, correctly landing on THIS call.
+        //
+        // For the root call (depth=0), journal entries go to deferred state
+        // (no call on stack yet) and are moved to the root call by on_call_enter.
+        self.process_journal_changes(context);
+
+        // deduct_caller directly mutates the sender account (balance and nonce) WITHOUT
+        // pushing journal entries (BalanceChange/NonceChange). process_journal_changes won't
+        // catch these. Emit them explicitly before on_call_enter so they go to deferred state
+        // and get prepended to the root call.
+        if depth == 0 {
+            if let Some(account) = context.journal().evm_state().get(&inputs.caller) {
+                // Gas buy: sender's balance decreased by gas_limit * effective_gas_price
+                let old_balance = account.original_info.balance;
+                let new_balance = account.info.balance;
+                if old_balance != new_balance {
+                    self.tracer.on_balance_change(
+                        inputs.caller,
+                        old_balance,
+                        new_balance,
+                        pb::sf::ethereum::r#type::v2::balance_change::Reason::GasBuy,
+                    );
+                    self.balance_tracker.insert(inputs.caller, new_balance);
+                }
+
+                // Nonce bump from deduct_caller
+                let new_nonce = account.info.nonce;
+                self.tracer
+                    .on_nonce_change(inputs.caller, new_nonce - 1, new_nonce);
+            }
+        }
+
         self.tracer.on_call_enter(
             depth,
             call_type,
@@ -258,12 +645,38 @@ where
             inputs.value.get(),
         );
 
+        // EIP-7702: override address_delegates_to using the live EVM state.
+        // on_call_enter uses the pre-block state reader which misses delegations committed
+        // by earlier transactions in the same block. At call-hook time, first_frame_input
+        // has already loaded the 'to' account with code, so evm_state() reflects the
+        // in-block delegation set by any prior transaction.
+        {
+            use reth::revm::revm::bytecode::Bytecode;
+            if let Some(account) = context.journal().evm_state().get(&to) {
+                if let Some(Bytecode::Eip7702(eip7702)) = &account.info.code {
+                    self.tracer
+                        .set_current_call_address_delegates_to(eip7702.delegated_address);
+                }
+            }
+        }
+
+        // At root call entry, replay the EIP-7702 auth list to emit one code change and
+        // one nonce change per applied auth in chronological order. This correctly captures
+        // intermediate states when the same authority appears multiple times in the list.
+        if depth == 0 {
+            self.process_eip7702_auth_list(context);
+        }
+
         None
     }
 
     /// CALL* operation completes
     fn call_end(&mut self, context: &mut CTX, _inputs: &CallInputs, outcome: &mut CallOutcome) {
         log_journal("call_exit", context);
+
+        // Scan journal entries accumulated during this call's execution BEFORE popping it,
+        // so changes are attributed to the call that caused them.
+        self.process_journal_changes(context);
 
         let depth = context.journal().depth() as i32;
         let failed = !outcome.result.is_ok();
@@ -325,6 +738,34 @@ where
             self.tracer.set_transaction_to(created_address);
         }
 
+        // Process journal entries BEFORE pushing child (same rationale as in `call` hook).
+        self.process_journal_changes(context);
+
+        // Emit gas buy balance change and nonce change from deduct_caller (same rationale
+        // as in `call` hook). For CREATE, create_account_checkpoint will bump the nonce
+        // again (e.g. 1→2) and DOES push a NonceChange journal entry.
+        if depth == 0 {
+            if let Some(account) = context.journal().evm_state().get(&inputs.caller()) {
+                // Gas buy balance change
+                let old_balance = account.original_info.balance;
+                let new_balance = account.info.balance;
+                if old_balance != new_balance {
+                    self.tracer.on_balance_change(
+                        inputs.caller(),
+                        old_balance,
+                        new_balance,
+                        pb::sf::ethereum::r#type::v2::balance_change::Reason::GasBuy,
+                    );
+                    self.balance_tracker.insert(inputs.caller(), new_balance);
+                }
+
+                // Nonce bump from deduct_caller
+                let new_nonce = account.info.nonce;
+                self.tracer
+                    .on_nonce_change(inputs.caller(), new_nonce - 1, new_nonce);
+            }
+        }
+
         self.tracer.on_call_enter(
             depth,
             call_type,
@@ -346,6 +787,10 @@ where
         outcome: &mut CreateOutcome,
     ) {
         log_journal("create_exit", context);
+
+        // Scan journal entries accumulated during this create's execution (including code deployment)
+        // BEFORE popping the call, so changes are attributed to the CREATE call.
+        self.process_journal_changes(context);
 
         let depth = context.journal().depth() as i32;
         let failed = !outcome.result.is_ok();
