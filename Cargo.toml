@@ -1,5 +1,5 @@
 [workspace]
-members = ["firehose", "firehose-test", "monad", "pb", "reth"]
+members = ["firehose", "firehose-test", "monad", "pb", "reth", "reth-base"]
 exclude = ["resources"]
 resolver = "2"
 

@@ -6554,6 +6554,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "reth-base-firehose"
+version = "1.11.3"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-genesis",
+ "alloy-primitives",
+ "alloy-rlp",
+ "clap",
+ "eyre",
+ "firehose",
+ "futures-util",
+ "pb",
+ "reth",
+ "reth-cli-util",
+ "reth-evm",
+ "reth-exex",
+ "reth-firehose",
+ "reth-node-api",
+ "reth-node-ethereum",
+ "reth-provider",
+ "reth-revm",
+ "reth-tracing",
+]
+
+[[package]]
 name = "reth-basic-payload-builder"
 version = "1.11.3"
 source = "git+https://github.com/paradigmxyz/reth.git?rev=v1.11.3#d6324d63e27ef6b7c49cdc9b1977c1b808234c7b"
