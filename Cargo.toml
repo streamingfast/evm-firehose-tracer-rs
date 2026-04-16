@@ -38,6 +38,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
 color-eyre = "0.6"
 
+# Base node dependencies
+base-execution-cli      = { git = "https://github.com/base/base", tag = "v0.7.3" }
+base-node-runner        = { git = "https://github.com/base/base", tag = "v0.7.3" }
+base-node-core          = { git = "https://github.com/base/base", tag = "v0.7.3" }
+
 # Monad-specific dependencies
 monad-exec-events = { git = "https://github.com/streamingfast/monad-bft", branch = "feature/add-sys-calls-v0.12.7" }
 monad-event-ring = { git = "https://github.com/streamingfast/monad-bft", branch = "feature/add-sys-calls-v0.12.7" }

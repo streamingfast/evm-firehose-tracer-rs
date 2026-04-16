@@ -181,18 +181,24 @@ where
 }
 
 /// Encodes a u64 as big-endian bytes with no leading zeros (matching go-ethereum big.Int.Bytes()).
-fn u64_to_trimmed_bytes(v: u64) -> Bytes {
+pub fn u64_to_trimmed_bytes(v: u64) -> Bytes {
     let bytes = v.to_be_bytes();
     let start = bytes.iter().position(|&b| b != 0).unwrap_or(8);
     Bytes::copy_from_slice(&bytes[start..])
 }
 
 /// Converts a signed transaction to a firehose TxEvent.
-pub fn signed_tx_to_tx_event<Tx>(tx: &Tx, signer: Address, tx_index: usize) -> TxEvent
+pub fn signed_tx_to_tx_event<Tx>(
+    tx: &Tx,
+    signer: Address,
+    tx_index: usize,
+    r: B256,
+    s: B256,
+    v: Bytes,
+) -> TxEvent
 where
-    Tx: alloy_consensus::Transaction + TxHashRef + SignatureFields,
+    Tx: alloy_consensus::Transaction + TxHashRef,
 {
-    let (r, s, v) = tx.signature_fields();
     TxEvent {
         // FIXME: That is not true, what about Optimism specialized transaction types? We might
         // to have a special mapper that knows the chain and as such is aware of some types

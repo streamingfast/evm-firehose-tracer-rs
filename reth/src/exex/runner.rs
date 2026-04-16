@@ -1,20 +1,22 @@
 use crate::{exex::inspector, exex::mapper, prelude::*};
+use alloy_primitives::Bytes;
 use eyre::Context;
 use firehose;
 use reth::chainspec::{EthChainSpec, EthereumHardforks};
 use reth::revm::revm::Database as _;
-use reth_evm::execute::BlockExecutor;
 use reth_evm::block::TxResult as _;
+use reth_evm::execute::BlockExecutor;
 use reth_provider::BlockIdReader;
 
 /// Ethereum-specific firehose tracer
-pub async fn run_loop<Node: FullNodeComponents>(
+pub async fn run_loop<Node: FullNodeComponents, F>(
     mut ctx: ExExContext<Node>,
     mut tracer: firehose::Tracer,
+    get_signature: F,
 ) -> eyre::Result<()>
 where
     ChainSpec<Node>: EthereumHardforks + EthChainSpec,
-    SignedTx<Node>: mapper::SignatureFields,
+    F: Fn(&SignedTx<Node>) -> (B256, B256, Bytes) + Send + Sync + 'static,
 {
     info!(target: "firehose", "Launching Ethereum tracer");
 
@@ -40,8 +42,15 @@ where
 
                 let chain_start = std::time::Instant::now();
                 for (block, receipts) in new.blocks_and_receipts() {
-                    trace_block(&ctx, &mut tracer, &evm_config, block, receipts)
-                        .wrap_err("Firehose trace block")?;
+                    trace_block(
+                        &ctx,
+                        &mut tracer,
+                        &evm_config,
+                        block,
+                        receipts,
+                        &get_signature,
+                    )
+                    .wrap_err("Firehose trace block")?;
                 }
 
                 let elapsed = chain_start.elapsed();
@@ -64,16 +73,17 @@ where
     Ok(())
 }
 
-pub fn trace_block<Node: FullNodeComponents>(
+pub fn trace_block<Node: FullNodeComponents, F>(
     ctx: &ExExContext<Node>,
     tracer: &mut firehose::Tracer,
     evm_config: &Node::Evm,
     block: &RecoveredBlock<Node>,
     receipts: &Vec<Receipt<Node>>,
+    get_signature: &F,
 ) -> eyre::Result<()>
 where
     ChainSpec<Node>: EthereumHardforks + EthChainSpec,
-    SignedTx<Node>: mapper::SignatureFields,
+    F: Fn(&SignedTx<Node>) -> (B256, B256, Bytes),
 {
     use alloy_consensus::TxReceipt;
 
@@ -148,7 +158,8 @@ where
         .enumerate()
     {
         let tx: &SignedTx<Node> = &**recovered_tx;
-        let tx_event = mapper::signed_tx_to_tx_event(tx, recovered_tx.signer(), tx_index);
+        let (r, s, v) = get_signature(tx);
+        let tx_event = mapper::signed_tx_to_tx_event(tx, recovered_tx.signer(), tx_index, r, s, v);
 
         // Fresh state reader per transaction (cheap lazy DB access) for on_tx_start StateReader
         let state_reader_provider = ctx

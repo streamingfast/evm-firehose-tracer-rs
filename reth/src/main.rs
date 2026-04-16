@@ -1,5 +1,6 @@
 use clap::Parser;
 use reth::{chainspec::EthereumChainSpecParser, cli::Cli};
+use reth_firehose::exex::mapper::SignatureFields;
 use reth_firehose::prelude::*;
 use reth_node_ethereum::EthereumNode;
 
@@ -37,7 +38,9 @@ fn main() {
                 .node(EthereumNode::default())
                 .install_exex("firehose", async move |ctx| {
                     let tracer = firehose::Tracer::new(config);
-                    Ok(reth_firehose::exex::run_loop(ctx, tracer))
+                    Ok(reth_firehose::exex::run_loop(ctx, tracer, |tx| {
+                        tx.signature_fields()
+                    }))
                 })
                 .launch_with_debug_capabilities()
                 .await?;

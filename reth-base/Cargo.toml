@@ -12,20 +12,56 @@ firehose.workspace = true
 pb.workspace = true
 reth-firehose = { path = "../reth" }
 
-alloy-consensus.workspace = true
-alloy-rlp.workspace = true
-alloy-eips.workspace = true
-alloy-genesis.workspace = true
-alloy-primitives.workspace = true
 clap.workspace = true
 eyre.workspace = true
-futures-util.workspace = true
-reth = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
-reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
-reth-cli-util = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
-reth-node-api = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
-reth-provider = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
-reth-evm = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
-reth-exex = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
-reth-tracing = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
-reth-revm = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
+
+# Base node
+base-execution-cli.workspace = true
+base-node-runner.workspace   = true
+base-node-core.workspace     = true
+
+# Reth utilities used directly in main.rs
+reth-cli-util = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+
+# Reth types surfaced through prelude re-exports
+reth-node-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-provider = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-evm      = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-exex     = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-tracing  = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-revm     = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+
+# Alloy types surfaced through prelude re-exports
+alloy-primitives.workspace = true
+
+# Pin the entire alloy 1.x suite to <1.8 for base v0.7.3 compatibility.
+# alloy 1.8 added a blanket NetworkWallet impl (breaks base-alloy-network)
+# and new enum variants in alloy-eips (breaks base-execution-rpc).
+alloy-consensus       = "~1.7"
+alloy-consensus-any   = "~1.7"
+alloy-eips            = "~1.7"
+alloy-genesis         = "~1.7"
+alloy-json-rpc        = "~1.7"
+alloy-network         = "~1.7"
+alloy-network-primitives = "~1.7"
+alloy-provider        = "~1.7"
+alloy-pubsub          = "~1.7"
+alloy-rpc-client      = "~1.7"
+alloy-rpc-types       = "~1.7"
+alloy-rpc-types-admin = "~1.7"
+alloy-rpc-types-anvil = "~1.7"
+alloy-rpc-types-any   = "~1.7"
+alloy-rpc-types-beacon = "~1.7"
+alloy-rpc-types-debug = "~1.7"
+alloy-rpc-types-engine = "~1.7"
+alloy-rpc-types-eth   = "~1.7"
+alloy-rpc-types-mev   = "~1.7"
+alloy-rpc-types-trace = "~1.7"
+alloy-rpc-types-txpool = "~1.7"
+alloy-serde           = "~1.7"
+alloy-signer          = "~1.7"
+alloy-transport       = "~1.7"
+alloy-transport-http  = "~1.7"
+alloy-transport-ipc   = "~1.7"
+alloy-transport-ws    = "~1.7"
+alloy-tx-macros       = "~1.7"

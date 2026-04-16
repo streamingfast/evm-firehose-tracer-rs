@@ -19,12 +19,12 @@ alloy-primitives.workspace = true
 clap.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
-reth = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
-reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
-reth-cli-util = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
-reth-node-api = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
-reth-provider = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
-reth-evm = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
-reth-exex = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
-reth-tracing = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
-reth-revm = { git = "https://github.com/paradigmxyz/reth.git", rev = "v1.11.3" }
+reth = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-cli-util = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-node-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-provider = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-evm = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-exex = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-tracing = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-revm = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
