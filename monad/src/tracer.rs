@@ -240,8 +240,9 @@ impl FirehosePlugin {
         match event {
             ExecEvent::BlockStart(block_start) => {
                 tracing::info!(
-                    "block start (number={} txn_count={})",
+                    "block start (number={} timestamp={} txn_count={})",
                     block_start.eth_block_input.number,
+                    block_start.eth_block_input.timestamp,
                     block_start.eth_block_input.txn_count
                 );
 
@@ -739,7 +740,7 @@ impl FirehosePlugin {
                 tracing::debug!("block perf evm exit");
             }
             ExecEvent::BlockFinalized(tag) => {
-                tracing::info!(
+                tracing::debug!(
                     "block finalized (block={} prev_last_finalized={})",
                     tag.block_number,
                     self.last_finalized_block
