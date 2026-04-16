@@ -239,7 +239,7 @@ impl FirehosePlugin {
 
         match event {
             ExecEvent::BlockStart(block_start) => {
-                tracing::debug!(
+                tracing::info!(
                     "block start (number={} txn_count={})",
                     block_start.eth_block_input.number,
                     block_start.eth_block_input.txn_count
@@ -475,7 +475,7 @@ impl FirehosePlugin {
                 self.tx_end_receipt = Some(output);
             }
             ExecEvent::TxnEnd => {
-                tracing::info!("txn end");
+                tracing::debug!("txn end");
 
                 // self.tracer.flush_open_calls(0);
 
