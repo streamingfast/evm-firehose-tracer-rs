@@ -200,11 +200,12 @@ pub struct TxEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
 #[repr(u8)]
 pub enum TxType {
-    Legacy = 0,     // Pre-EIP-2718 legacy transaction
-    AccessList = 1, // EIP-2930 access list transaction
-    DynamicFee = 2, // EIP-1559 dynamic fee transaction
-    Blob = 3,       // EIP-4844 blob transaction
-    SetCode = 4,    // EIP-7702 set code transaction
+    Legacy = 0,            // Pre-EIP-2718 legacy transaction
+    AccessList = 1,        // EIP-2930 access list transaction
+    DynamicFee = 2,        // EIP-1559 dynamic fee transaction
+    Blob = 3,              // EIP-4844 blob transaction
+    SetCode = 4,           // EIP-7702 set code transaction
+    OptimismDeposit = 126, // Optimism-specific transaction
 }
 
 impl Default for TxType {
@@ -221,6 +222,7 @@ impl Display for TxType {
             TxType::DynamicFee => "TrxDynamicFee",
             TxType::Blob => "TrxBlob",
             TxType::SetCode => "TrxSetCode",
+            TxType::OptimismDeposit => "TrxOptimismDeposit",
         };
         write!(f, "{}", type_str)
     }

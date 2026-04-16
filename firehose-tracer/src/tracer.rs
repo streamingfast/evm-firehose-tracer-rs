@@ -471,6 +471,7 @@ impl Tracer {
             Ok(TxType::DynamicFee) => Type::TrxTypeDynamicFee as i32,
             Ok(TxType::Blob) => Type::TrxTypeBlob as i32,
             Ok(TxType::SetCode) => Type::TrxTypeSetCode as i32,
+            Ok(TxType::OptimismDeposit) => Type::TrxTypeOptimismDeposit as i32,
             _ => Type::TrxTypeLegacy as i32, // Default to legacy for unknown types
         };
 
