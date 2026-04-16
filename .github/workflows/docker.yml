@@ -17,6 +17,8 @@ jobs:
     strategy:
       matrix:
         include:
+          # The `chain` value is used as `<root>/<chain>` path on disk (for example `./reth`,
+          # `./op-reth`, `./base-reth`), so the chain name and folder name must match.
           - chain: reth
             binary_name: reth-firehose-tracer
             platform: linux/amd64
@@ -27,26 +29,26 @@ jobs:
             platform: linux/arm64
             platform_suffix: arm64
             runner: ubuntu-24.04-arm
-          - chain: op-reth
-            binary_name: op-reth-firehose-tracer
-            platform: linux/amd64
-            platform_suffix: amd64
-            runner: ubuntu-24.04
-          - chain: op-reth
-            binary_name: op-reth-firehose-tracer
-            platform: linux/arm64
-            platform_suffix: arm64
-            runner: ubuntu-24.04-arm
-          - chain: base-reth
-            binary_name: base-reth-firehose-tracer
-            platform: linux/amd64
-            platform_suffix: amd64
-            runner: ubuntu-24.04
-          - chain: base-reth
-            binary_name: base-reth-firehose-tracer
-            platform: linux/arm64
-            platform_suffix: arm64
-            runner: ubuntu-24.04-arm
+          # - chain: op-reth
+          #   binary_name: op-reth-firehose-tracer
+          #   platform: linux/amd64
+          #   platform_suffix: amd64
+          #   runner: ubuntu-24.04
+          # - chain: op-reth
+          #   binary_name: op-reth-firehose-tracer
+          #   platform: linux/arm64
+          #   platform_suffix: arm64
+          #   runner: ubuntu-24.04-arm
+          # - chain: base-reth
+          #   binary_name: base-reth-firehose-tracer
+          #   platform: linux/amd64
+          #   platform_suffix: amd64
+          #   runner: ubuntu-24.04
+          # - chain: base-reth
+          #   binary_name: base-reth-firehose-tracer
+          #   platform: linux/arm64
+          #   platform_suffix: arm64
+          #   runner: ubuntu-24.04-arm
 
     runs-on: ["${{ matrix.runner }}"]
 
@@ -82,7 +84,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/${{ matrix.chain }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.chain }}
           tags: |
             type=ref,event=tag
             type=sha,prefix=,suffix=-${{ steps.extract-version.outputs.VERSION }}-${{ matrix.platform_suffix }}
@@ -128,8 +130,8 @@ jobs:
       matrix:
         include:
           - chain: reth
-          - chain: op-reth
-          - chain: base-reth
+          # - chain: op-reth
+          # - chain: base-reth
 
     runs-on: ubuntu-24.04
 
@@ -149,7 +151,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/${{ matrix.chain }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.chain }}
           tags: |
             type=ref,event=tag
             type=sha,prefix=
@@ -171,7 +173,7 @@ jobs:
       - name: Extract image
         id: image
         run: |
-          echo "ID=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/${{ matrix.chain }}:${GITHUB_SHA::7}-${{ steps.extract-version.outputs.VERSION }}" >> "$GITHUB_OUTPUT"
+          echo "ID=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.chain }}:${GITHUB_SHA::7}-${{ steps.extract-version.outputs.VERSION }}" >> "$GITHUB_OUTPUT"
 
       - name: Create and push manifest images
         uses: Noelware/docker-manifest-action@0.4.3
@@ -207,6 +209,13 @@ jobs:
     permissions:
       contents: write
 
+    strategy:
+      matrix:
+        include:
+          - chain: reth
+          # - chain: op-reth
+          # - chain: base-reth
+
     steps:
       - name: Set Env
         run: echo "RELEASE_VERSION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
@@ -217,12 +226,12 @@ jobs:
       - name: Extract Changelog
         id: changelog
         run: |
-          if [ -f CHANGELOG.md ]; then
+          if [ -f "${{ matrix.chain }}/CHANGELOG.md" ]; then
             curl -L https://github.com/streamingfast/sfreleaser/releases/download/v0.12.1/sfreleaser_linux_x86_64.tar.gz | tar -xz
             chmod +x sfreleaser
 
             ./sfreleaser changelog extract-section \
-              github://token:${{ github.token }}@${{ github.repository }}/$GITHUB_SHA/CHANGELOG.md \
+              github://token:${{ github.token }}@${{ github.repository }}/$GITHUB_SHA/${{ matrix.chain }}/CHANGELOG.md \
               --github-output="changelog:$GITHUB_OUTPUT" || echo "changelog=Release ${{ env.RELEASE_VERSION }}" >> $GITHUB_OUTPUT
           else
             echo "changelog=Release ${{ env.RELEASE_VERSION }}" >> $GITHUB_OUTPUT
