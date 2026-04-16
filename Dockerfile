@@ -4,7 +4,7 @@ FROM categoryxyz/monad-execution:latest AS monad-execution
 FROM categoryxyz/monad-rpc:latest AS monad-rpc
 
 # Get fireeth from official firehose-ethereum image
-FROM ghcr.io/streamingfast/firehose-ethereum:latest AS fireeth-source
+FROM ghcr.io/streamingfast/firehose-ethereum:21195c1 AS fireeth-source
 
 # Build monad-firehose-tracer from source
 FROM ubuntu:24.04 AS tracer-builder
