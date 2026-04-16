@@ -1,5 +1,5 @@
 [workspace]
-members = ["firehose", "firehose-test", "monad", "pb", "reth", "reth-base"]
+members = ["firehose", "firehose-test", "pb", "reth", "reth-base"]
 exclude = ["resources"]
 resolver = "2"
 
@@ -42,10 +42,6 @@ color-eyre = "0.6"
 base-execution-cli      = { git = "https://github.com/base/base", tag = "v0.7.3" }
 base-node-runner        = { git = "https://github.com/base/base", tag = "v0.7.3" }
 base-node-core          = { git = "https://github.com/base/base", tag = "v0.7.3" }
-
-# Monad-specific dependencies
-monad-exec-events = { git = "https://github.com/streamingfast/monad-bft", branch = "feature/add-sys-calls-v0.12.7" }
-monad-event-ring = { git = "https://github.com/streamingfast/monad-bft", branch = "feature/add-sys-calls-v0.12.7" }
 
 [patch.crates-io]
 # Patch alloy-evm to inspect system calls (EIP-4788, EIP-2935, etc.) through the

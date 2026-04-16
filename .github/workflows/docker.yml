@@ -6,6 +6,7 @@ on:
       - "v*"
     branches:
       - "main"
+      - "feature/base"
   workflow_dispatch:
 
 env:
@@ -21,11 +22,13 @@ jobs:
           # `./reth`, `./op-reth`, `./base-reth`), so the chain name and folder name must match.
           - chain: reth
             binary_name: reth-firehose-tracer
+            base_binary_name: reth-base-firehose-tracer
             platform: linux/amd64
             platform_suffix: amd64
             runner: ubuntu-24.04
           - chain: reth
             binary_name: reth-firehose-tracer
+            base_binary_name: reth-base-firehose-tracer
             platform: linux/arm64
             platform_suffix: arm64
             runner: ubuntu-24.04-arm
@@ -102,8 +105,11 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           provenance: false
+          cache-from: type=gha,scope=${{ matrix.chain }}-${{ matrix.platform_suffix }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.chain }}-${{ matrix.platform_suffix }}
           build-args: |
             CHAIN_BINARY_NAME=${{ matrix.binary_name }}
+            BASE_BINARY_NAME=${{ matrix.base_binary_name }}
 
       - name: Get Job ID from GH API
         id: get_job_id

@@ -1,20 +1,33 @@
-# Exclude local data directories from Docker build context
-localnet-data/
+# ── Build artifacts ───────────────────────────────────────────────────────────
 target/
+
+# ── Version control ───────────────────────────────────────────────────────────
 .git/
 .github/
+
+# ── Local data / runtime directories (mounted as volumes) ────────────────────
+localnet-data/
 .firehose-data/
 .firehose-data-optimism/
 op-data/
 
-# Exclude backup files
+# ── Directories not part of the Cargo workspace ───────────────────────────────
+agents/
+cross/
+.dev/
+
+# ── Backup files ──────────────────────────────────────────────────────────────
 *.backup
 *.backup.*
 
-# Exclude config files (will be mounted as volumes)
+# ── Config files (mounted as volumes at runtime) ──────────────────────────────
 fireeth.*.yaml
 docker-compose*.yml
 
-# Exclude documentation
+# ── Dockerfiles (not needed inside the image) ─────────────────────────────────
+Dockerfile
+Dockerfile.*
+
+# ── Documentation ─────────────────────────────────────────────────────────────
 *.md
 !README.md

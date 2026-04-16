@@ -1,4 +1,17 @@
-FROM rust:1.93-bookworm AS tracer-builder
+# syntax=docker/dockerfile:1.4
+#
+# Optimizations applied:
+#   1. cargo-chef  — splits dependency compilation into its own cached layer;
+#                    only re-runs when Cargo.toml / Cargo.lock changes.
+#   2. BuildKit cache mounts — persist the Cargo registry, git clones, and the
+#                    compiled target/ dir across builds without bloating layers.
+#   3. mold linker — much faster final link step than the default GNU ld.
+#   4. Toolchain pre-install — downloads wasm32 target + rustfmt in a dedicated
+#                    layer that is reused as long as rust-toolchain.toml is stable.
+
+
+# ── Base: system deps + cargo tooling (changes rarely → stays cached) ─────────
+FROM rust:1.93-bookworm AS base
 
 WORKDIR /build
 
@@ -6,18 +19,85 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     clang \
     cmake \
+    libhugetlbfs-dev \
+    libzstd-dev \
     libclang-dev \
     libssl-dev \
     pkg-config \
+    mold \
     && rm -rf /var/lib/apt/lists/*
 
+# Pre-install cargo-chef (own cached layer — only rebuilds when version changes)
+RUN cargo install cargo-chef --locked
+
+# Pre-download the toolchain components declared in rust-toolchain.toml
+# (wasm32-unknown-unknown target + rustfmt). Cached independently of source.
+COPY rust-toolchain.toml .
+RUN rustup show
+
+# Use mold for significantly faster linking of large Rust binaries
+ENV RUSTFLAGS="-C link-arg=-fuse-ld=mold"
+
+
+# ── Planner: compute the full dependency recipe from manifests only ────────────
+FROM base AS planner
+
+# Copy only the files cargo needs to resolve the dependency graph.
+# Real source files are NOT required — Cargo.toml + Cargo.lock is enough.
+COPY Cargo.toml Cargo.lock ./
+COPY firehose/Cargo.toml      firehose/Cargo.toml
+COPY firehose-test/Cargo.toml firehose-test/Cargo.toml
+COPY pb/Cargo.toml            pb/Cargo.toml
+COPY reth/Cargo.toml          reth/Cargo.toml
+COPY reth-base/Cargo.toml     reth-base/Cargo.toml
+
+# Stub entry-points so `cargo metadata` (called internally by cargo-chef)
+# can resolve the full workspace without needing real source files.
+RUN mkdir -p firehose/src firehose-test/src pb/src reth/src reth-base/src \
+ && touch firehose/src/lib.rs firehose-test/src/lib.rs pb/src/lib.rs \
+ && printf 'fn main(){}' | tee reth/src/main.rs > reth-base/src/main.rs
+
+RUN cargo chef prepare --recipe-path recipe.json
+
+
+# ── Builder: cook deps, then build the real binaries ─────────────────────────
+FROM base AS builder
+
+COPY --from=planner /build/recipe.json recipe.json
+
+# Cook (compile dependencies only).
+# This layer is re-used from Docker's layer cache as long as Cargo.lock and
+# the Cargo.toml files have not changed.
+# The BuildKit cache mounts persist the Cargo registry, git clones (reth,
+# base, alloy-evm patches), and compiled artifacts across builds without
+# ever committing them to a layer.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    cargo chef cook --release --recipe-path recipe.json \
+        -p reth-firehose -p reth-base-firehose
+
+# Copy real source — only invalidates layers below this line, not the cook layer
 COPY . .
 
-RUN cargo build --release -p reth-firehose
+# Build the actual binaries.
+# All dependencies are already compiled in the persistent cache mounts, so
+# only the workspace crates whose source changed are recompiled.
+# Binaries are copied out of the cache-mounted target/ before the layer closes
+# so they are available to subsequent stages.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    cargo build --release -p reth-firehose -p reth-base-firehose \
+ && cp target/release/reth-firehose-tracer      /reth-firehose-tracer \
+ && cp target/release/reth-base-firehose-tracer /reth-base-firehose-tracer
 
+
+# ── Final image ───────────────────────────────────────────────────────────────
 FROM ghcr.io/streamingfast/firehose-ethereum:latest
 
 ARG CHAIN_BINARY_NAME=reth-firehose-tracer
+ARG BASE_BINARY_NAME=reth-base-firehose-tracer
 
-COPY --from=tracer-builder /build/target/release/reth-firehose-tracer /usr/local/bin/reth-firehose-tracer
-RUN cp /usr/local/bin/reth-firehose-tracer /usr/local/bin/${CHAIN_BINARY_NAME}
+COPY --from=builder /reth-firehose-tracer      /usr/local/bin/${CHAIN_BINARY_NAME}
+COPY --from=builder /reth-base-firehose-tracer /usr/local/bin/${BASE_BINARY_NAME}
