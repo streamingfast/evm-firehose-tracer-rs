@@ -17,8 +17,8 @@ jobs:
     strategy:
       matrix:
         include:
-          # The `chain` value is used as `<root>/<chain>` path on disk (for example `./reth`,
-          # `./op-reth`, `./base-reth`), so the chain name and folder name must match.
+          # The `chain` value maps to a top-level directory name in the repo (for example
+          # `./reth`, `./op-reth`, `./base-reth`), so the chain name and folder name must match.
           - chain: reth
             binary_name: reth-firehose-tracer
             platform: linux/amd64
@@ -206,15 +206,13 @@ jobs:
     needs: [push]
     runs-on: ubuntu-24.04
 
+    env:
+      # While only `reth` is active for testing, keep this aligned with the enabled chain(s)
+      # in build/push if op-reth and base-reth entries are uncommented.
+      RELEASE_CHAIN: reth
+
     permissions:
       contents: write
-
-    strategy:
-      matrix:
-        include:
-          - chain: reth
-          # - chain: op-reth
-          # - chain: base-reth
 
     steps:
       - name: Set Env
@@ -226,12 +224,12 @@ jobs:
       - name: Extract Changelog
         id: changelog
         run: |
-          if [ -f "${{ matrix.chain }}/CHANGELOG.md" ]; then
+          if [ -f "${{ env.RELEASE_CHAIN }}/CHANGELOG.md" ]; then
             curl -L https://github.com/streamingfast/sfreleaser/releases/download/v0.12.1/sfreleaser_linux_x86_64.tar.gz | tar -xz
             chmod +x sfreleaser
 
             ./sfreleaser changelog extract-section \
-              github://token:${{ github.token }}@${{ github.repository }}/$GITHUB_SHA/${{ matrix.chain }}/CHANGELOG.md \
+              github://token:${{ github.token }}@${{ github.repository }}/$GITHUB_SHA/${{ env.RELEASE_CHAIN }}/CHANGELOG.md \
               --github-output="changelog:$GITHUB_OUTPUT" || echo "changelog=Release ${{ env.RELEASE_VERSION }}" >> $GITHUB_OUTPUT
           else
             echo "changelog=Release ${{ env.RELEASE_VERSION }}" >> $GITHUB_OUTPUT
