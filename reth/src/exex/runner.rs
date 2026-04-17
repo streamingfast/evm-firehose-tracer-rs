@@ -8,8 +8,8 @@ use reth::revm::revm::Database as _;
 use reth_evm::block::TxResult as _;
 use reth_evm::execute::BlockExecutor;
 use reth_provider::{AccountReader, BlockIdReader, BlockNumReader, StateProviderBox};
-use reth_revm::State;
 use reth_revm::database::StateProviderDatabase;
+use reth_revm::State;
 
 /// Ethereum-specific firehose tracer
 pub async fn run_loop<Node: FullNodeComponents, F>(
@@ -157,8 +157,11 @@ where
                         let signer: Address = recovered_tx.signer();
                         let tx_nonce = recovered_tx.nonce();
                         let tx_hash = recovered_tx.tx_hash();
-                        let state_nonce =
-                            state_provider.basic_account(&signer).ok().flatten().map(|a| a.nonce);
+                        let state_nonce = state_provider
+                            .basic_account(&signer)
+                            .ok()
+                            .flatten()
+                            .map(|a| a.nonce);
                         let matches = state_nonce == Some(tx_nonce);
                         info!(
                             target: "firehose",
@@ -195,6 +198,9 @@ where
                         error!(target: "firehose", block = block.number(), error = ?err, "trace_block failed");
                         if skip_failed {
                             warn!(target: "firehose", block = block.number(), "SKIP_FAILED_BLOCKS=true, skipping block");
+                            tracer.on_block_end(Some(&*Box::<dyn std::error::Error>::from(
+                                "some error",
+                            )));
                             continue;
                         }
                         return Err(err.wrap_err("Firehose trace block"));
@@ -272,7 +278,11 @@ where
         let signer: Address = recovered_tx.signer();
         let tx_nonce = recovered_tx.nonce();
         let tx_hash = recovered_tx.tx_hash();
-        let cached_nonce = shared_state.basic(signer).ok().flatten().map(|info| info.nonce);
+        let cached_nonce = shared_state
+            .basic(signer)
+            .ok()
+            .flatten()
+            .map(|info| info.nonce);
         let matches = cached_nonce == Some(tx_nonce);
         info!(
             target: "firehose",
