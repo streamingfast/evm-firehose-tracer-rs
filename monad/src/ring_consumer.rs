@@ -50,7 +50,8 @@ pub struct MonadConsumer {
 }
 
 impl MonadConsumer {
-    /// Create a new Monad consumer with the given configuration
+    /// Create a new Monad consumer with the given configuration.
+    /// Retries until the event ring file exists
     pub async fn new(config: PluginConfig) -> Result<Self> {
         info!(
             "Creating Monad consumer with event ring path: {}",
@@ -59,8 +60,20 @@ impl MonadConsumer {
 
         let ring_path = EventRingPath::resolve(&config.event_ring_path)
             .map_err(|e| eyre::eyre!("Failed to resolve Monad event ring path: {:?}", e))?;
-        let event_ring = ExecEventRing::new(&ring_path)
-            .map_err(|e| eyre::eyre!("Failed to open Monad event ring: {:?}", e))?;
+
+        let event_ring = loop {
+            match ExecEventRing::new(&ring_path) {
+                Ok(ring) => break ring,
+                Err(e) => {
+                    warn!(
+                        path = %config.event_ring_path,
+                        "Event ring not available yet: {}. Retrying in 2s...",
+                        e
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                }
+            }
+        };
 
         info!("Successfully opened Monad event ring");
 
@@ -93,8 +106,13 @@ impl MonadConsumer {
             event_ring,
         } = self;
 
-        // Create event reader from the event ring (borrows `event_ring`)
+        // Create event reader starting from the oldest event still in the ring,
+        // so that blocks produced while the tracer was down are not skipped
         let mut event_reader = event_ring.create_reader();
+        event_reader.with_raw(|_ring, iter| {
+            iter.read_last_seqno = 0;
+            None
+        });
 
         // Setup graceful shutdown signal handling
         let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())

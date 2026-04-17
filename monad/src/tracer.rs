@@ -226,8 +226,9 @@ impl FirehosePlugin {
     }
 
     pub fn add_event(&mut self, event: ExecEvent) -> Result<()> {
-        // Drop events until we see the first BlockStart, protects against scenarios where
-        // tracer started mid-block or mid-stream
+        // Drop events until we see the first BlockStart. This handles two cases:
+        // 1. The ring replay starts mid-block (oldest buffered event is not a BlockStart)
+        // 2. A Gap was encountered and the reader reset to the current tail mid-block
         if !self.tracer.is_in_block()
             && !matches!(
                 event,
