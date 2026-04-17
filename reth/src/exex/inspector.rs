@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, Log as AlloyLog, B256, U256};
+use alloy_primitives::{Address, Bytes, Log as AlloyLog, B256, U256};
 use firehose::{pb, Opcode, StringError};
 use reth::api::FullNodeComponents;
 use reth::revm::revm::context_interface::{ContextTr, JournalTr};
@@ -8,7 +8,7 @@ use reth::revm::revm::interpreter::{
     CreateOutcome, Interpreter,
 };
 use reth::revm::revm::primitives::KECCAK_EMPTY;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 struct StepContext {
     start_journal_idx: usize,
@@ -38,6 +38,23 @@ pub struct FirehoseInspector<'a, Node: FullNodeComponents> {
     /// call/create hook returned. This ensures value transfers for ALL calls
     /// (successful or failed, root or nested) are captured before any revert.
     pending_value_transfer_check: bool,
+
+    /// Addresses that executed SELFDESTRUCT and were truly destroyed (AccountDestroyed
+    /// journal entry) during the current transaction.
+    selfdestruct_addresses: HashSet<Address>,
+
+    /// Captured nonce/code state for self-destructed accounts, to be emitted after post-tx
+    /// balance changes (gas refund, reward). This matches Geth 1.17.x's Finalise timing
+    /// where nonce resets and code clears happen after gas accounting.
+    pending_selfdestruct_cleanups: Vec<SelfdestructCleanupEntry>,
+}
+
+/// Pre-destruction state for a self-destructed account, captured at root call exit.
+struct SelfdestructCleanupEntry {
+    address: Address,
+    nonce: u64,
+    code_hash: B256,
+    code: Bytes,
 }
 
 impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
@@ -49,6 +66,8 @@ impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
             journal_processed_up_to: 0,
             balance_tracker: HashMap::new(),
             pending_value_transfer_check: false,
+            selfdestruct_addresses: HashSet::new(),
+            pending_selfdestruct_cleanups: Vec::new(),
         }
     }
 
@@ -270,24 +289,13 @@ impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
                                 Reason::SuicideRefund,
                             );
                             self.balance_tracker.insert(*target, target_balance);
-                        } else {
-                            // Self-beneficiary locally created: account IS destroyed (EIP-6780).
-                            // Geth emits refund (0 → had_balance) then final destroy (had_balance → 0).
-                            self.tracer.on_balance_change(
-                                *target,
-                                U256::ZERO,
-                                *had_balance,
-                                Reason::SuicideRefund,
-                            );
-                            self.tracer.on_balance_change(
-                                *target,
-                                *had_balance,
-                                U256::ZERO,
-                                Reason::SuicideWithdraw,
-                            );
                         }
+                        // Self-beneficiary locally created (address == target): only the
+                        // initial WITHDRAW is emitted. Geth 1.17.x does not emit the
+                        // REFUND+WITHDRAW round-trip that older versions produced.
                     }
 
+                    self.selfdestruct_addresses.insert(*address);
                     found = true;
                     break;
                 }
@@ -334,27 +342,8 @@ impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
 
         if !found {
             // Post-Cancun, not locally created, address == target: no journal entry pushed,
-            // no state change. Emit the balance changes to match Geth behavior.
-            let balance = context
-                .journal()
-                .evm_state()
-                .get(&contract_address)
-                .map(|a| a.info.balance)
-                .unwrap_or(U256::ZERO);
-            if !balance.is_zero() {
-                self.tracer.on_balance_change(
-                    contract_address,
-                    balance,
-                    U256::ZERO,
-                    Reason::SuicideWithdraw,
-                );
-                self.tracer.on_balance_change(
-                    contract_address,
-                    U256::ZERO,
-                    balance,
-                    Reason::SuicideRefund,
-                );
-            }
+            // no state change. Geth 1.17.x does not emit any balance changes for this case
+            // because the net effect is zero (withdraw + refund to self cancel out).
             return;
         }
 
@@ -513,6 +502,36 @@ impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
         }
     }
 
+    /// Capture nonce/code state for self-destructed accounts at root call exit.
+    ///
+    /// In Geth 1.17.x, `statedb.Finalise()` emits `OnNonceChange` (nonce→0) and
+    /// `OnCodeChange` (code→empty) for each destroyed account AFTER post-tx balance
+    /// changes (gas refund, coinbase reward). In revm, no journal entries are pushed
+    /// for these cleanup operations. We capture the pre-destruction state here (at root
+    /// call exit, while EVM context is still available) and emit later in
+    /// `process_post_tx_balance_changes` to match Geth's ordinal ordering.
+    fn capture_selfdestruct_cleanup<CTX>(&mut self, context: &mut CTX)
+    where
+        CTX: ContextTr,
+        CTX::Journal: JournalExt,
+    {
+        for &address in self.selfdestruct_addresses.iter() {
+            if let Some(account) = context.journal().evm_state().get(&address) {
+                self.pending_selfdestruct_cleanups.push(SelfdestructCleanupEntry {
+                    address,
+                    nonce: account.info.nonce,
+                    code_hash: account.info.code_hash,
+                    code: account
+                        .info
+                        .code
+                        .as_ref()
+                        .map(|b| b.original_bytes())
+                        .unwrap_or_default(),
+                });
+            }
+        }
+    }
+
     /// Emit post-execution balance changes: gas refund to sender and miner fee to coinbase.
     ///
     /// In Geth, these are emitted by `OnBalanceChange` hooks inside `reimburse_caller` and
@@ -574,7 +593,26 @@ impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
             );
         }
 
+        // Emit nonce reset and code clearing for self-destructed accounts.
+        // This matches Geth 1.17.x's Finalise() ordering: nonce/code cleanup happens
+        // AFTER gas refund and coinbase reward, so ordinals are sequenced correctly.
+        for entry in self.pending_selfdestruct_cleanups.drain(..) {
+            if entry.nonce > 0 {
+                self.tracer.on_nonce_change(entry.address, entry.nonce, 0);
+            }
+            if entry.code_hash != KECCAK_EMPTY {
+                self.tracer.on_code_change(
+                    entry.address,
+                    entry.code_hash,
+                    KECCAK_EMPTY,
+                    entry.code.as_ref(),
+                    &[],
+                );
+            }
+        }
+
         self.balance_tracker.clear();
+        self.selfdestruct_addresses.clear();
         self.journal_processed_up_to = 0;
     }
 
@@ -885,6 +923,13 @@ where
             outcome.result.gas.spent()
         };
 
+        // At root call exit, capture nonce/code state for self-destructed contracts.
+        // The actual emission happens later in process_post_tx_balance_changes (after
+        // gas refund and coinbase reward) to match Geth 1.17.x Finalise ordinal timing.
+        if depth == 0 && !self.selfdestruct_addresses.is_empty() {
+            self.capture_selfdestruct_cleanup(context);
+        }
+
         // The `reverted` parameter in on_call_exit means "did the call fail"
         // (any failure), not specifically "was it a REVERT opcode". The tracer
         // internally distinguishes reverts from other failures via the error string.
@@ -1037,6 +1082,12 @@ where
             outcome.result.gas.spent()
         };
 
+        // At root create exit, capture nonce/code state for self-destructed contracts
+        // (same rationale as in call_end — emission deferred to process_post_tx_balance_changes).
+        if depth == 0 && !self.selfdestruct_addresses.is_empty() {
+            self.capture_selfdestruct_cleanup(context);
+        }
+
         self.tracer.on_call_exit(
             depth,
             outcome.result.output.as_ref(),
@@ -1064,6 +1115,10 @@ where
 
     /// SELFDESTRUCT is executed
     fn selfdestruct(&mut self, contract: Address, target: Address, value: U256) {
+        // Note: selfdestruct_addresses is populated in process_selfdestruct_balance_changes
+        // (only for AccountDestroyed entries, not BalanceTransfer), because post-Cancun
+        // non-locally-created contracts are NOT destroyed and don't need cleanup.
+
         // In Geth's tracer, SELFDESTRUCT is modelled as a nested call at depth+1.
         // on_call_enter with OP_SELFDESTRUCT sets the `latest_call_enter_suicided` flag
         // and on_call_exit immediately clears it (no-op on call stack).

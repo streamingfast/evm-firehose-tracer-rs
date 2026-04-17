@@ -364,10 +364,7 @@ fn parse_firehose_output(output: &[u8]) -> Vec<FirehoseBlockEntry> {
         }
 
         if line.starts_with("FIRE BLOCK ") {
-            assert!(
-                init_seen,
-                "FIRE INIT must appear before FIRE BLOCK"
-            );
+            assert!(init_seen, "FIRE INIT must appear before FIRE BLOCK");
 
             // FIRE BLOCK <block_num> <flash_block_idx> <block_hash> <prev_num> <prev_hash> <lib_num> <timestamp_unix_nano> <payload_base64>
             let parts: Vec<&str> = line.splitn(10, ' ').collect();

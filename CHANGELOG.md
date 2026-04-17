@@ -11,6 +11,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 * Flash block snapshot/restore support: `snapshot_flash_block_for_next_iteration()`, `restore_flash_block_snapshot()`, and related methods allow incremental block building across multiple flash block iterations.
 * EIP-7843 (Amsterdam): `BlockData.slot_number` field and `BlockHeader.slot_number` propagation.
 
+### Fixed
+
+* Reth inspector: Align SELFDESTRUCT tracing with Geth 1.17.x behavior. Self-beneficiary selfdestructs (address == target) for locally-created contracts now emit only a single `SuicideWithdraw` balance change (removed the redundant `SuicideRefund`/`SuicideWithdraw` round-trip). Self-beneficiary selfdestructs for non-locally-created contracts (post-Cancun) no longer emit any balance changes. Nonce reset (N→0) and code clearing for destroyed accounts are now emitted after post-tx balance changes (gas refund, coinbase reward), matching Geth's `statedb.Finalise()` ordinal timing.
+
 ### Changed
 
 * `on_balance_change`, `on_nonce_change`, `on_code_change`, and `on_storage_change` now skip recording when old and new values are equal, avoiding no-op state changes in the block model.
