@@ -189,3 +189,35 @@ fn test_storage_change_full_32_bytes() {
             assert_eq!(new_val.as_slice(), sc.new_value.as_slice());
         });
 }
+
+#[test]
+fn test_storage_change_no_change_skipped() {
+    // In v5, storage "changes" where oldValue == newValue are skipped to avoid
+    // recording equivalent state.
+    let key = hash32(1);
+    let value = hash32(100); // Same for old and new
+
+    let mut tester = TracerTester::new();
+    tester
+        .start_block_trx(test_legacy_trx())
+        .start_call(
+            alice_addr(),
+            bob_addr(),
+            alloy_primitives::U256::from(100),
+            21000,
+            vec![],
+        )
+        .storage_change(bob_addr(), key, value, value) // No actual change — should be skipped
+        .end_call(vec![], 21000)
+        .end_block_trx(Some(success_receipt(21000)), None, None)
+        .validate_with_category("onstoragechange", |block| {
+            let trx = &block.transaction_traces[0];
+            let call = &trx.calls[0];
+
+            assert_eq!(
+                0,
+                call.storage_changes.len(),
+                "No-change storage updates should be skipped in v5"
+            );
+        });
+}

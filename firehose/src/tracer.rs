@@ -13,11 +13,24 @@ use super::{
     ordinal::Ordinal,
     Config,
 };
-use crate::types::{BlockEvent, ReceiptData, StateReader, TxEvent};
+use crate::types::{BlockEvent, FlashBlockData, ReceiptData, StateReader, TxEvent};
 use crate::{
     firehose_debug, firehose_info, firehose_trace, utils, ChainConfig, Rules, PROTOCOL_VERSION,
 };
 use pb::sf::ethereum::r#type::v2::{Block, Call, TransactionTrace};
+
+/// FlashBlockSnapshot holds the state of a flash block at a snapshot point in time.
+/// It is used to restore state at the start of the next flash block iteration,
+/// allowing each iteration to include all data from the previous snapshot point.
+struct FlashBlockSnapshot {
+    block: Block,            // The block at snapshot time (source for slice restoration)
+    tx_traces_len: usize,    // Number of transaction traces at snapshot time
+    system_calls_len: usize, // Number of system calls at snapshot time
+    balance_changes_len: usize, // Number of balance changes at snapshot time
+    code_changes_len: usize, // Number of code changes at snapshot time
+    ordinal: u64,            // Block ordinal value at snapshot time
+    flash_index: u64,        // Flash block index at snapshot time (for validation)
+}
 
 /// Tracer is the main Firehose tracer that captures EVM execution and produces
 /// protobuf blocks for indexing.
@@ -44,6 +57,14 @@ pub struct Tracer {
     transaction_log_index: u32,
     transaction_state_reader: Option<Box<dyn StateReader + Send>>,
     in_system_call: bool,
+
+    // Flash block state
+    // flashBlockIndex is None when not in a flash block, or Some(idx) when processing
+    // a flash block iteration. The value persists across resetBlock so the previous index
+    // can be validated when the next flash block starts.
+    flash_block_index: Option<u64>,
+    flash_block_is_final: bool,
+    snapshot_for_next_flash_block: Option<FlashBlockSnapshot>,
 
     // Call state
     call_stack: CallStack,
@@ -84,6 +105,11 @@ impl Tracer {
             transaction_state_reader: None,
             in_system_call: false,
 
+            // Flash block state
+            flash_block_index: None,
+            flash_block_is_final: false,
+            snapshot_for_next_flash_block: None,
+
             // Call state
             call_stack: CallStack::new(),
             open_calls: OpenCallStack::new(),
@@ -101,6 +127,12 @@ impl Tracer {
         self.block_finality.reset();
         self.block_rules = Rules::default();
         self.block_is_genesis = false;
+        // Set to None to signal "not currently in a flash block" for the next block.
+        // snapshotForNextFlashBlock is intentionally NOT reset: it persists until
+        // the next flash block iteration picks it up or a new block number discards it
+        // (handled in handleFlashBlockStart).
+        self.flash_block_index = None;
+        self.flash_block_is_final = false;
     }
 
     /// Resets the transaction state and call state in one shot
@@ -272,6 +304,7 @@ impl Tracer {
         self.ensure_blockchain_init();
 
         let block_data = &event.block;
+        let block_number = block_data.number;
 
         // Compute block rules for this block (block-scoped fork flags)
         self.block_rules = self.chain_config.as_ref().unwrap().rules(
@@ -280,10 +313,17 @@ impl Tracer {
             block_data.time,
         );
 
+        // Handle flash block sequencing (validation + state setup)
+        if let Some(fb) = &event.flash_block {
+            self.handle_flash_block_start(fb, block_number);
+        }
+
         firehose_info!(
-            "block start (number={} hash={:?})",
+            "block start (number={} hash={:?} flash_block={} has_snapshot={})",
             block_data.number,
-            block_data.hash
+            block_data.hash,
+            self.is_flash_block(),
+            self.snapshot_for_next_flash_block.is_some()
         );
 
         // Create protobuf block
@@ -321,6 +361,11 @@ impl Tracer {
             self.block_finality
                 .set_last_finalized_block(finalized.number);
         }
+
+        // Restore state from flash block snapshot when starting a flash block iteration
+        if self.is_flash_block() {
+            self.restore_flash_block_snapshot();
+        }
     }
 
     /// OnBlockEnd is called at the end of block processing
@@ -331,18 +376,33 @@ impl Tracer {
             // Validate state: Must be in block and not in transaction
             self.ensure_in_block_and_not_in_trx();
 
+            // Capture per-block output context BEFORE resetBlock clears flash state.
+            let printed_flash_block_index = crate::printer::compute_printed_flash_block_index(
+                self.flash_block_index.as_ref(),
+                self.flash_block_is_final,
+            );
+            let block_number = self.block.as_ref().map_or(0, |b| b.number);
+            let lib_num = crate::printer::compute_lib_num(block_number, &self.block_finality);
+
             // Flush block to firehose
             if let Some(block) = self.block.take() {
                 crate::printer::print_block_to_firehose(
                     &mut self.output_writer,
                     block,
-                    &self.block_finality,
+                    lib_num,
+                    printed_flash_block_index,
                 );
             }
         } else {
             // An error occurred, could have happened in transaction/call context
             // We must not check if in trx/call, only check in block
             self.ensure_in_block();
+
+            // Discard any flash block snapshot for the failed block to avoid using
+            // a corrupted partial state in the next iteration.
+            if self.is_flash_block() {
+                self.snapshot_for_next_flash_block = None;
+            }
         }
 
         self.reset_block();
@@ -1084,6 +1144,11 @@ impl Tracer {
             return;
         }
 
+        // Skip no-op changes where old and new balances are equal
+        if old_balance == new_balance {
+            return;
+        }
+
         self.ensure_in_block_or_trx();
 
         let change = pb::sf::ethereum::r#type::v2::BalanceChange {
@@ -1111,6 +1176,10 @@ impl Tracer {
 
     /// OnNonceChange is called when an account nonce changes
     pub fn on_nonce_change(&mut self, addr: Address, old_nonce: u64, new_nonce: u64) {
+        if old_nonce == new_nonce {
+            return;
+        }
+
         firehose_debug!(
             "nonce changed (address={:?} old_nonce={} new_nonce={})",
             addr,
@@ -1143,6 +1212,10 @@ impl Tracer {
         old_code: &[u8],
         new_code: &[u8],
     ) {
+        if prev_code_hash == new_code_hash {
+            return;
+        }
+
         firehose_debug!(
             "code changed (address={:?} prev_hash={:?} new_hash={:?})",
             addr,
@@ -1189,6 +1262,10 @@ impl Tracer {
         old_value: B256,
         new_value: B256,
     ) {
+        if old_value == new_value {
+            return;
+        }
+
         firehose_trace!("storage changed (address={:?} key={:?})", addr, slot);
 
         self.ensure_in_block_and_in_trx();
@@ -1333,6 +1410,139 @@ impl Tracer {
         }
 
         self.reset_transaction();
+    }
+
+    // ============================================================================
+    // Flash Block Methods
+    // ============================================================================
+
+    /// Validates and sets up state for a new flash block iteration.
+    /// It validates that the index strictly advances within the same block number and
+    /// discards stale snapshots when the block number changes.
+    fn handle_flash_block_start(&mut self, fb: &FlashBlockData, block_number: u64) {
+        // If there is an existing snapshot, validate or discard it
+        if let Some(snap) = &self.snapshot_for_next_flash_block {
+            if snap.block.number == block_number {
+                // Same block number: flash block index must strictly advance
+                if fb.idx <= snap.flash_index {
+                    panic!(
+                        "flash block index must be strictly greater than previous: block={} last_idx={} new_idx={}",
+                        block_number, snap.flash_index, fb.idx
+                    );
+                }
+            } else {
+                // Different block number: discard stale snapshot
+                self.snapshot_for_next_flash_block = None;
+            }
+        }
+
+        // Store the current flash block index (Some signals "is flash block")
+        self.flash_block_index = Some(fb.idx);
+        self.flash_block_is_final = fb.is_final;
+    }
+
+    /// Restores block state from the snapshot taken in the previous flash block iteration.
+    /// Slice contents (tx traces, system calls, balance changes, code changes) and the
+    /// ordinal are all restored to their snapshot-point values.
+    /// This is a no-op when no snapshot exists (first flash block iteration).
+    fn restore_flash_block_snapshot(&mut self) {
+        let snap = match &self.snapshot_for_next_flash_block {
+            Some(s) => s,
+            None => return,
+        };
+
+        if let Some(block) = &mut self.block {
+            // Restore transaction traces
+            block.transaction_traces.extend(
+                snap.block.transaction_traces[..snap.tx_traces_len]
+                    .iter()
+                    .cloned(),
+            );
+
+            // Restore system calls
+            if snap.system_calls_len > 0 {
+                block.system_calls.extend(
+                    snap.block.system_calls[..snap.system_calls_len]
+                        .iter()
+                        .cloned(),
+                );
+            }
+
+            // Restore balance changes
+            if snap.balance_changes_len > 0 {
+                block.balance_changes.extend(
+                    snap.block.balance_changes[..snap.balance_changes_len]
+                        .iter()
+                        .cloned(),
+                );
+            }
+
+            // Restore code changes
+            if snap.code_changes_len > 0 {
+                block.code_changes.extend(
+                    snap.block.code_changes[..snap.code_changes_len]
+                        .iter()
+                        .cloned(),
+                );
+            }
+        }
+
+        self.block_ordinal.restore(snap.ordinal);
+    }
+
+    /// Captures the current state of the flash block at a specific point in processing
+    /// (typically after regular transactions but before termination system calls).
+    /// The snapshot records the lengths of all slices that may grow during the rest of
+    /// block processing.
+    ///
+    /// When the next flash block iteration starts via on_block_start with a FlashBlock event,
+    /// this snapshot is used to restore the block to the captured state, so that the next
+    /// iteration inherits exactly the transactions and state changes up to the snapshot point.
+    ///
+    /// This method has no effect if the current block is not a flash block.
+    pub fn snapshot_flash_block_for_next_iteration(&mut self) {
+        if !self.is_flash_block() {
+            return;
+        }
+
+        let block = self.block.as_ref().expect("must be in block state");
+
+        self.snapshot_for_next_flash_block = Some(FlashBlockSnapshot {
+            block: block.clone(),
+            tx_traces_len: block.transaction_traces.len(),
+            system_calls_len: block.system_calls.len(),
+            balance_changes_len: block.balance_changes.len(),
+            code_changes_len: block.code_changes.len(),
+            ordinal: self.block_ordinal.peek(),
+            flash_index: self.flash_block_index.unwrap(),
+        });
+
+        firehose_info!(
+            "flash block snapshot created (number={} tx_count={} system_calls={} balance_changes={} code_changes={} flash_index={} ordinal={})",
+            block.number,
+            block.transaction_traces.len(),
+            block.system_calls.len(),
+            block.balance_changes.len(),
+            block.code_changes.len(),
+            self.flash_block_index.unwrap(),
+            self.block_ordinal.peek(),
+        );
+    }
+
+    /// Returns true if the current block is a flash block iteration.
+    pub fn is_flash_block(&self) -> bool {
+        self.flash_block_index.is_some()
+    }
+
+    /// Returns the flash block index of the last flash block processed.
+    /// Returns 0 when not currently in a flash block (check is_flash_block() first).
+    pub fn get_flash_block_index(&self) -> u64 {
+        self.flash_block_index.unwrap_or(0)
+    }
+
+    /// Returns true if there is a flash block snapshot pending for the next iteration.
+    pub fn has_flash_block_snapshot(&self) -> bool {
+        self.snapshot_for_next_flash_block.is_some()
     }
 
     // ============================================================================

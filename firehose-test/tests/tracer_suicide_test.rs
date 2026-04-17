@@ -113,7 +113,8 @@ fn test_suicide_to_self() {
 
 #[test]
 fn test_suicide_with_zero_balance() {
-    // Contract with zero balance suicides
+    // Contract with zero balance suicides — in v5 the 0→0 balance changes
+    // are skipped because the tracer now filters equivalent changes.
     let mut tester = TracerTester::new();
     tester
         .start_block_trx(test_legacy_trx())
@@ -136,20 +137,11 @@ fn test_suicide_with_zero_balance() {
             assert!(root_call.suicide);
             assert!(root_call.executed_code);
 
-            // Should still have balance changes
-            let balance_changes = &root_call.balance_changes;
-            assert_eq!(2, balance_changes.len());
-
-            let withdraw = &balance_changes[0];
+            // v5: 0→0 balance changes are now skipped
             assert_eq!(
-                pbeth::balance_change::Reason::SuicideWithdraw as i32,
-                withdraw.reason
-            );
-
-            let refund = &balance_changes[1];
-            assert_eq!(
-                pbeth::balance_change::Reason::SuicideRefund as i32,
-                refund.reason
+                0,
+                root_call.balance_changes.len(),
+                "Zero-to-zero balance changes should be skipped in v5"
             );
         });
 }

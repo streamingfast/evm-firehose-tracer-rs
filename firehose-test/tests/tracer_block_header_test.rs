@@ -41,6 +41,7 @@ fn test_eip4895_withdrawals_root() {
             tx_dependency: None,
         },
         finalized: None,
+        flash_block: None,
     };
 
     let mut tester = TracerTester::new();
@@ -94,6 +95,7 @@ fn test_eip4844_blob_gas_fields() {
             tx_dependency: None,
         },
         finalized: None,
+        flash_block: None,
     };
 
     let mut tester = TracerTester::new();
@@ -145,6 +147,7 @@ fn test_eip4788_parent_beacon_root() {
             tx_dependency: None,
         },
         finalized: None,
+        flash_block: None,
     };
 
     let mut tester = TracerTester::new();
@@ -197,6 +200,7 @@ fn test_eip7685_requests_hash() {
             tx_dependency: None,
         },
         finalized: None,
+        flash_block: None,
     };
 
     let mut tester = TracerTester::new();
@@ -252,6 +256,7 @@ fn test_polygon_tx_dependency() {
             ]),
         },
         finalized: None,
+        flash_block: None,
     };
 
     let mut tester = TracerTester::new();
@@ -323,6 +328,7 @@ fn test_all_eip_fields_combined() {
             tx_dependency: None,
         },
         finalized: None,
+        flash_block: None,
     };
 
     let mut tester = TracerTester::new();
@@ -400,6 +406,7 @@ fn test_nil_eip_fields_pre_fork() {
             tx_dependency: None,
         },
         finalized: None,
+        flash_block: None,
     };
 
     let mut tester = TracerTester::new();

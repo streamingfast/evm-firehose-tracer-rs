@@ -104,6 +104,7 @@ where
             firehose::BlockEvent {
                 block: mapper::to_block_data::<Node>(block),
                 finalized: None,
+                flash_block: None,
             },
             mapper::to_genesis_alloc(ctx.config.chain.genesis()),
         );
@@ -113,6 +114,7 @@ where
     tracer.on_block_start(firehose::BlockEvent {
         block: mapper::to_block_data::<Node>(block),
         finalized: mapper::to_finalized_ref(ctx.provider().finalized_block_num_hash()),
+        flash_block: None,
     });
 
     let parent_hash = block.parent_hash();

@@ -19,8 +19,8 @@ pub use finality::FinalityStatus;
 pub use logging::HexView;
 pub use tracer::Tracer;
 pub use types::{
-    BlockData, BlockEvent, FinalizedBlockRef, LogData, Opcode, ReceiptData, StringError, TxEvent,
-    TxType, UncleData, WithdrawalData,
+    BlockData, BlockEvent, FinalizedBlockRef, FlashBlockData, LogData, Opcode, ReceiptData,
+    StringError, TxEvent, TxType, UncleData, WithdrawalData,
 };
 pub use version::{BLOCK_VERSION, PROTOCOL_VERSION};
 
