@@ -26,6 +26,10 @@ To build and test only the crates that don't require native libraries:
 cargo test -p firehose -p firehose-test
 ```
 
+## Debug vs Release builds
+
+As an agent, always compile in debug mode so we don't waste time on heavy compilation optimizations that are not needed for correctness of the program.
+
 ## Battlefield Integration Tests
 
 The [battlefield-ethereum](https://github.com/streamingfast/battlefield-ethereum) repository contains integration tests that compare Firehose trace output against known-good snapshots. These tests are critical after any inspector or tracer changes.
