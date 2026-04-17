@@ -191,6 +191,20 @@ where
             .tracer_mut()
             .on_tx_start(tx_event, Some(state_reader));
 
+        let caller_nonce = executor
+            .evm_mut()
+            .db_mut()
+            .basic(recovered_tx.signer())?
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "Failed to get caller account info for block {} tx_index={tx_index} tx_hash={}",
+                    block.number(),
+                    recovered_tx.tx_hash()
+                )
+            })?
+            .nonce;
+        info!(target: "firehose", block = block.number(), tx_index, tx_hash = ?recovered_tx.tx_hash(), caller_nonce, "Executing transaction");
+
         // execute_transaction_without_commit runs the full EVM execution (including post-execution
         // gas refund and miner fee) and returns the final EvmState without committing to DB.
         // Inspector hooks (on_call_enter, on_call_exit, on_opcode, etc.) fire during transact().
