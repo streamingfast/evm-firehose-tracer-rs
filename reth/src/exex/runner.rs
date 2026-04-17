@@ -50,6 +50,9 @@ where
                         receipts,
                         &get_signature,
                     )
+                    .inspect_err(|err| {
+                        error!(target: "firehose", block = block.number(), error = ?err, "trace_block failed");
+                    })
                     .wrap_err("Firehose trace block")?;
                 }
 
@@ -115,10 +118,14 @@ where
         .with_bundle_update()
         .build();
 
-    let evm_env = evm_config.evm_env(block.header())?;
+    let evm_env = evm_config
+        .evm_env(block.header())
+        .wrap_err_with(|| format!("Failed to build EVM env for block {}", block.number()))?;
     // context_for_block type-checks because FullNodeComponents bounds Node::Evm:
     // ConfigureEvm<Primitives = <Node::Types as NodeTypes>::Primitives>
-    let exec_ctx = evm_config.context_for_block(block.sealed_block())?;
+    let exec_ctx = evm_config
+        .context_for_block(block.sealed_block())
+        .wrap_err_with(|| format!("Failed to build EVM context for block {}", block.number()))?;
 
     // Inspector borrows tracer mutably for the duration of the block execution.
     // All tracer lifecycle calls (on_tx_start, on_tx_end, etc.) go through
@@ -140,9 +147,12 @@ where
         .inspector_mut()
         .tracer_mut()
         .on_system_call_start();
-    executor
-        .apply_pre_execution_changes()
-        .wrap_err("Failed to apply pre-execution changes")?;
+    executor.apply_pre_execution_changes().wrap_err_with(|| {
+        format!(
+            "Failed to apply pre-execution changes for block {}",
+            block.number()
+        )
+    })?;
     executor
         .evm_mut()
         .inspector_mut()
@@ -165,7 +175,13 @@ where
         let state_reader_provider = ctx
             .provider()
             .state_by_block_hash(parent_hash)
-            .wrap_err_with(|| format!("Failed to get state reader for transaction {tx_index}"))?;
+            .wrap_err_with(|| {
+                format!(
+                    "Failed to get state reader for block {} tx_index={tx_index} tx_hash={}",
+                    block.number(),
+                    recovered_tx.tx_hash()
+                )
+            })?;
         let state_reader = Box::new(mapper::StateReaderAdapter(state_reader_provider));
 
         executor
@@ -179,7 +195,13 @@ where
         // Inspector hooks (on_call_enter, on_call_exit, on_opcode, etc.) fire during transact().
         let tx_result = executor
             .execute_transaction_without_commit(recovered_tx)
-            .wrap_err_with(|| format!("Failed to execute transaction {tx_index}"))?;
+            .wrap_err_with(|| {
+                format!(
+                    "Failed to execute transaction block={} tx_index={tx_index} tx_hash={}",
+                    block.number(),
+                    recovered_tx.tx_hash()
+                )
+            })?;
 
         // Emit post-execution balance changes (gas refund to sender, miner fee to coinbase).
         // revm's post_execution runs reimburse_caller and reward_beneficiary after the last
@@ -217,9 +239,13 @@ where
             );
         }
 
-        executor
-            .commit_transaction(tx_result)
-            .wrap_err_with(|| format!("Failed to commit transaction {tx_index}"))?;
+        executor.commit_transaction(tx_result).wrap_err_with(|| {
+            format!(
+                "Failed to commit transaction block={} tx_index={tx_index} tx_hash={}",
+                block.number(),
+                recovered_tx.tx_hash()
+            )
+        })?;
 
         let cumulative_gas = receipt.cumulative_gas_used();
         let gas_used = cumulative_gas - prev_cumulative_gas;
@@ -243,9 +269,12 @@ where
 
     // Post-execution changes (block rewards, withdrawals, etc.)
     // This consumes the executor, dropping the inspector and releasing the tracer borrow
-    executor
-        .apply_post_execution_changes()
-        .wrap_err("Failed to apply post-execution changes")?;
+    executor.apply_post_execution_changes().wrap_err_with(|| {
+        format!(
+            "Failed to apply post-execution changes for block {}",
+            block.number()
+        )
+    })?;
 
     // Tracer borrow released — can call directly again
     tracer.on_system_call_end();
