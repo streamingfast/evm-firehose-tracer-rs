@@ -88,6 +88,7 @@ fn block_data_with_number(number: u64) -> BlockData {
         parent_beacon_root: None,
         requests_hash: None,
         tx_dependency: None,
+        slot_number: None,
     }
 }
 

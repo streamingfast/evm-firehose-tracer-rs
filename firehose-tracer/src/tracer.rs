@@ -1607,6 +1607,8 @@ impl Tracer {
                         .collect(),
                 }
             }),
+            // EIP-7843: Amsterdam slot number
+            slot_number: block.slot_number,
             ..Default::default()
         }
     }

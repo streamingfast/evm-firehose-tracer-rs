@@ -74,6 +74,9 @@ pub struct BlockData {
     // List of transaction indexes that are dependent on each other in the block
     // Used by Polygon's parallel execution engine (None for non-Polygon chains)
     pub tx_dependency: Option<Vec<Vec<u64>>>,
+
+    // EIP-7843: Amsterdam slot number
+    pub slot_number: Option<u64>,
 }
 
 impl BlockData {

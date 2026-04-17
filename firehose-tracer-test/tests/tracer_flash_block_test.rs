@@ -14,12 +14,12 @@
 //  7. Balance changes and code changes are included in snapshots
 
 use alloy_primitives::{Bloom, Bytes, B256, U256};
+use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 use firehose_tracer::types::{BlockData, BlockEvent, FlashBlockData, Opcode, TxEvent, TxType};
 use firehose_tracer_test::{
     alice_addr, beacon_roots_address, big_int, bob_addr, charlie_addr, hash32,
     history_storage_address, miner_addr, success_receipt, system_address, test_block, TracerTester,
 };
-use pb::sf::ethereum::r#type::v2 as pbeth;
 
 /// newFlashBlockEvent builds a BlockEvent with FlashBlock metadata using test_block's block data.
 fn new_flash_block_event(idx: u64) -> BlockEvent {
