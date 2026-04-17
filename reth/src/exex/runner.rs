@@ -41,20 +41,28 @@ where
             ExExNotification::ChainCommitted { new } => {
                 info!(target: "firehose", chain = ?new.range(), "Chain committed, tracing {} blocks", new.len());
 
+                let skip_failed = std::env::var("SKIP_FAILED_BLOCKS")
+                    .map(|v| v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false);
+
                 let chain_start = std::time::Instant::now();
                 for (block, receipts) in new.blocks_and_receipts() {
-                    trace_block(
+                    let result = trace_block(
                         &ctx,
                         &mut tracer,
                         &evm_config,
                         block,
                         receipts,
                         &get_signature,
-                    )
-                    .inspect_err(|err| {
+                    );
+                    if let Err(err) = result {
                         error!(target: "firehose", block = block.number(), error = ?err, "trace_block failed");
-                    })
-                    .wrap_err("Firehose trace block")?;
+                        if skip_failed {
+                            warn!(target: "firehose", block = block.number(), "SKIP_FAILED_BLOCKS=true, skipping block");
+                            continue;
+                        }
+                        return Err(err.wrap_err("Firehose trace block"));
+                    }
                 }
 
                 let elapsed = chain_start.elapsed();
