@@ -359,23 +359,23 @@ where
         // from the live `shared_state`. The firehose StateReader observations it produces are
         // pre-block, not pre-tx. EVM-level nonce validation is unaffected (that uses the
         // shared_state cache, not this reader).
-        let state_reader_provider = ctx
-            .provider()
-            .state_by_block_hash(parent_hash)
-            .wrap_err_with(|| {
-                format!(
-                    "Failed to get state reader for block {} tx_index={tx_index} tx_hash={}",
-                    block.number(),
-                    recovered_tx.tx_hash()
-                )
-            })?;
-        let state_reader = Box::new(mapper::StateReaderAdapter(state_reader_provider));
+        //let state_reader_provider = ctx
+        //    .provider()
+        //    .state_by_block_hash(parent_hash)
+        //    .wrap_err_with(|| {
+        //        format!(
+        //            "Failed to get state reader for block {} tx_index={tx_index} tx_hash={}",
+        //            block.number(),
+        //            recovered_tx.tx_hash()
+        //        )
+        //    })?;
+        //let state_reader = Box::new(mapper::StateReaderAdapter(state_reader_provider));
 
         executor
             .evm_mut()
             .inspector_mut()
             .tracer_mut()
-            .on_tx_start(tx_event, Some(state_reader));
+            .on_tx_start(tx_event, None);
 
         let caller_nonce = executor
             .evm_mut()
@@ -391,7 +391,7 @@ where
             .nonce;
         info!(target: "firehose", block = block.number(), tx_index, tx_hash = ?recovered_tx.tx_hash(), caller_nonce, "Executing transaction");
 
-        // execute_transaction_without_commit runs the full EVM execution (including post-execution
+        // execute_transaction_without_commit runs the full EVM execution (including po
         // gas refund and miner fee) and returns the final EvmState without committing to DB.
         // Inspector hooks (on_call_enter, on_call_exit, on_opcode, etc.) fire during transact().
         let tx_result = executor
