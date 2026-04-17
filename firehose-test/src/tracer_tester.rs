@@ -72,6 +72,7 @@ pub fn test_block() -> BlockEvent {
         parent_beacon_root: None,
         requests_hash: None,
         tx_dependency: None,
+        slot_number: None,
     })
 }
 
@@ -546,6 +547,7 @@ impl TracerTester {
             parent_beacon_root: None,
             requests_hash: None,
             tx_dependency: None,
+            slot_number: None,
         });
 
         self.tracer.on_genesis_block(block_event, alloc);
@@ -1000,6 +1002,7 @@ impl TracerTester {
             parent_beacon_root: None,
             requests_hash: None,
             tx_dependency: None,
+            slot_number: None,
         };
 
         let block_event = BlockEvent {

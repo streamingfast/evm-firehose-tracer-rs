@@ -310,6 +310,10 @@ pub struct BlockHeader {
     /// RequestsHash was added by EIP-7685 and is ignored in legacy headers.
     #[prost(bytes="vec", tag="25")]
     pub requests_hash: ::prost::alloc::vec::Vec<u8>,
+    /// SlotNumber was added by EIP-7843 and is ignored in legacy headers, it is scheduled to
+    /// be added in Amsterdam hard fork.
+    #[prost(uint64, optional, tag="26")]
+    pub slot_number: ::core::option::Option<u64>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

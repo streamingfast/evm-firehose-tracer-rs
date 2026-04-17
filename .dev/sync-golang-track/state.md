@@ -9,9 +9,9 @@ The Golang version is the source of truth. This Rust version was originally port
 
 ## Current State
 
-- **Last synced Golang commit**: `30d8bcebe0fda666327c230702688820e94d200c`
-- **Last synced Golang commit (short)**: `30d8bce`
-- **Sync date**: 2026-04-16
+- **Last synced Golang commit**: `de0dd7dd9bf5281cbeb728d6988d193983a7251a`
+- **Last synced Golang commit (short)**: `de0dd7d`
+- **Sync date**: 2026-04-17
 - **Rust repo version**: `5.0.0` (aligned with Golang v5.0.0; fix from Golang v4.0.4 backported)
 
 ## Sync History
@@ -22,6 +22,7 @@ The Golang version is the source of truth. This Rust version was originally port
 | 2 | `7750eb7` | `a96a677` | Completed | 2026-03-16 |
 | 3 | `a96a677` | `c6eb9e2` | Completed | 2026-03-23 |
 | 4 | `c6eb9e2` | `30d8bce` | Completed | 2026-04-16 |
+| 5 | `30d8bce` | `de0dd7d` | Completed | 2026-04-17 |
 
 ## Notes
 

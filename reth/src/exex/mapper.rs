@@ -74,6 +74,8 @@ pub fn to_block_data<Node: FullNodeComponents>(block: &RecoveredBlock<Node>) -> 
         parent_beacon_root: header.parent_beacon_block_root(),
         requests_hash: header.requests_hash(),
         tx_dependency: None,
+        // EIP-7843: Amsterdam slot number — not yet exposed by reth Header trait
+        slot_number: None,
     }
 }
 

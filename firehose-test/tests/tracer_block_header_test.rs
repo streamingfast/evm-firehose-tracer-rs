@@ -39,6 +39,7 @@ fn test_eip4895_withdrawals_root() {
             parent_beacon_root: None,
             requests_hash: None,
             tx_dependency: None,
+            slot_number: None,
         },
         finalized: None,
         flash_block: None,
@@ -93,6 +94,7 @@ fn test_eip4844_blob_gas_fields() {
             parent_beacon_root: None,
             requests_hash: None,
             tx_dependency: None,
+            slot_number: None,
         },
         finalized: None,
         flash_block: None,
@@ -145,6 +147,7 @@ fn test_eip4788_parent_beacon_root() {
             parent_beacon_root: Some(parent_beacon_root), // EIP-4788
             requests_hash: None,
             tx_dependency: None,
+            slot_number: None,
         },
         finalized: None,
         flash_block: None,
@@ -198,6 +201,7 @@ fn test_eip7685_requests_hash() {
             parent_beacon_root: None,
             requests_hash: Some(requests_hash), // EIP-7685
             tx_dependency: None,
+            slot_number: None,
         },
         finalized: None,
         flash_block: None,
@@ -254,6 +258,7 @@ fn test_polygon_tx_dependency() {
                 vec![2],    // tx[3] depends on tx[2]
                 vec![1, 3], // tx[4] depends on both tx[1] and tx[3]
             ]),
+            slot_number: None,
         },
         finalized: None,
         flash_block: None,
@@ -291,12 +296,13 @@ fn test_polygon_tx_dependency() {
 
 #[test]
 fn test_all_eip_fields_combined() {
-    // Test all EIP fields together (representing a post-Prague block)
+    // Test all EIP fields together (representing a post-Amsterdam block)
     let withdrawals_root = hash32(11111);
     let blob_gas_used = 262144_u64;
     let excess_blob_gas = 524288_u64;
     let parent_beacon_root = hash32(22222);
     let requests_hash = hash32(33333);
+    let slot_number = 999_u64;
 
     let block_event = BlockEvent {
         block: BlockData {
@@ -326,6 +332,7 @@ fn test_all_eip_fields_combined() {
             parent_beacon_root: Some(parent_beacon_root),
             requests_hash: Some(requests_hash),
             tx_dependency: None,
+            slot_number: Some(slot_number),
         },
         finalized: None,
         flash_block: None,
@@ -369,6 +376,105 @@ fn test_all_eip_fields_combined() {
             "RequestsHash should be set"
         );
         assert_eq!(requests_hash.as_slice(), header.requests_hash.as_slice());
+
+        assert!(header.slot_number.is_some(), "SlotNumber should be set");
+        assert_eq!(slot_number, header.slot_number.unwrap());
+    });
+}
+
+#[test]
+fn test_eip7843_slot_number() {
+    // EIP-7843: Amsterdam slot number
+    let slot_number = 42_u64;
+
+    let block_event = BlockEvent {
+        block: BlockData {
+            number: 100,
+            hash: hash32(1),
+            parent_hash: hash32(2),
+            uncle_hash: hash32(3),
+            coinbase: alice_addr(),
+            root: hash32(4),
+            tx_hash: hash32(5),
+            receipt_hash: hash32(6),
+            bloom: alloy_primitives::Bloom::ZERO,
+            difficulty: big_int(0),
+            gas_limit: 15_000_000,
+            gas_used: 0,
+            time: 1000,
+            extra: alloy_primitives::Bytes::new(),
+            mix_digest: hash32(7),
+            nonce: 0,
+            base_fee: Some(big_int(1_000_000_000)),
+            uncles: vec![],
+            size: 1024,
+            withdrawals: vec![],
+            withdrawals_root: None,
+            blob_gas_used: None,
+            excess_blob_gas: None,
+            parent_beacon_root: None,
+            requests_hash: None,
+            tx_dependency: None,
+            slot_number: Some(slot_number), // EIP-7843
+        },
+        finalized: None,
+        flash_block: None,
+    };
+
+    let mut tester = TracerTester::new();
+    tester.validate_with_custom_block(block_event, |block| {
+        assert!(block.header.is_some(), "Header should exist");
+        let header = block.header.as_ref().unwrap();
+        assert!(header.slot_number.is_some(), "SlotNumber should be set");
+        assert_eq!(slot_number, header.slot_number.unwrap());
+    });
+}
+
+#[test]
+fn test_eip7843_slot_number_nil_pre_amsterdam() {
+    // Pre-Amsterdam blocks should not have SlotNumber set
+    let block_event = BlockEvent {
+        block: BlockData {
+            number: 100,
+            hash: hash32(1),
+            parent_hash: hash32(2),
+            uncle_hash: hash32(3),
+            coinbase: alice_addr(),
+            root: hash32(4),
+            tx_hash: hash32(5),
+            receipt_hash: hash32(6),
+            bloom: alloy_primitives::Bloom::ZERO,
+            difficulty: big_int(0),
+            gas_limit: 15_000_000,
+            gas_used: 0,
+            time: 1000,
+            extra: alloy_primitives::Bytes::new(),
+            mix_digest: hash32(7),
+            nonce: 0,
+            base_fee: Some(big_int(1_000_000_000)),
+            uncles: vec![],
+            size: 1024,
+            withdrawals: vec![],
+            withdrawals_root: None,
+            blob_gas_used: None,
+            excess_blob_gas: None,
+            parent_beacon_root: None,
+            requests_hash: None,
+            tx_dependency: None,
+            slot_number: None, // pre-Amsterdam
+        },
+        finalized: None,
+        flash_block: None,
+    };
+
+    let mut tester = TracerTester::new();
+    tester.validate_with_custom_block(block_event, |block| {
+        assert!(block.header.is_some(), "Header should exist");
+        let header = block.header.as_ref().unwrap();
+        assert!(
+            header.slot_number.is_none(),
+            "pre-Amsterdam block should not have SlotNumber"
+        );
     });
 }
 
@@ -404,6 +510,7 @@ fn test_nil_eip_fields_pre_fork() {
             parent_beacon_root: None,
             requests_hash: None,
             tx_dependency: None,
+            slot_number: None,
         },
         finalized: None,
         flash_block: None,
@@ -435,6 +542,10 @@ fn test_nil_eip_fields_pre_fork() {
         assert!(
             header.tx_dependency.is_none(),
             "TxDependency should be None"
+        );
+        assert!(
+            header.slot_number.is_none(),
+            "SlotNumber should be None"
         );
     });
 }

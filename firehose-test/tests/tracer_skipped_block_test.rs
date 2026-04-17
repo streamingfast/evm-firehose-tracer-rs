@@ -63,6 +63,7 @@ fn test_skipped_block_preserves_coinbase() {
         parent_beacon_root: None,
         requests_hash: None,
         tx_dependency: None,
+        slot_number: None,
     };
 
     let block_event = BlockEvent {
