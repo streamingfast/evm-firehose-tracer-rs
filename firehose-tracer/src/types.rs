@@ -15,6 +15,22 @@ use num_enum::TryFromPrimitive;
 pub struct BlockEvent {
     pub block: BlockData,
     pub finalized: Option<FinalizedBlockRef>,
+    pub flash_block: Option<FlashBlockData>,
+}
+
+/// FlashBlockData holds metadata for a flash block event.
+///
+/// Flash blocks are a mechanism used by Optimism/Katana where a single canonical block
+/// is built incrementally across multiple "flash" iterations. Each iteration adds more
+/// transactions, emits a partial block, and a snapshot captures the point where the next
+/// iteration should start.
+#[derive(Debug, Clone)]
+pub struct FlashBlockData {
+    /// Flash block index, monotonically increasing within the same block number
+    pub idx: u64,
+    /// True when this is the final flash block iteration for the block number.
+    /// When true, the emitted FIRE BLOCK line encodes the index as Idx + 1000.
+    pub is_final: bool,
 }
 
 /// BlockData contains the minimal block data needed by the tracer
@@ -339,12 +355,19 @@ impl BlockEvent {
         Self {
             block,
             finalized: None,
+            flash_block: None,
         }
     }
 
     /// Sets the finalized block reference
     pub fn with_finalized(mut self, finalized: FinalizedBlockRef) -> Self {
         self.finalized = Some(finalized);
+        self
+    }
+
+    /// Sets the flash block data
+    pub fn with_flash_block(mut self, flash_block: FlashBlockData) -> Self {
+        self.flash_block = Some(flash_block);
         self
     }
 }

@@ -12,8 +12,19 @@ impl Ordinal {
         self.value
     }
 
+    /// Returns the current ordinal value without incrementing.
+    pub(super) fn peek(&self) -> u64 {
+        self.value
+    }
+
     /// Resets the ordinal back to 0.
     pub(super) fn reset(&mut self) {
         self.value = 0;
+    }
+
+    /// Restores the ordinal to a previously saved value.
+    /// This is the counterpart to peek; used in flash block snapshot restoration.
+    pub(super) fn restore(&mut self, value: u64) {
+        self.value = value;
     }
 }

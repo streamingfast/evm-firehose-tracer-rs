@@ -68,6 +68,7 @@ fn test_skipped_block_preserves_coinbase() {
     let block_event = BlockEvent {
         block: block_data,
         finalized: None,
+        flash_block: None,
     };
 
     let mut tester = TracerTester::new();

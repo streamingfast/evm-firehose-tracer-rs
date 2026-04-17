@@ -315,28 +315,104 @@ impl Write for InMemoryBuffer {
     }
 }
 
+/// FirehoseBlockEntry holds a parsed FIRE BLOCK line: the decoded protobuf block
+/// together with every header field from the wire line.
+///
+/// Wire format:
+///
+///   FIRE BLOCK <block_num> <flash_block_idx> <block_hash> <prev_num> <prev_hash> <lib_num> <timestamp_unix_nano> <payload_base64>
+#[derive(Debug)]
+pub struct FirehoseBlockEntry {
+    pub block: pbeth::Block,
+
+    // Header fields parsed from the FIRE BLOCK line (not in the protobuf).
+    pub block_num: u64,
+    pub flash_block_idx: u64,
+    pub block_hash: String,
+    pub prev_num: u64,
+    pub prev_hash: String,
+    pub lib_num: u64,
+    pub timestamp_nano: i64,
+}
+
 /// Parses the first FIRE BLOCK line from raw output bytes and returns the decoded protobuf Block.
 pub fn parse_firehose_block(output: &[u8]) -> pbeth::Block {
+    let entries = parse_firehose_output(output);
+    assert!(!entries.is_empty(), "No FIRE BLOCK found in output");
+    entries.into_iter().next().unwrap().block
+}
+
+/// Parses all FIRE BLOCK lines from raw output bytes and returns full entries
+/// including wire-level header fields.
+pub fn parse_firehose_block_entries(output: &[u8]) -> Vec<FirehoseBlockEntry> {
+    parse_firehose_output(output)
+}
+
+/// Shared parser for FIRE BLOCK output. Returns full entries including wire-level header fields.
+fn parse_firehose_output(output: &[u8]) -> Vec<FirehoseBlockEntry> {
     let reader = BufReader::new(output);
+    let mut init_seen = false;
+    let mut entries = Vec::new();
+
     for line in reader.lines() {
         let line = line.expect("Failed to read line");
+
+        if line.starts_with("FIRE INIT ") {
+            init_seen = true;
+            continue;
+        }
+
         if line.starts_with("FIRE BLOCK ") {
-            // Format: FIRE BLOCK {num} {hash} {prev_num} {prev_hash} {lib_num} {timestamp} {base64}
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 9 {
-                let base64_data = parts[8..].join(" ");
-                let decoded = base64::engine::general_purpose::STANDARD
-                    .decode(&base64_data)
-                    .expect(&format!(
-                        "Failed to decode base64 (len={}, data={})",
-                        base64_data.len(),
-                        &base64_data[..base64_data.len().min(100)]
-                    ));
-                return pbeth::Block::decode(&decoded[..]).expect("Failed to decode protobuf");
-            }
+            assert!(
+                init_seen,
+                "FIRE INIT must appear before FIRE BLOCK"
+            );
+
+            // FIRE BLOCK <block_num> <flash_block_idx> <block_hash> <prev_num> <prev_hash> <lib_num> <timestamp_unix_nano> <payload_base64>
+            let parts: Vec<&str> = line.splitn(10, ' ').collect();
+            assert!(
+                parts.len() >= 10,
+                "FIRE BLOCK line should have 10 parts, got {}",
+                parts.len()
+            );
+
+            let block_num: u64 = parts[2].parse().expect("parse block_num");
+            let flash_block_idx: u64 = parts[3].parse().expect("parse flash_block_idx");
+            let block_hash = parts[4].to_string();
+            let prev_num: u64 = parts[5].parse().expect("parse prev_num");
+            let prev_hash = parts[6].to_string();
+            let lib_num: u64 = parts[7].parse().expect("parse lib_num");
+            let timestamp_nano: i64 = parts[8].parse().expect("parse timestamp");
+
+            let payload_base64 = parts[9];
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(payload_base64)
+                .expect(&format!(
+                    "Failed to decode base64 (len={})",
+                    payload_base64.len(),
+                ));
+            let block = pbeth::Block::decode(&decoded[..]).expect("Failed to decode protobuf");
+
+            // Validate block_num matches protobuf
+            assert_eq!(
+                block_num, block.number,
+                "block number in header should match protobuf"
+            );
+
+            entries.push(FirehoseBlockEntry {
+                block,
+                block_num,
+                flash_block_idx,
+                block_hash,
+                prev_num,
+                prev_hash,
+                lib_num,
+                timestamp_nano,
+            });
         }
     }
-    panic!("No FIRE BLOCK found in output");
+
+    entries
 }
 
 /// TracerTester provides a fluent API for building test scenarios
@@ -875,28 +951,14 @@ impl TracerTester {
 
     /// Parse all FIRE BLOCK lines from output buffer (for testing multiple blocks)
     pub fn parse_firehose_blocks(&self) -> Vec<pbeth::Block> {
-        let output = self.output_buffer.get_bytes();
-        let reader = BufReader::new(&output[..]);
-        let mut blocks = Vec::new();
+        let entries = self.parse_firehose_block_entries();
+        entries.into_iter().map(|e| e.block).collect()
+    }
 
-        for line in reader.lines() {
-            let line = line.expect("Failed to read line");
-            if line.starts_with("FIRE BLOCK ") {
-                // Format: FIRE BLOCK {num} {hash} {prev_num} {prev_hash} {lib_num} {timestamp} {base64}
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 9 {
-                    let base64_data = parts[8..].join(" ");
-                    let decoded = base64::engine::general_purpose::STANDARD
-                        .decode(&base64_data)
-                        .expect(&format!("Failed to decode base64"));
-                    let block =
-                        pbeth::Block::decode(&decoded[..]).expect("Failed to decode protobuf");
-                    blocks.push(block);
-                }
-            }
-        }
-
-        blocks
+    /// Parse all FIRE BLOCK lines from output buffer and return full entries
+    /// including wire-level header fields (LibNum, FlashBlockIdx, etc.).
+    pub fn parse_firehose_block_entries(&self) -> Vec<FirehoseBlockEntry> {
+        parse_firehose_block_entries(&self.output_buffer.get_bytes())
     }
 
     /// Helper method to create a skipped block with default values
@@ -943,6 +1005,7 @@ impl TracerTester {
         let block_event = BlockEvent {
             block: block_data,
             finalized: None,
+            flash_block: None,
         };
 
         self.tracer.on_skipped_block(block_event);
