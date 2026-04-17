@@ -1,4 +1,5 @@
 use crate::{exex::inspector, exex::mapper, prelude::*};
+use alloy_consensus::transaction::TxHashRef as _;
 use alloy_primitives::Bytes;
 use eyre::Context;
 use firehose;
