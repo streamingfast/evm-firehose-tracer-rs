@@ -1,8 +1,8 @@
+use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 use firehose_tracer_test::{
     alice_addr, big_int, bob_addr, charlie_addr, hash32, log1, receipt_with_logs, success_receipt,
     test_legacy_trx, TracerTester,
 };
-use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 
 // =============================================================================
 // Integration Tests - Multiple State Changes

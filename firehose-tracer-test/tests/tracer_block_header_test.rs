@@ -1,5 +1,5 @@
-use firehose_tracer_test::{alice_addr, big_int, hash32, TracerTester};
 use firehose_tracer::types::{BlockData, BlockEvent};
+use firehose_tracer_test::{alice_addr, big_int, hash32, TracerTester};
 
 // =============================================================================
 // Block Header EIP Fields Tests
@@ -158,12 +158,12 @@ fn test_eip4788_parent_beacon_root() {
         assert!(block.header.is_some(), "Header should exist");
         let header = block.header.as_ref().unwrap();
         assert!(
-            !header.parent_beacon_root.is_empty(),
+            header.parent_beacon_root.is_some(),
             "ParentBeaconRoot should be set"
         );
         assert_eq!(
             parent_beacon_root.as_slice(),
-            header.parent_beacon_root.as_slice()
+            header.parent_beacon_root.as_ref().unwrap().as_slice()
         );
     });
 }
@@ -211,11 +211,11 @@ fn test_eip7685_requests_hash() {
     tester.validate_with_custom_block(block_event, |block| {
         assert!(block.header.is_some(), "Header should exist");
         let header = block.header.as_ref().unwrap();
-        assert!(
-            !header.requests_hash.is_empty(),
-            "RequestsHash should be set"
+        assert!(header.requests_hash.is_some(), "RequestsHash should be set");
+        assert_eq!(
+            requests_hash.as_slice(),
+            header.requests_hash.as_ref().unwrap().as_slice()
         );
-        assert_eq!(requests_hash.as_slice(), header.requests_hash.as_slice());
     });
 }
 
@@ -363,19 +363,19 @@ fn test_all_eip_fields_combined() {
         assert_eq!(excess_blob_gas, header.excess_blob_gas.unwrap());
 
         assert!(
-            !header.parent_beacon_root.is_empty(),
+            header.parent_beacon_root.is_some(),
             "ParentBeaconRoot should be set"
         );
         assert_eq!(
             parent_beacon_root.as_slice(),
-            header.parent_beacon_root.as_slice()
+            header.parent_beacon_root.as_ref().unwrap().as_slice()
         );
 
-        assert!(
-            !header.requests_hash.is_empty(),
-            "RequestsHash should be set"
+        assert!(header.requests_hash.is_some(), "RequestsHash should be set");
+        assert_eq!(
+            requests_hash.as_slice(),
+            header.requests_hash.as_ref().unwrap().as_slice()
         );
-        assert_eq!(requests_hash.as_slice(), header.requests_hash.as_slice());
 
         assert!(header.slot_number.is_some(), "SlotNumber should be set");
         assert_eq!(slot_number, header.slot_number.unwrap());
@@ -532,20 +532,17 @@ fn test_nil_eip_fields_pre_fork() {
             "ExcessBlobGas should be None"
         );
         assert!(
-            header.parent_beacon_root.is_empty(),
-            "ParentBeaconRoot should be empty"
+            header.parent_beacon_root.is_none(),
+            "ParentBeaconRoot should be none"
         );
         assert!(
-            header.requests_hash.is_empty(),
-            "RequestsHash should be empty"
+            header.requests_hash.is_none(),
+            "RequestsHash should be none"
         );
         assert!(
             header.tx_dependency.is_none(),
             "TxDependency should be None"
         );
-        assert!(
-            header.slot_number.is_none(),
-            "SlotNumber should be None"
-        );
+        assert!(header.slot_number.is_none(), "SlotNumber should be None");
     });
 }

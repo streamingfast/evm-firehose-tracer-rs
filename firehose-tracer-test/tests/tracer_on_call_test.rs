@@ -1,8 +1,8 @@
+use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
+use firehose_tracer::types::{Opcode, StringError};
 use firehose_tracer_test::{
     alice_addr, bob_addr, charlie_addr, success_receipt, test_legacy_trx, TracerTester,
 };
-use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
-use firehose_tracer::types::{Opcode, StringError};
 
 // on_call defers the exit until the next epth call arrives
 #[test]

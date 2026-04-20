@@ -1,7 +1,7 @@
+use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 use firehose_tracer_test::{
     alice_addr, big_int, create_address, success_receipt, test_legacy_trx, TracerTester,
 };
-use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 
 // =============================================================================
 // CREATE Address Calculation Tests

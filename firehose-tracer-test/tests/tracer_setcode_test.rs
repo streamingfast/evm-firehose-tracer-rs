@@ -1,8 +1,8 @@
 use alloy_primitives::B256;
+use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 use firehose_tracer_test::eip7702::*;
 use firehose_tracer_test::testing_helpers::*;
 use firehose_tracer_test::tracer_tester::{test_set_code_trx_with_auth, TracerTester};
-use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 
 // TestTracer_SetCodeAuthorization tests EIP-7702 SetCode authorization validation
 

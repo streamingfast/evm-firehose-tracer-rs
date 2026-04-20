@@ -1,9 +1,9 @@
+use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 use firehose_tracer_test::{
     addr_from_hex, alice_addr, big_int, bob_addr, charlie_addr, failed_receipt, hash32, log1,
     miner_addr, must_big_int, receipt_with_logs, success_receipt, test_legacy_trx, TracerTester,
     ERR_EXECUTION_REVERTED, ERR_INSUFFICIENT_BALANCE_TRANSFER, ERR_MAX_CALL_DEPTH, ERR_OUT_OF_GAS,
 };
-use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 
 // Test error types matching VM errors
 #[derive(Debug)]

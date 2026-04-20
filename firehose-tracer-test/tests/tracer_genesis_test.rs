@@ -1,8 +1,8 @@
 use alloy_primitives::{Bytes, B256, U256};
+use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 use firehose_tracer::types::{GenesisAccount, GenesisAlloc};
 use firehose_tracer_test::testing_helpers::*;
 use firehose_tracer_test::tracer_tester::TracerTester;
-use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 use std::collections::HashMap;
 
 // TestTracer_GenesisBlock tests genesis block processing

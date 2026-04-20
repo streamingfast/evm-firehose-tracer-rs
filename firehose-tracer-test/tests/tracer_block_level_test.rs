@@ -1,9 +1,9 @@
+use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 use firehose_tracer_test::{
     alice_addr, beacon_roots_address, big_int, bob_addr, charlie_addr, hash32,
     history_storage_address, miner_addr, must_big_int, success_receipt, system_address,
     test_legacy_trx, u256_to_trimmed_bytes, TracerTester,
 };
-use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 
 // =============================================================================
 // Block-Level Balance Changes Tests
