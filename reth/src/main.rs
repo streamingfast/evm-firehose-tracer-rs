@@ -27,9 +27,10 @@ fn main() {
         async move |builder, extension_args| {
             info!(target: "firehose:tracer", args = ?extension_args, "Launching node");
 
-            let mut config =
-                firehose::Config::load_or_default(extension_args.firehose_tracer_config.as_ref())?;
-            config.chain_client = firehose::ChainClient::Reth;
+            let mut config = firehose_tracer::config::Config::load_or_default(
+                extension_args.firehose_tracer_config.as_ref(),
+            )?;
+            config.chain_client = firehose_tracer::config::ChainClient::Reth;
 
             let NodeHandle {
                 node: _node,
@@ -37,7 +38,7 @@ fn main() {
             } = builder
                 .node(EthereumNode::default())
                 .install_exex("firehose", async move |ctx| {
-                    let tracer = firehose::Tracer::new(config);
+                    let tracer = firehose_tracer::Tracer::new(config);
                     Ok(reth_firehose::exex::run_loop(ctx, tracer, |tx| {
                         tx.signature_fields()
                     }))

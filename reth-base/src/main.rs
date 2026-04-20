@@ -31,14 +31,14 @@ pub struct ExtensionArgs {
 
 #[derive(Debug)]
 struct FirehoseExtension {
-    config: firehose::Config,
+    config: firehose_tracer::config::Config,
 }
 
 impl BaseNodeExtension for FirehoseExtension {
     fn apply(self: Box<Self>, hooks: NodeHooks) -> NodeHooks {
         let config = self.config;
         hooks.install_exex("firehose", async move |ctx| {
-            let tracer = firehose::Tracer::new(config);
+            let tracer = firehose_tracer::Tracer::new(config);
             Ok(reth_firehose::exex::run_loop(ctx, tracer, |tx| {
                 // OpTxEnvelope::signature() returns None for deposit transactions.
                 let Some(sig) = tx.signature() else {
@@ -70,9 +70,9 @@ impl BaseNodeExtension for FirehoseExtension {
 }
 
 impl FromExtensionConfig for FirehoseExtension {
-    type Config = firehose::Config;
+    type Config = firehose_tracer::config::Config;
 
-    fn from_config(config: firehose::Config) -> Self {
+    fn from_config(config: firehose_tracer::config::Config) -> Self {
         Self { config }
     }
 }
@@ -93,9 +93,10 @@ fn main() {
         Cli::<OpChainSpecParser, ExtensionArgs>::parse().run(|builder, args| async move {
             info!(target: "firehose:tracer", args = ?args, "Launching Base node");
 
-            let mut config =
-                firehose::Config::load_or_default(args.firehose_tracer_config.as_ref())?;
-            config.chain_client = firehose::ChainClient::Reth;
+            let mut config = firehose_tracer::config::Config::load_or_default(
+                args.firehose_tracer_config.as_ref(),
+            )?;
+            config.chain_client = firehose_tracer::config::ChainClient::Reth;
 
             let mut runner = BaseNodeRunner::new(args.rollup_args.clone());
             runner.install_ext::<FirehoseExtension>(config);

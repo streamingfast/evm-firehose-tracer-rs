@@ -23,7 +23,7 @@ Nothing has been done
 
    Make each case call another method instead of inlining the code to improve readability
 
-    - Each journal entry processed should be logged via firehose::firehose_debug!("...", ...);
+    - Each journal entry processed should be logged via firehose_tracer::firehose_debug!("...", ...);
 
 
 - `if old_balance != new_balance {` move this condition into `on_balance_change` directly, that should apply to all

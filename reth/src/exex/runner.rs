@@ -1,17 +1,16 @@
+use crate::exex::ChainRevertOverlay;
 use crate::{exex::inspector, exex::mapper, prelude::*};
 use alloy_consensus::transaction::TxHashRef as _;
 use alloy_primitives::{Address, Bytes};
 use eyre::Context;
-use firehose;
+use firehose_tracer;
 use reth::chainspec::{EthChainSpec, EthereumHardforks};
 use reth::revm::revm::Database as _;
 use reth_evm::block::TxResult as _;
 use reth_evm::execute::BlockExecutor;
-use crate::exex::ChainRevertOverlay;
 use reth_provider::{
     AccountReader, BlockIdReader, BlockNumReader, DBProvider, DatabaseProviderFactory,
-    LatestStateProvider, NodePrimitivesProvider, RocksDBProviderFactory,
-    StateProviderBox,
+    LatestStateProvider, NodePrimitivesProvider, RocksDBProviderFactory, StateProviderBox,
 };
 use reth_revm::database::StateProviderDatabase;
 use reth_revm::State;
@@ -19,7 +18,7 @@ use reth_revm::State;
 /// Ethereum-specific firehose tracer
 pub async fn run_loop<Node: FullNodeComponents, F>(
     mut ctx: ExExContext<Node>,
-    mut tracer: firehose::Tracer,
+    mut tracer: firehose_tracer::Tracer,
     get_signature: F,
 ) -> eyre::Result<()>
 where
@@ -39,7 +38,7 @@ where
     tracer.on_blockchain_init(
         "reth/ethereum",
         "1.11.3",
-        firehose::ChainConfig {
+        firehose_tracer::config::ChainConfig {
             // FIXME: use ctx.config.chain to populate these fields instead of hardcoding, the ChainSpec is fully
             // generic and don't seem to have any trait bounds, unclear how we will extract the fields.
             ..Default::default()
@@ -263,7 +262,7 @@ where
 
 pub fn trace_block<Node: FullNodeComponents, F>(
     ctx: &ExExContext<Node>,
-    tracer: &mut firehose::Tracer,
+    tracer: &mut firehose_tracer::Tracer,
     evm_config: &Node::Evm,
     block: &RecoveredBlock<Node>,
     receipts: &Vec<Receipt<Node>>,
@@ -278,7 +277,7 @@ where
 
     if block.number() == 1 {
         tracer.on_genesis_block(
-            firehose::BlockEvent {
+            firehose_tracer::types::BlockEvent {
                 block: mapper::to_block_data::<Node>(block),
                 finalized: None,
                 flash_block: None,
@@ -288,13 +287,11 @@ where
         return Ok(());
     }
 
-    tracer.on_block_start(firehose::BlockEvent {
+    tracer.on_block_start(firehose_tracer::types::BlockEvent {
         block: mapper::to_block_data::<Node>(block),
         finalized: mapper::to_finalized_ref(ctx.provider().finalized_block_num_hash()),
         flash_block: None,
     });
-
-    let parent_hash = block.parent_hash();
 
     // === DIAGNOSTIC PROBE: per-block pre-execution state snapshot ===
     //

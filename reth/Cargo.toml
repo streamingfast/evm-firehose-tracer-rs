@@ -8,8 +8,7 @@ name = "reth-firehose-tracer"
 path = "src/main.rs"
 
 [dependencies]
-firehose.workspace = true
-pb.workspace = true
+firehose-tracer.workspace = true
 
 alloy-consensus.workspace = true
 alloy-rlp.workspace = true

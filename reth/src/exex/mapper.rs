@@ -8,9 +8,8 @@ use alloy_consensus::{
 use alloy_genesis::Genesis;
 use alloy_primitives::{Address, Bytes, Sealable, U256};
 use alloy_rlp::Encodable;
-use firehose::{
-    types::{AccessTuple, GenesisAlloc, SetCodeAuthorization, TxEvent},
-    BlockData, UncleData, WithdrawalData,
+use firehose_tracer::types::{
+    AccessTuple, BlockData, GenesisAlloc, SetCodeAuthorization, TxEvent, UncleData, WithdrawalData,
 };
 use reth::api::BlockBody;
 use reth_provider::{AccountReader, ProviderResult};
@@ -22,7 +21,7 @@ pub fn to_genesis_alloc(genesis: &Genesis) -> GenesisAlloc {
         .map(|(address, account)| {
             (
                 *address,
-                firehose::types::GenesisAccount {
+                firehose_tracer::types::GenesisAccount {
                     code: account.code.clone(),
                     balance: Some(account.balance.clone()),
                     nonce: account.nonce.unwrap_or_default(),
@@ -81,11 +80,11 @@ pub fn to_block_data<Node: FullNodeComponents>(block: &RecoveredBlock<Node>) -> 
 
 pub fn to_finalized_ref(
     block_ref: ProviderResult<Option<alloy_eips::BlockNumHash>>,
-) -> Option<firehose::FinalizedBlockRef> {
+) -> Option<firehose_tracer::types::FinalizedBlockRef> {
     block_ref
         .ok()
         .flatten()
-        .map(|num_hash| firehose::FinalizedBlockRef {
+        .map(|num_hash| firehose_tracer::types::FinalizedBlockRef {
             number: num_hash.number,
             hash: Some(num_hash.hash),
         })
@@ -256,7 +255,7 @@ where
 /// is automatically Send + 'static, satisfying the Box<dyn StateReader + Send> bound.
 pub struct StateReaderAdapter(pub StateProviderBox);
 
-impl firehose::types::StateReader for StateReaderAdapter {
+impl firehose_tracer::types::StateReader for StateReaderAdapter {
     fn get_nonce(&self, address: Address) -> u64 {
         self.0.account_nonce(&address).ok().flatten().unwrap_or(0)
     }
@@ -285,11 +284,11 @@ pub fn to_receipt_data<R>(
     tx_index: u32,
     gas_used: u64,
     log_index_start: u32,
-) -> firehose::ReceiptData
+) -> firehose_tracer::types::ReceiptData
 where
     R: alloy_consensus::TxReceipt<Log = alloy_primitives::Log>,
 {
-    let mut receipt_data = firehose::ReceiptData::new(
+    let mut receipt_data = firehose_tracer::types::ReceiptData::new(
         tx_index,
         gas_used,
         receipt.status() as u64,
@@ -297,7 +296,7 @@ where
     );
     receipt_data.logs_bloom = *receipt.bloom().data();
     for (i, log) in receipt.logs().iter().enumerate() {
-        receipt_data.add_log(firehose::types::LogData::new(
+        receipt_data.add_log(firehose_tracer::types::LogData::new(
             log.address,
             log.data.topics().to_vec(),
             log.data.data.clone(),

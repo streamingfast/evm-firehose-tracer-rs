@@ -1,5 +1,8 @@
 use alloy_primitives::{Address, Bytes, Log as AlloyLog, B256, U256};
-use firehose::{pb, Opcode, StringError};
+use firehose_tracer::{
+    pb,
+    types::{Opcode, StringError},
+};
 use reth::api::FullNodeComponents;
 use reth::revm::revm::context_interface::{ContextTr, JournalTr};
 use reth::revm::revm::inspector::{Inspector, JournalExt};
@@ -18,7 +21,7 @@ struct StepContext {
 /// FirehoseInspector captures execution traces for the Firehose format
 /// It hooks into EVM execution via the Inspector trait to build a complete call tree
 pub struct FirehoseInspector<'a, Node: FullNodeComponents> {
-    tracer: &'a mut firehose::Tracer,
+    tracer: &'a mut firehose_tracer::Tracer,
     _phantom: std::marker::PhantomData<Node>,
 
     /// The last opcode executed in `step`, used to detect SSTORE for storage change tracking in `step_end`.
@@ -58,7 +61,7 @@ struct SelfdestructCleanupEntry {
 }
 
 impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
-    pub fn new(tracer: &'a mut firehose::Tracer) -> Self {
+    pub fn new(tracer: &'a mut firehose_tracer::Tracer) -> Self {
         Self {
             tracer,
             _phantom: std::marker::PhantomData,
@@ -73,7 +76,7 @@ impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
 
     /// Returns a mutable reference to the tracer, allowing the runner to call tracer lifecycle
     /// methods (on_tx_start, on_tx_end, etc.) while the inspector owns the tracer borrow.
-    pub fn tracer_mut(&mut self) -> &mut firehose::Tracer {
+    pub fn tracer_mut(&mut self) -> &mut firehose_tracer::Tracer {
         self.tracer
     }
 
@@ -85,7 +88,10 @@ impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
     /// Since `step` fires before memory resize, the memory region may not yet
     /// be allocated. Like Geth's `scope.Memory.GetPtr`, we zero-pad any bytes
     /// beyond current memory length to produce a complete preimage.
-    fn step_keccak256(tracer: &mut firehose::Tracer, interp: &mut Interpreter<EthInterpreter>) {
+    fn step_keccak256(
+        tracer: &mut firehose_tracer::Tracer,
+        interp: &mut Interpreter<EthInterpreter>,
+    ) {
         let (Ok(offset), Ok(size)) = (interp.stack.peek(0), interp.stack.peek(1)) else {
             return;
         };
@@ -142,7 +148,8 @@ impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
         }
 
         // Collect the entries we need to process (clone to avoid borrow conflicts when reading state)
-        let entries: Vec<_> = context.journal().journal()[self.journal_processed_up_to..journal_len]
+        let entries: Vec<_> = context.journal().journal()
+            [self.journal_processed_up_to..journal_len]
             .iter()
             .cloned()
             .collect();
@@ -152,7 +159,10 @@ impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
 
         for entry in entries {
             match entry {
-                JournalEntry::BalanceChange { address, old_balance } => {
+                JournalEntry::BalanceChange {
+                    address,
+                    old_balance,
+                } => {
                     let new_balance = context
                         .journal()
                         .evm_state()
@@ -160,32 +170,44 @@ impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
                         .map(|a| a.info.balance)
                         .unwrap_or(U256::ZERO);
                     if old_balance != new_balance {
-                        self.tracer.on_balance_change(address, old_balance, new_balance, reason);
+                        self.tracer
+                            .on_balance_change(address, old_balance, new_balance, reason);
                         self.balance_tracker.insert(address, new_balance);
                     }
                 }
                 JournalEntry::BalanceTransfer { from, to, balance } => {
                     if !balance.is_zero() {
                         let evm_state = context.journal().evm_state();
-                        let new_from = evm_state.get(&from).map(|a| a.info.balance).unwrap_or(U256::ZERO);
+                        let new_from = evm_state
+                            .get(&from)
+                            .map(|a| a.info.balance)
+                            .unwrap_or(U256::ZERO);
                         let old_from = new_from.saturating_add(balance);
-                        let new_to = evm_state.get(&to).map(|a| a.info.balance).unwrap_or(U256::ZERO);
+                        let new_to = evm_state
+                            .get(&to)
+                            .map(|a| a.info.balance)
+                            .unwrap_or(U256::ZERO);
                         let old_to = new_to.saturating_sub(balance);
 
-                        self.tracer.on_balance_change(from, old_from, new_from, reason);
+                        self.tracer
+                            .on_balance_change(from, old_from, new_from, reason);
                         self.balance_tracker.insert(from, new_from);
                         self.tracer.on_balance_change(to, old_to, new_to, reason);
                         self.balance_tracker.insert(to, new_to);
                     }
                 }
-                JournalEntry::NonceChange { address, previous_nonce } => {
+                JournalEntry::NonceChange {
+                    address,
+                    previous_nonce,
+                } => {
                     let new_nonce = context
                         .journal()
                         .evm_state()
                         .get(&address)
                         .map(|a| a.info.nonce)
                         .unwrap_or(0);
-                    self.tracer.on_nonce_change(address, previous_nonce, new_nonce);
+                    self.tracer
+                        .on_nonce_change(address, previous_nonce, new_nonce);
                 }
                 JournalEntry::NonceBump { address } => {
                     // NonceBump is pushed by EIP-7702 delegate() and by CREATE frame
@@ -236,12 +258,8 @@ impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
     /// For the post-Cancun case where contract == target and the contract was NOT created
     /// locally, revm pushes no journal entry and doesn't change state. We still emit the
     /// withdraw/refund balance changes to match Geth's behavior (net-zero change).
-    fn process_selfdestruct_balance_changes<CTX>(
-        &mut self,
-        context: &mut CTX,
-        start_idx: usize,
-        contract_address: Address,
-    ) where
+    fn process_selfdestruct_balance_changes<CTX>(&mut self, context: &mut CTX, start_idx: usize)
+    where
         CTX: ContextTr,
         CTX::Journal: JournalExt,
     {
@@ -418,18 +436,17 @@ impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
             // Initialize tracker for this authority from original_info on first encounter.
             if !auth_tracker.contains_key(&authority) {
                 // First, read nonce and code_hash from evm_state (immutable borrow on journal).
-                let (mut nonce, code_hash, code_loaded) = if let Some(acc) =
-                    context.journal().evm_state().get(&authority)
-                {
-                    let code = acc
-                        .original_info
-                        .code
-                        .as_ref()
-                        .map(|b| b.original_bytes().to_vec());
-                    (acc.original_info.nonce, acc.original_info.code_hash, code)
-                } else {
-                    (0, KECCAK_EMPTY, Some(Vec::new()))
-                };
+                let (mut nonce, code_hash, code_loaded) =
+                    if let Some(acc) = context.journal().evm_state().get(&authority) {
+                        let code = acc
+                            .original_info
+                            .code
+                            .as_ref()
+                            .map(|b| b.original_bytes().to_vec());
+                        (acc.original_info.nonce, acc.original_info.code_hash, code)
+                    } else {
+                        (0, KECCAK_EMPTY, Some(Vec::new()))
+                    };
 
                 // Sender's nonce was already incremented by deduct_caller.
                 if authority == tx_sender {
@@ -489,7 +506,8 @@ impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
                     .on_code_change(authority, old_hash, new_hash, &old_code, &new_code);
             }
             // Always emit nonce change for each applied auth.
-            self.tracer.on_nonce_change(authority, old_nonce, old_nonce + 1);
+            self.tracer
+                .on_nonce_change(authority, old_nonce, old_nonce + 1);
 
             // Advance per-authority tracker.
             *tracked_nonce = old_nonce + 1;
@@ -517,17 +535,18 @@ impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
     {
         for &address in self.selfdestruct_addresses.iter() {
             if let Some(account) = context.journal().evm_state().get(&address) {
-                self.pending_selfdestruct_cleanups.push(SelfdestructCleanupEntry {
-                    address,
-                    nonce: account.info.nonce,
-                    code_hash: account.info.code_hash,
-                    code: account
-                        .info
-                        .code
-                        .as_ref()
-                        .map(|b| b.original_bytes())
-                        .unwrap_or_default(),
-                });
+                self.pending_selfdestruct_cleanups
+                    .push(SelfdestructCleanupEntry {
+                        address,
+                        nonce: account.info.nonce,
+                        code_hash: account.info.code_hash,
+                        code: account
+                            .info
+                            .code
+                            .as_ref()
+                            .map(|b| b.original_bytes())
+                            .unwrap_or_default(),
+                    });
             }
         }
     }
@@ -570,7 +589,8 @@ impl<'a, Node: FullNodeComponents> FirehoseInspector<'a, Node> {
                 .copied()
                 .unwrap_or_else(|| get_pre_tx_balance(sender));
             let new_balance = old_balance + refund_amount;
-            self.tracer.on_balance_change(sender, old_balance, new_balance, Reason::GasRefund);
+            self.tracer
+                .on_balance_change(sender, old_balance, new_balance, Reason::GasRefund);
         }
 
         // Coinbase reward: the priority fee portion of consumed gas.
@@ -737,9 +757,7 @@ where
     }
 
     /// Called after each opcode executes; used to detect SSTORE and SELFDESTRUCT state changes.
-    fn step_end(&mut self, interp: &mut Interpreter<EthInterpreter>, context: &mut CTX) {
-        use reth::revm::revm::interpreter::interpreter_types::InputsTr;
-
+    fn step_end(&mut self, _interp: &mut Interpreter<EthInterpreter>, context: &mut CTX) {
         let step_ctx = match self.last_step.take() {
             Some(ctx) => ctx,
             None => return,
@@ -768,12 +786,7 @@ where
                 }
             }
         } else if step_ctx.opcode == Opcode::SelfDestruct as u8 {
-            let contract_address = interp.input.target_address();
-            self.process_selfdestruct_balance_changes(
-                context,
-                step_ctx.start_journal_idx,
-                contract_address,
-            );
+            self.process_selfdestruct_balance_changes(context, step_ctx.start_journal_idx);
         }
     }
 
@@ -893,7 +906,7 @@ where
     }
 
     /// CALL* operation completes
-    fn call_end(&mut self, context: &mut CTX, inputs: &CallInputs, outcome: &mut CallOutcome) {
+    fn call_end(&mut self, context: &mut CTX, _inputs: &CallInputs, outcome: &mut CallOutcome) {
         log_journal("call_exit", context);
 
         // Scan journal entries accumulated during this call's execution BEFORE popping it,
@@ -1030,7 +1043,7 @@ where
     fn create_end(
         &mut self,
         context: &mut CTX,
-        inputs: &CreateInputs,
+        _inputs: &CreateInputs,
         outcome: &mut CreateOutcome,
     ) {
         use reth::revm::revm::interpreter::InstructionResult;
@@ -1148,21 +1161,21 @@ where
 {
     use reth::revm::revm::context::JournalEntry;
 
-    if !firehose::logging::is_firehose_debug_enabled() {
+    if !firehose_tracer::logging::is_firehose_debug_enabled() {
         return;
     }
 
     let journal = context.journal().journal();
     if journal.is_empty() {
-        firehose::firehose_debug!("{}: journal empty", label);
+        firehose_tracer::firehose_debug!("{}: journal empty", label);
         return;
     }
 
-    firehose::firehose_debug!("{}: journal ({} entries)", label, journal.len());
+    firehose_tracer::firehose_debug!("{}: journal ({} entries)", label, journal.len());
     for (i, entry) in journal.iter().enumerate() {
         match entry {
             JournalEntry::AccountTouched { address } => {
-                firehose::firehose_debug!("  [{i}] AccountTouched addr={address}");
+                firehose_tracer::firehose_debug!("  [{i}] AccountTouched addr={address}");
             }
             JournalEntry::AccountDestroyed {
                 address,
@@ -1170,7 +1183,7 @@ where
                 had_balance,
                 ..
             } => {
-                firehose::firehose_debug!(
+                firehose_tracer::firehose_debug!(
                     "  [{i}] AccountDestroyed addr={address} target={target} balance={had_balance}"
                 );
             }
@@ -1178,10 +1191,12 @@ where
                 address,
                 old_balance,
             } => {
-                firehose::firehose_debug!("  [{i}] BalanceChange addr={address} old={old_balance}");
+                firehose_tracer::firehose_debug!(
+                    "  [{i}] BalanceChange addr={address} old={old_balance}"
+                );
             }
             JournalEntry::BalanceTransfer { from, to, balance } => {
-                firehose::firehose_debug!(
+                firehose_tracer::firehose_debug!(
                     "  [{i}] BalanceTransfer from={from} to={to} amount={balance}"
                 );
             }
@@ -1189,18 +1204,18 @@ where
                 address,
                 previous_nonce,
             } => {
-                firehose::firehose_debug!(
+                firehose_tracer::firehose_debug!(
                     "  [{i}] NonceChange addr={address} prev_nonce={previous_nonce}"
                 );
             }
             JournalEntry::NonceBump { address } => {
-                firehose::firehose_debug!("  [{i}] NonceBump addr={address}");
+                firehose_tracer::firehose_debug!("  [{i}] NonceBump addr={address}");
             }
             JournalEntry::AccountCreated {
                 address,
                 is_created_globally,
             } => {
-                firehose::firehose_debug!(
+                firehose_tracer::firehose_debug!(
                     "  [{i}] AccountCreated addr={address} global={is_created_globally}"
                 );
             }
@@ -1209,12 +1224,12 @@ where
                 key,
                 had_value,
             } => {
-                firehose::firehose_debug!(
+                firehose_tracer::firehose_debug!(
                     "  [{i}] StorageChanged addr={address} key={key} had={had_value}"
                 );
             }
             JournalEntry::CodeChange { address } => {
-                firehose::firehose_debug!("  [{i}] CodeChange addr={address}");
+                firehose_tracer::firehose_debug!("  [{i}] CodeChange addr={address}");
             }
             // Skip warm/cold tracking and transient storage — not relevant for Firehose
             _ => {}
@@ -1228,20 +1243,20 @@ where
 /// balance, nonce, code hash, and status flags. Useful for inspecting the full state picture
 /// at a given point (e.g. via the OnStateHook after each transaction/system call).
 pub fn log_evm_state(label: &str, state: &reth::revm::revm::state::EvmState) {
-    if !firehose::logging::is_firehose_debug_enabled() {
+    if !firehose_tracer::logging::is_firehose_debug_enabled() {
         return;
     }
 
     if state.is_empty() {
-        firehose::firehose_debug!("{}: evm_state empty", label);
+        firehose_tracer::firehose_debug!("{}: evm_state empty", label);
         return;
     }
 
-    firehose::firehose_debug!("{}: evm_state ({} accounts)", label, state.len());
+    firehose_tracer::firehose_debug!("{}: evm_state ({} accounts)", label, state.len());
     for (addr, account) in state {
         let info = &account.info;
         let storage_count = account.storage.len();
-        firehose::firehose_debug!(
+        firehose_tracer::firehose_debug!(
             "  {addr} balance={} nonce={} code_hash={} status={:?} storage_slots={storage_count}",
             info.balance,
             info.nonce,
