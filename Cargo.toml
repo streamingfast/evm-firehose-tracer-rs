@@ -1,5 +1,5 @@
 [workspace]
-members = ["firehose", "firehose-test", "pb"]
+members = ["firehose-tracer", "firehose-tracer-test"]
 exclude = ["resources"]
 resolver = "2"
 
@@ -8,9 +8,8 @@ edition = "2021"
 
 [workspace.dependencies]
 # Internal workspace crates
-pb = { version = "2.0.0", path = "pb" }
-firehose = { version = "5.0.0-rc.0", path = "firehose" }
-firehose-test = { path = "firehose-test" }
+firehose-tracer = { version = "5.0.0-rc.0", path = "firehose-tracer" }
+firehose-tracer-test = { path = "firehose-tracer-test" }
 
 # Alloy dependencies
 alloy-consensus = "1.5"
