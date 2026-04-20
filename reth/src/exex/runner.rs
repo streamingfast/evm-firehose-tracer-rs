@@ -1,13 +1,18 @@
 use crate::{exex::inspector, exex::mapper, prelude::*};
 use alloy_consensus::transaction::TxHashRef as _;
-use alloy_primitives::Bytes;
+use alloy_primitives::{Address, Bytes};
 use eyre::Context;
 use firehose;
 use reth::chainspec::{EthChainSpec, EthereumHardforks};
 use reth::revm::revm::Database as _;
 use reth_evm::block::TxResult as _;
 use reth_evm::execute::BlockExecutor;
-use reth_provider::{BlockIdReader, StateProviderBox, StateProviderFactory};
+use crate::exex::ChainRevertOverlay;
+use reth_provider::{
+    AccountReader, BlockIdReader, BlockNumReader, DBProvider, DatabaseProviderFactory,
+    LatestStateProvider, NodePrimitivesProvider, RocksDBProviderFactory,
+    StateProviderBox,
+};
 use reth_revm::database::StateProviderDatabase;
 use reth_revm::State;
 
@@ -19,6 +24,12 @@ pub async fn run_loop<Node: FullNodeComponents, F>(
 ) -> eyre::Result<()>
 where
     ChainSpec<Node>: EthereumHardforks + EthChainSpec,
+    // Bounds needed to construct a `HistoricalStateProvider` directly from a read-only
+    // DB provider (bypassing `BlockchainProvider`/`ConsistentProvider`). `FullProvider`
+    // guarantees most of the inner `Provider`'s traits already; these are the extras
+    // required by `HistoricalStateProvider::new` and its `StateProvider` impl.
+    <Node::Provider as DatabaseProviderFactory>::Provider:
+        DBProvider + NodePrimitivesProvider + RocksDBProviderFactory + 'static,
     F: Fn(&SignedTx<Node>) -> (B256, B256, Bytes) + Send + Sync + 'static,
 {
     info!(target: "firehose", "Launching Ethereum tracer");
@@ -47,33 +58,158 @@ where
                     .map(|v| v.eq_ignore_ascii_case("true"))
                     .unwrap_or(false);
 
-                // Build one `State<StateProviderDatabase>` anchored at the chain's fork block
-                // and reuse it for every block in this notification. This mirrors the
-                // `batch_executor` pattern from reth's `re_execute` command: seed the state
-                // once at the parent of the first block, then accumulate changes in-memory
-                // across all blocks in the notification.
+                // === DIAGNOSTIC PROBE: node-level state at notification receipt ===
                 //
-                // We use `history_by_block_hash` (not `state_by_block_hash`) because the
-                // latter also checks pending/in-memory state, which can return wrong state
-                // during initial sync when the in-memory canonical head races ahead of the
-                // persisted state.
+                // We log the provider's view of the chain at the moment we receive this
+                // ChainCommitted notification. This helps diagnose "wrong state" symptoms by
+                // making the in-memory canonical head, the database/static-file tip, and the
+                // range of the just-committed chain directly comparable.
+                //
+                //   best_block_number   — BlockchainProvider returns the canonical in-memory
+                //                         head (`CanonicalInMemoryState::get_canonical_block_number`).
+                //   last_block_number   — static-files tip (static_file_provider.last_block_number()).
+                //                         On a storage_v2 node this also reflects the Execution
+                //                         stage frontier because execution receipts/changesets live
+                //                         in static files.
+                //
+                // If the ChainCommitted notification's range is far behind `best`, that's a
+                // backfill; if it equals `best`, it's live. A wide gap between `best` and `last`
+                // can indicate the in-memory chain and the persisted state disagree.
+                let provider = ctx.provider();
+                let best = provider.best_block_number().ok();
+                let last = provider.last_block_number().ok();
+                info!(
+                    target: "firehose",
+                    chain_range = ?new.range(),
+                    best_block_number = ?best,
+                    last_block_number = ?last,
+                    "ChainCommitted diagnostic probe",
+                );
+
+                // Build one `State<StateProviderDatabase>` anchored at the chain's fork block
+                // and reuse it for every block in this notification.
+                //
+                // `reth_revm::State` keeps a `CacheDB` that retains every account touched by a
+                // transaction and updates it on each `commit_transaction`. Reusing the same
+                // `State` across every block in the chain means:
+                //
+                // 1. The state handed to the EVM for block N+1 already reflects every
+                //    transaction committed in blocks N, N-1, ... within the same notification.
+                //    The historical state provider is only consulted for an account on its
+                //    first access within the notification; subsequent reads hit the cache.
+                //
+                // 2. The historical provider is only queried at the chain's fork block
+                //    (`chain.fork_block()`) rather than each block's parent hash. This reduces
+                //    pressure on the provider and limits the number of opportunities to hit
+                //    whatever provider-level bug might return the wrong state.
+                //
+                // NOTE: this change alone does not fix the root cause of a wrong-state bug.
+                // If `state_by_block_hash(fork_block.hash)` itself returns incorrect state
+                // (e.g. because `fork_block.hash` resolves to `best_block_number ==
+                // last_block_number`, triggering the `LatestStateProviderRef::new` branch in
+                // `DatabaseProvider::history_by_block_hash`), every block in the notification
+                // will be wrong together. The diagnostic probe below flags that case.
                 let fork_block = new.fork_block();
+
+                // === DIAGNOSTIC PROBE: fork-block resolution ===
+                //
+                // `BlockchainProvider::state_by_block_hash` paths:
+                //   - If `fork_block.hash` is in the canonical in-memory chain, returns an
+                //     in-memory overlay (correct).
+                //   - Otherwise calls `DatabaseProvider::history_by_block_hash(hash)`, which:
+                //       1. resolves hash → block_number via HeaderNumbers table,
+                //       2. if `block_number == best == last`, returns a LatestStateProviderRef
+                //          (reads the latest plain-state, NOT a historical snapshot),
+                //       3. else returns `HistoricalStateProviderRef::new(self, block_number+1)`.
+                //
+                // So the "latest fallback" only triggers when the resolved block number equals
+                // both the Finish stage checkpoint AND the static-files tip. For any block
+                // strictly behind those, we take the historical path. Log all three numbers
+                // and their equality so we can tell from production logs which branch fired.
+                let resolved_fork_number = provider.block_number(fork_block.hash).ok().flatten();
                 info!(
                     target: "firehose",
                     fork_block_number = fork_block.number,
                     fork_block_hash = %fork_block.hash,
-                    "Building state provider at fork block",
+                    resolved_block_number = ?resolved_fork_number,
+                    best_block_number = ?best,
+                    last_block_number = ?last,
+                    "Resolving state provider for fork block",
                 );
 
-                let state_provider = ctx
-                    .provider()
-                    .history_by_block_hash(fork_block.hash)
-                    .wrap_err_with(|| {
-                        format!(
-                            "Failed to get historical state provider for chain fork block {} ({})",
-                            fork_block.number, fork_block.hash,
-                        )
-                    })?;
+                // Build a pre-chain state provider by overlaying the notification's own
+                // `BundleState` reverts on top of `LatestStateProvider`.
+                //
+                // Why not `HistoricalStateProvider`? During pipeline backfill the Execution
+                // stage emits `ChainCommitted` BEFORE the history indexing stages
+                // (`IndexAccountHistory`, `IndexStorageHistory`) and `Finish` run. That
+                // makes the `AccountsHistory` / `StoragesHistory` shard indexes empty at
+                // this point, so every historical lookup returns `NotYetWritten` and every
+                // `basic_account` / `storage` call yields `None` — which is exactly what
+                // failed the caller-nonce read that triggered this rewrite.
+                //
+                // The `Chain` notification itself already carries the info we need:
+                // `chain.execution_outcome().bundle.state()` stores, for every touched
+                // account, the pre-chain `original_info` and per-slot
+                // `previous_or_original_value`. See `exex::ChainRevertOverlay` for the full
+                // correctness argument. Untouched accounts/slots pass through to
+                // `LatestStateProvider`, which is always consistent with the post-chain
+                // plain state that the Execution stage just wrote.
+                //
+                // `LatestStateProvider::new` takes ownership of a `DBProvider`-capable
+                // provider; `database_provider_ro()` returns exactly that. The resulting
+                // provider implements all of `StateProvider`'s super-traits (trie roots,
+                // proofs, etc.) via its transaction, which the overlay simply forwards to.
+                let db_provider = ctx.provider().database_provider_ro().wrap_err_with(|| {
+                    format!(
+                        "Failed to open read-only DB provider for chain fork block {} ({})",
+                        fork_block.number, fork_block.hash,
+                    )
+                })?;
+                let baseline: StateProviderBox = Box::new(LatestStateProvider::new(db_provider));
+                let state_provider: StateProviderBox =
+                    Box::new(ChainRevertOverlay::from_chain(baseline, new));
+
+                // === DIAGNOSTIC PROBE: first-tx sender nonce from the state provider ===
+                //
+                // Pre-read the nonce of the first transaction's signer from the state provider
+                // we just constructed, BEFORE wrapping it in `State<DB>`. Compare it against
+                // the tx's declared nonce.
+                //
+                // Invariant: for a tx that landed in the first block of this notification,
+                // the state provider anchored at `fork_block` (= `block.parent_hash()`) must
+                // report `nonce == tx.nonce` for that signer. If it reports something else,
+                // the state provider is lying about historical state, and we know it before
+                // the EVM even sees the transaction.
+                //
+                // We skip this check for deposits (no signer / nonce semantics) and for
+                // notifications whose first block has no transactions.
+                if let Some((first_block, _)) = new.blocks_and_receipts().next() {
+                    for (tx_index, recovered_tx) in
+                        first_block.transactions_recovered().enumerate().take(1)
+                    {
+                        let signer: Address = recovered_tx.signer();
+                        let tx_nonce = recovered_tx.nonce();
+                        let tx_hash = recovered_tx.tx_hash();
+                        let state_nonce = state_provider
+                            .basic_account(&signer)
+                            .ok()
+                            .flatten()
+                            .map(|a| a.nonce);
+                        let matches = state_nonce == Some(tx_nonce);
+                        info!(
+                            target: "firehose",
+                            first_block_number = first_block.number(),
+                            tx_index,
+                            tx_hash = %tx_hash,
+                            signer = %signer,
+                            tx_nonce,
+                            state_nonce = ?state_nonce,
+                            matches,
+                            "First-tx nonce probe (pre-execution)",
+                        );
+                    }
+                }
 
                 let mut shared_state: State<StateProviderDatabase<StateProviderBox>> =
                     State::builder()
@@ -157,6 +293,42 @@ where
         finalized: mapper::to_finalized_ref(ctx.provider().finalized_block_num_hash()),
         flash_block: None,
     });
+
+    let parent_hash = block.parent_hash();
+
+    // === DIAGNOSTIC PROBE: per-block pre-execution state snapshot ===
+    //
+    // At this point `shared_state` holds the cumulative cache from all prior blocks in the
+    // notification. We read the first tx's signer nonce directly from the cached `State<DB>`
+    // (which is what the EVM will see on execution) and compare against the tx's declared
+    // nonce. This catches cross-block drift: if block N-1's commit in `shared_state`
+    // corrupted or failed to update the cache, block N's pre-state will disagree with the
+    // tx's expectations.
+    //
+    // `Database::basic` populates the cache on miss (via the underlying StateProviderDatabase
+    // → StateProviderBox → BlockchainProvider at the fork block), so the first call for a
+    // given address here IS the historical state read, and subsequent calls hit the cache.
+    if let Some(recovered_tx) = block.transactions_recovered().next() {
+        let signer: Address = recovered_tx.signer();
+        let tx_nonce = recovered_tx.nonce();
+        let tx_hash = recovered_tx.tx_hash();
+        let cached_nonce = shared_state
+            .basic(signer)
+            .ok()
+            .flatten()
+            .map(|info| info.nonce);
+        let matches = cached_nonce == Some(tx_nonce);
+        info!(
+            target: "firehose",
+            block = block.number(),
+            tx_hash = %tx_hash,
+            signer = %signer,
+            tx_nonce,
+            cached_nonce = ?cached_nonce,
+            matches,
+            "Per-block first-tx nonce probe (from shared_state cache)",
+        );
+    }
 
     let evm_env = evm_config
         .evm_env(block.header())

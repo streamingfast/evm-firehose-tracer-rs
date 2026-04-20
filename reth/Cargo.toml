@@ -28,3 +28,8 @@ reth-evm = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
 reth-exex = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
 reth-tracing = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
 reth-revm = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-execution-types = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-storage-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-trie-common = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+revm-database = "10.0.0"

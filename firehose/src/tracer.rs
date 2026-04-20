@@ -726,12 +726,20 @@ impl Tracer {
         for (i, call_log) in call_logs.iter().enumerate() {
             let receipt_log = &mut receipt_logs[i];
 
-            // Validate BlockIndex matches
+            // Validate BlockIndex matches. A mismatch indicates the call-log -> receipt-log
+            // alignment is off (typically a symptom of reverted-call filtering or ordering
+            // skew between the two sources). We log and skip the ordinal/index assignment
+            // for this entry rather than panicking so the rest of the block still gets
+            // emitted; downstream consumers will see a receipt log with ordinal=0/index=0.
             if call_log.block_index != receipt_log.block_index {
-                panic!(
-                    "mismatch between call log and receipt log BlockIndex at index {}: call log has {} but receipt log has {}",
-                    i, call_log.block_index, receipt_log.block_index
+                tracing::warn!(
+                    target: "firehose",
+                    log_index = i,
+                    call_block_index = call_log.block_index,
+                    receipt_block_index = receipt_log.block_index,
+                    "mismatch between call log and receipt log block_index; skipping ordinal/index assignment",
                 );
+                continue;
             }
 
             // Assign ordinal and index

@@ -8418,12 +8418,17 @@ dependencies = [
  "reth",
  "reth-cli-util",
  "reth-evm",
+ "reth-execution-types",
  "reth-exex",
  "reth-node-api",
  "reth-node-ethereum",
+ "reth-primitives-traits",
  "reth-provider",
  "reth-revm",
+ "reth-storage-api",
  "reth-tracing",
+ "reth-trie-common",
+ "revm-database",
 ]
 
 [[package]]
