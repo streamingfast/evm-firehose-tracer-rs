@@ -1,7 +1,7 @@
 use alloy_primitives::{Address, Keccak256, B256};
+use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 use firehose_tracer_test::testing_helpers::*;
 use firehose_tracer_test::tracer_tester::{test_legacy_trx, test_set_code_trx, TracerTester};
-use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 
 // Helper function to hash bytes using keccak256
 fn hash_bytes(data: &[u8]) -> B256 {

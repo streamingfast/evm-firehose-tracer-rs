@@ -1,8 +1,8 @@
+use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 use firehose_tracer_test::{
     alice_addr, bob_addr, log0, log1, log2, receipt_at, receipt_with_logs, test_legacy_trx, topic,
     TracerTester,
 };
-use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 
 #[test]
 fn test_receipt_fields_assigned() {

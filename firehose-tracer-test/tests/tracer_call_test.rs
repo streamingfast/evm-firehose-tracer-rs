@@ -1,5 +1,5 @@
-use firehose_tracer_test::{alice_addr, bob_addr, success_receipt, test_legacy_trx, TracerTester};
 use firehose_tracer::pb::sf::ethereum::r#type::v2::CallType;
+use firehose_tracer_test::{alice_addr, bob_addr, success_receipt, test_legacy_trx, TracerTester};
 
 #[test]
 fn test_simple_call() {

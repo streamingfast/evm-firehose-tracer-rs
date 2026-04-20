@@ -1,5 +1,5 @@
-use firehose_tracer_test::{alice_addr, big_int, hash_from_hex, TracerTester};
 use firehose_tracer::types::{BlockData, BlockEvent};
+use firehose_tracer_test::{alice_addr, big_int, hash_from_hex, TracerTester};
 
 // =============================================================================
 // Skipped Block Tests

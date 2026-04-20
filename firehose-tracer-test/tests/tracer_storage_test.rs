@@ -1,4 +1,6 @@
-use firehose_tracer_test::{alice_addr, bob_addr, hash32, success_receipt, test_legacy_trx, TracerTester};
+use firehose_tracer_test::{
+    alice_addr, bob_addr, hash32, success_receipt, test_legacy_trx, TracerTester,
+};
 
 #[test]
 fn test_basic_storage_change() {

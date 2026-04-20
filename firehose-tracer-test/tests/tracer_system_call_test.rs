@@ -1,8 +1,8 @@
+use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 use firehose_tracer_test::{
     alice_addr, beacon_roots_address, bob_addr, hash32, history_storage_address, success_receipt,
     system_address, test_legacy_trx, TracerTester,
 };
-use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 
 // =============================================================================
 // System Call Tests

@@ -1,8 +1,8 @@
+use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 use firehose_tracer_test::{
     alice_addr, bob_addr, failed_receipt, success_receipt, test_legacy_trx, TracerTester,
     ERR_EXECUTION_REVERTED,
 };
-use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 
 // =============================================================================
 // Basic Transaction Tests

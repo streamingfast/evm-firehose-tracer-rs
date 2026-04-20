@@ -1,8 +1,8 @@
 use alloy_primitives::Bytes;
+use firehose_tracer::types::LogData;
 use firehose_tracer_test::{
     alice_addr, bob_addr, charlie_addr, hash32, receipt_with_logs, test_legacy_trx, TracerTester,
 };
-use firehose_tracer::types::LogData;
 
 #[test]
 fn test_log_with_0_topics() {

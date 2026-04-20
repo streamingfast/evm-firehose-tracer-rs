@@ -1601,15 +1601,9 @@ impl Tracer {
             blob_gas_used: block.blob_gas_used,
             excess_blob_gas: block.excess_blob_gas,
             // EIP-4788: Cancun parent beacon block root
-            parent_beacon_root: block
-                .parent_beacon_root
-                .map(|root| root.0.to_vec())
-                .unwrap_or_default(),
+            parent_beacon_root: block.parent_beacon_root.map(|root| root.0.to_vec()),
             // EIP-7685: Prague execution requests hash
-            requests_hash: block
-                .requests_hash
-                .map(|hash| hash.0.to_vec())
-                .unwrap_or_default(),
+            requests_hash: block.requests_hash.map(|hash| hash.0.to_vec()),
             // Polygon-specific: Transaction dependency metadata
             tx_dependency: block.tx_dependency.as_ref().map(|deps| {
                 crate::pb::sf::ethereum::r#type::v2::Uint64NestedArray {

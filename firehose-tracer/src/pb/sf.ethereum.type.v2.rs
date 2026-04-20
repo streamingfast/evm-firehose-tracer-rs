@@ -76,31 +76,31 @@
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Block {
     /// Hash is the block's hash.
-    #[prost(bytes="vec", tag="2")]
+    #[prost(bytes = "vec", tag = "2")]
     pub hash: ::prost::alloc::vec::Vec<u8>,
     /// Number is the block's height at which this block was mined.
-    #[prost(uint64, tag="3")]
+    #[prost(uint64, tag = "3")]
     pub number: u64,
     /// Size is the size in bytes of the RLP encoding of the block according to Ethereum
     /// rules.
-    #[prost(uint64, tag="4")]
+    #[prost(uint64, tag = "4")]
     pub size: u64,
     /// Header contain's the block's header information like its parent hash, the merkel root hash
     /// and all other information the form a block.
-    #[prost(message, optional, tag="5")]
+    #[prost(message, optional, tag = "5")]
     pub header: ::core::option::Option<BlockHeader>,
     /// Uncles represents block produced with a valid solution but were not actually chosen
     /// as the canonical block for the given height so they are mostly "forked" blocks.
     ///
     /// If the Block has been produced using the Proof of Stake consensus algorithm, this
     /// field will actually be always empty.
-    #[prost(message, repeated, tag="6")]
+    #[prost(message, repeated, tag = "6")]
     pub uncles: ::prost::alloc::vec::Vec<BlockHeader>,
     /// TransactionTraces hold the execute trace of all the transactions that were executed
     /// in this block. In in there that you will find most of the Ethereum data model.
     ///
     /// They are ordered by the order of execution of the transaction in the block.
-    #[prost(message, repeated, tag="10")]
+    #[prost(message, repeated, tag = "10")]
     pub transaction_traces: ::prost::alloc::vec::Vec<TransactionTrace>,
     /// BalanceChanges here is the array of ETH transfer that happened at the block level
     /// outside of the normal transaction flow of a block. The best example of this is mining
@@ -109,7 +109,7 @@ pub struct Block {
     /// attached it to any transaction.
     ///
     /// Only available in DetailLevel: EXTENDED
-    #[prost(message, repeated, tag="11")]
+    #[prost(message, repeated, tag = "11")]
     pub balance_changes: ::prost::alloc::vec::Vec<BalanceChange>,
     /// DetailLevel affects the data available in this block.
     ///
@@ -127,7 +127,7 @@ pub struct Block {
     /// Furthermore, the eth_getTransactionReceipt call has been avoided because it
     /// brings only minimal improvements at the cost of requiring an archive node
     /// or a full node with complete transaction index.
-    #[prost(enumeration="block::DetailLevel", tag="12")]
+    #[prost(enumeration = "block::DetailLevel", tag = "12")]
     pub detail_level: i32,
     /// CodeChanges here is the array of smart code change that happened that happened at the block level
     /// outside of the normal transaction flow of a block. Some Ethereum's fork like BSC and Polygon
@@ -139,12 +139,12 @@ pub struct Block {
     /// that this happen rarely, so the vast majority of block will have an empty list here.
     ///
     /// Only available in DetailLevel: EXTENDED
-    #[prost(message, repeated, tag="20")]
+    #[prost(message, repeated, tag = "20")]
     pub code_changes: ::prost::alloc::vec::Vec<CodeChange>,
     /// System calls are introduced in Cancun, along with blobs. They are executed outside of transactions but affect the state.
     ///
     /// Only available in DetailLevel: EXTENDED
-    #[prost(message, repeated, tag="21")]
+    #[prost(message, repeated, tag = "21")]
     pub system_calls: ::prost::alloc::vec::Vec<Call>,
     /// Withdrawals represents the list of validator balance withdrawals processed in this block.
     /// Introduced in the Shanghai hard fork (EIP-4895).
@@ -154,11 +154,11 @@ pub struct Block {
     /// NOT ready for production use yet as we validate the tracing implementation.
     ///
     /// Only available when Shanghai fork is active on the chain.
-    #[prost(message, repeated, tag="22")]
+    #[prost(message, repeated, tag = "22")]
     pub withdrawals: ::prost::alloc::vec::Vec<Withdrawal>,
     /// Ver represents that data model version of the block, it is used internally by Firehose on Ethereum
     /// as a validation that we are reading the correct version.
-    #[prost(int32, tag="1")]
+    #[prost(int32, tag = "1")]
     pub ver: i32,
 }
 /// Nested message and enum types in `Block`.
@@ -194,44 +194,44 @@ pub mod block {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BlockHeader {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub parent_hash: ::prost::alloc::vec::Vec<u8>,
     /// Uncle hash of the block, some reference it as `sha3Uncles`, but `sha3`` is badly worded, so we prefer `uncle_hash`, also
     /// referred as `ommers` in EIP specification.
     ///
     /// If the Block containing this `BlockHeader` has been produced using the Proof of Stake
     /// consensus algorithm, this field will actually be constant and set to `0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347`.
-    #[prost(bytes="vec", tag="2")]
+    #[prost(bytes = "vec", tag = "2")]
     pub uncle_hash: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="3")]
+    #[prost(bytes = "vec", tag = "3")]
     pub coinbase: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="4")]
+    #[prost(bytes = "vec", tag = "4")]
     pub state_root: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="5")]
+    #[prost(bytes = "vec", tag = "5")]
     pub transactions_root: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="6")]
+    #[prost(bytes = "vec", tag = "6")]
     pub receipt_root: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="7")]
+    #[prost(bytes = "vec", tag = "7")]
     pub logs_bloom: ::prost::alloc::vec::Vec<u8>,
     /// Difficulty is the difficulty of the Proof of Work algorithm that was required to compute a solution.
     ///
     /// If the Block containing this `BlockHeader` has been produced using the Proof of Stake
     /// consensus algorithm, this field will actually be constant and set to `0x00`.
-    #[prost(message, optional, tag="8")]
+    #[prost(message, optional, tag = "8")]
     pub difficulty: ::core::option::Option<BigInt>,
     /// TotalDifficulty used to be the sum of all previous blocks difficulty including this block difficulty.
     ///
     /// It has been deprecated in geth v1.15.0 but was already removed from the JSON-RPC interface for a while
     #[deprecated]
-    #[prost(message, optional, tag="17")]
+    #[prost(message, optional, tag = "17")]
     pub total_difficulty: ::core::option::Option<BigInt>,
-    #[prost(uint64, tag="9")]
+    #[prost(uint64, tag = "9")]
     pub number: u64,
-    #[prost(uint64, tag="10")]
+    #[prost(uint64, tag = "10")]
     pub gas_limit: u64,
-    #[prost(uint64, tag="11")]
+    #[prost(uint64, tag = "11")]
     pub gas_used: u64,
-    #[prost(message, optional, tag="12")]
+    #[prost(message, optional, tag = "12")]
     pub timestamp: ::core::option::Option<::prost_types::Timestamp>,
     /// ExtraData is free-form bytes included in the block by the "miner". While on Yellow paper of
     /// Ethereum this value is maxed to 32 bytes, other consensus algorithm like Clique and some other
@@ -239,18 +239,18 @@ pub struct BlockHeader {
     ///
     /// If the Block containing this `BlockHeader` has been produced using the Proof of Stake
     /// consensus algorithm, this field is strictly enforced to be <= 32 bytes.
-    #[prost(bytes="vec", tag="13")]
+    #[prost(bytes = "vec", tag = "13")]
     pub extra_data: ::prost::alloc::vec::Vec<u8>,
     /// MixHash is used to prove, when combined with the `nonce` that sufficient amount of computation has been
     /// achieved and that the solution found is valid.
-    #[prost(bytes="vec", tag="14")]
+    #[prost(bytes = "vec", tag = "14")]
     pub mix_hash: ::prost::alloc::vec::Vec<u8>,
     /// Nonce is used to prove, when combined with the `mix_hash` that sufficient amount of computation has been
     /// achieved and that the solution found is valid.
     ///
     /// If the Block containing this `BlockHeader` has been produced using the Proof of Stake
     /// consensus algorithm, this field will actually be constant and set to `0`.
-    #[prost(uint64, tag="15")]
+    #[prost(uint64, tag = "15")]
     pub nonce: u64,
     /// Hash is the hash of the block which is actually the computation:
     ///
@@ -278,15 +278,15 @@ pub struct BlockHeader {
     ///     requests_hash (to be included only if Prague fork is active)
     ///   ]))
     ///
-    #[prost(bytes="vec", tag="16")]
+    #[prost(bytes = "vec", tag = "16")]
     pub hash: ::prost::alloc::vec::Vec<u8>,
     /// Base fee per gas according to EIP-1559 (e.g. London Fork) rules, only set if London is present/active on the chain.
-    #[prost(message, optional, tag="18")]
+    #[prost(message, optional, tag = "18")]
     pub base_fee_per_gas: ::core::option::Option<BigInt>,
     /// Withdrawals root hash according to EIP-4895 (e.g. Shanghai Fork) rules, only set if Shanghai is present/active on the chain.
     ///
     /// Only available in DetailLevel: EXTENDED
-    #[prost(bytes="vec", tag="19")]
+    #[prost(bytes = "vec", tag = "19")]
     pub withdrawals_root: ::prost::alloc::vec::Vec<u8>,
     /// TxDependency is list of transaction indexes that are dependent on each other in the block
     /// header. This is metadata only that was used by the internal Polygon parallel execution engine.
@@ -296,41 +296,44 @@ pub struct BlockHeader {
     /// code to determine how to extract it if you need it.
     ///
     /// Only available in DetailLevel: EXTENDED
-    #[prost(message, optional, tag="20")]
+    #[prost(message, optional, tag = "20")]
     pub tx_dependency: ::core::option::Option<Uint64NestedArray>,
     /// BlobGasUsed was added by EIP-4844 and is ignored in legacy headers.
-    #[prost(uint64, optional, tag="22")]
+    #[prost(uint64, optional, tag = "22")]
     pub blob_gas_used: ::core::option::Option<u64>,
-    /// ExcessBlobGas was added by EIP-4844 and is ignored in legacy headers.
-    #[prost(uint64, optional, tag="23")]
+    /// ExcessBlobGas was added by EIP-4844 and is ignored in legacy headers, this has been added
+    /// in Cancun hard fork.
+    #[prost(uint64, optional, tag = "23")]
     pub excess_blob_gas: ::core::option::Option<u64>,
-    /// ParentBeaconRoot was added by EIP-4788 and is ignored in legacy headers.
-    #[prost(bytes="vec", tag="24")]
-    pub parent_beacon_root: ::prost::alloc::vec::Vec<u8>,
-    /// RequestsHash was added by EIP-7685 and is ignored in legacy headers.
-    #[prost(bytes="vec", tag="25")]
-    pub requests_hash: ::prost::alloc::vec::Vec<u8>,
+    /// ParentBeaconRoot was added by EIP-4788 and is ignored in legacy headers, this has been added
+    /// in Cancun hard fork.
+    #[prost(bytes = "vec", optional, tag = "24")]
+    pub parent_beacon_root: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    /// RequestsHash was added by EIP-7685 and is ignored in legacy headers, this has been added in
+    /// Prague hard fork.
+    #[prost(bytes = "vec", optional, tag = "25")]
+    pub requests_hash: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
     /// SlotNumber was added by EIP-7843 and is ignored in legacy headers, it is scheduled to
     /// be added in Amsterdam hard fork.
-    #[prost(uint64, optional, tag="26")]
+    #[prost(uint64, optional, tag = "26")]
     pub slot_number: ::core::option::Option<u64>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Uint64NestedArray {
-    #[prost(message, repeated, tag="1")]
+    #[prost(message, repeated, tag = "1")]
     pub val: ::prost::alloc::vec::Vec<Uint64Array>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Uint64Array {
-    #[prost(uint64, repeated, tag="1")]
+    #[prost(uint64, repeated, tag = "1")]
     pub val: ::prost::alloc::vec::Vec<u64>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BigInt {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub bytes: ::prost::alloc::vec::Vec<u8>,
 }
 /// TransactionTrace is full trace of execution of the transaction when the
@@ -364,9 +367,9 @@ pub struct BigInt {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TransactionTrace {
     /// consensus
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub to: ::prost::alloc::vec::Vec<u8>,
-    #[prost(uint64, tag="2")]
+    #[prost(uint64, tag = "2")]
     pub nonce: u64,
     /// GasPrice represents the effective price that has been paid for each gas unit of this transaction. Over time, the
     /// Ethereum rules changes regarding GasPrice field here. Before London fork, the GasPrice was always set to the
@@ -377,40 +380,40 @@ pub struct TransactionTrace {
     ///
     /// In cases where `TransactionTrace.Type == TRX_TYPE_DYNAMIC_FEE`, then GasPrice is the effective gas price paid
     /// for the transaction which is equals to `BlockHeader.BaseFeePerGas + TransactionTrace.`
-    #[prost(message, optional, tag="3")]
+    #[prost(message, optional, tag = "3")]
     pub gas_price: ::core::option::Option<BigInt>,
     /// GasLimit is the maximum of gas unit the sender of the transaction is willing to consume when perform the EVM
     /// execution of the whole transaction
-    #[prost(uint64, tag="4")]
+    #[prost(uint64, tag = "4")]
     pub gas_limit: u64,
     /// Value is the amount of Ether transferred as part of this transaction.
-    #[prost(message, optional, tag="5")]
+    #[prost(message, optional, tag = "5")]
     pub value: ::core::option::Option<BigInt>,
     /// Input data the transaction will receive for execution of EVM.
-    #[prost(bytes="vec", tag="6")]
+    #[prost(bytes = "vec", tag = "6")]
     pub input: ::prost::alloc::vec::Vec<u8>,
     /// V is the recovery ID value for the signature Y point.
-    #[prost(bytes="vec", tag="7")]
+    #[prost(bytes = "vec", tag = "7")]
     pub v: ::prost::alloc::vec::Vec<u8>,
     /// R is the signature's X point on the elliptic curve (32 bytes).
-    #[prost(bytes="vec", tag="8")]
+    #[prost(bytes = "vec", tag = "8")]
     pub r: ::prost::alloc::vec::Vec<u8>,
     /// S is the signature's Y point on the elliptic curve (32 bytes).
-    #[prost(bytes="vec", tag="9")]
+    #[prost(bytes = "vec", tag = "9")]
     pub s: ::prost::alloc::vec::Vec<u8>,
     /// GasUsed is the total amount of gas unit used for the whole execution of the transaction.
-    #[prost(uint64, tag="10")]
+    #[prost(uint64, tag = "10")]
     pub gas_used: u64,
     /// Type represents the Ethereum transaction type, available only since EIP-2718 & EIP-2930 activation which happened on Berlin fork.
     /// The value is always set even for transaction before Berlin fork because those before the fork are still legacy transactions.
-    #[prost(enumeration="transaction_trace::Type", tag="12")]
+    #[prost(enumeration = "transaction_trace::Type", tag = "12")]
     pub r#type: i32,
     /// AccessList represents the storage access this transaction has agreed to do in which case those storage
     /// access cost less gas unit per access.
     ///
     /// This will is populated only if `TransactionTrace.Type == TRX_TYPE_ACCESS_LIST || TRX_TYPE_DYNAMIC_FEE` which
     /// is possible only if Berlin (TRX_TYPE_ACCESS_LIST) nor London (TRX_TYPE_DYNAMIC_FEE) fork are active on the chain.
-    #[prost(message, repeated, tag="14")]
+    #[prost(message, repeated, tag = "14")]
     pub access_list: ::prost::alloc::vec::Vec<AccessTuple>,
     /// MaxFeePerGas is the maximum fee per gas the user is willing to pay for the transaction gas used.
     ///
@@ -418,7 +421,7 @@ pub struct TransactionTrace {
     /// if London fork is active on the chain.
     ///
     /// Only available in DetailLevel: EXTENDED
-    #[prost(message, optional, tag="11")]
+    #[prost(message, optional, tag = "11")]
     pub max_fee_per_gas: ::core::option::Option<BigInt>,
     /// MaxPriorityFeePerGas is priority fee per gas the user to pay in extra to the miner on top of the block's
     /// base fee.
@@ -427,14 +430,14 @@ pub struct TransactionTrace {
     /// if London fork is active on the chain.
     ///
     /// Only available in DetailLevel: EXTENDED
-    #[prost(message, optional, tag="13")]
+    #[prost(message, optional, tag = "13")]
     pub max_priority_fee_per_gas: ::core::option::Option<BigInt>,
     /// meta
-    #[prost(uint32, tag="20")]
+    #[prost(uint32, tag = "20")]
     pub index: u32,
-    #[prost(bytes="vec", tag="21")]
+    #[prost(bytes = "vec", tag = "21")]
     pub hash: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="22")]
+    #[prost(bytes = "vec", tag = "22")]
     pub from: ::prost::alloc::vec::Vec<u8>,
     /// Only available in DetailLevel: EXTENDED
     /// Known Issues
@@ -442,18 +445,18 @@ pub struct TransactionTrace {
     ///     Field not populated. It will be empty.
     ///
     ///     Fixed in `Version 4`, see <https://docs.substreams.dev/reference-material/chains-and-endpoints/ethereum-data-model> for information about block versions.
-    #[prost(bytes="vec", tag="23")]
+    #[prost(bytes = "vec", tag = "23")]
     pub return_data: ::prost::alloc::vec::Vec<u8>,
     /// Only available in DetailLevel: EXTENDED
-    #[prost(bytes="vec", tag="24")]
+    #[prost(bytes = "vec", tag = "24")]
     pub public_key: ::prost::alloc::vec::Vec<u8>,
     /// The block's global ordinal when the transaction started executing, refer to
     /// \[Block\] documentation for further information about ordinals and total ordering.
-    #[prost(uint64, tag="25")]
+    #[prost(uint64, tag = "25")]
     pub begin_ordinal: u64,
     /// The block's global ordinal when the transaction finished executing, refer to
     /// \[Block\] documentation for further information about ordinals and total ordering.
-    #[prost(uint64, tag="26")]
+    #[prost(uint64, tag = "26")]
     pub end_ordinal: u64,
     /// TransactionTraceStatus is the status of the transaction execution and will let you know if the transaction
     /// was successful or not.
@@ -481,12 +484,12 @@ pub struct TransactionTrace {
     /// balance changes you process those where `reason` is either `REASON_GAS_BUY`, `REASON_GAS_REFUND` or
     /// `REASON_REWARD_TRANSACTION_FEE` and for nonce change, still on the root call, you pick the nonce change which the
     /// smallest ordinal (if more than one).
-    #[prost(enumeration="TransactionTraceStatus", tag="30")]
+    #[prost(enumeration = "TransactionTraceStatus", tag = "30")]
     pub status: i32,
-    #[prost(message, optional, tag="31")]
+    #[prost(message, optional, tag = "31")]
     pub receipt: ::core::option::Option<TransactionReceipt>,
     /// Only available in DetailLevel: EXTENDED
-    #[prost(message, repeated, tag="32")]
+    #[prost(message, repeated, tag = "32")]
     pub calls: ::prost::alloc::vec::Vec<Call>,
     /// BlobGas is the amount of gas the transaction is going to pay for the blobs, this is a computed value
     /// equivalent to `self.blob_gas_fee_cap * len(self.blob_hashes)` and provided in the model for convenience.
@@ -495,7 +498,7 @@ pub struct TransactionTrace {
     ///
     /// This will is populated only if `TransactionTrace.Type == TRX_TYPE_BLOB` which is possible only
     /// if Cancun fork is active on the chain.
-    #[prost(uint64, optional, tag="33")]
+    #[prost(uint64, optional, tag = "33")]
     pub blob_gas: ::core::option::Option<u64>,
     /// BlobGasFeeCap is the maximum fee per data gas the user is willing to pay for the data gas used.
     ///
@@ -503,7 +506,7 @@ pub struct TransactionTrace {
     ///
     /// This will is populated only if `TransactionTrace.Type == TRX_TYPE_BLOB` which is possible only
     /// if Cancun fork is active on the chain.
-    #[prost(message, optional, tag="34")]
+    #[prost(message, optional, tag = "34")]
     pub blob_gas_fee_cap: ::core::option::Option<BigInt>,
     /// BlobHashes field represents a list of hash outputs from 'kzg_to_versioned_hash' which
     /// essentially is a version byte + the sha256 hash of the blob commitment (e.g.
@@ -513,7 +516,7 @@ pub struct TransactionTrace {
     ///
     /// This will is populated only if `TransactionTrace.Type == TRX_TYPE_BLOB` which is possible only
     /// if Cancun fork is active on the chain.
-    #[prost(bytes="vec", repeated, tag="35")]
+    #[prost(bytes = "vec", repeated, tag = "35")]
     pub blob_hashes: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
     /// SetCodeAuthorizations represents the authorizations of a transaction to set code to an EOA (Externally Owned Accounts)
     /// as defined in EIP-7702. The list will contain all the authorizations as they were specified in the
@@ -525,7 +528,7 @@ pub struct TransactionTrace {
     ///
     /// This will is populated only if `TransactionTrace.Type == TRX_TYPE_SET_CODE` which is possible only
     /// if Prague fork is active on the chain.
-    #[prost(message, repeated, tag="36")]
+    #[prost(message, repeated, tag = "36")]
     pub set_code_authorizations: ::prost::alloc::vec::Vec<SetCodeAuthorization>,
 }
 /// Nested message and enum types in `TransactionTrace`.
@@ -620,9 +623,9 @@ pub mod transaction_trace {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AccessTuple {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub address: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", repeated, tag="2")]
+    #[prost(bytes = "vec", repeated, tag = "2")]
     pub storage_keys: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
 }
 /// SetCodeAuthorization represents the authorization of a transaction to set code of an EOA (Externally Owned Account)
@@ -646,11 +649,11 @@ pub struct SetCodeAuthorization {
     /// authorization list.
     ///
     /// This boolean records if the authorization was discarded or not by the chain due to invalidity.
-    #[prost(bool, tag="1")]
+    #[prost(bool, tag = "1")]
     pub discarded: bool,
     /// ChainID is the chain ID of the chain where the transaction was executed, used
     /// to recover the authority from the signature.
-    #[prost(bytes="vec", tag="2")]
+    #[prost(bytes = "vec", tag = "2")]
     pub chain_id: ::prost::alloc::vec::Vec<u8>,
     /// Address contains the address this account is delegating to. This address usually
     /// contain code that this account essentially "delegates" to.
@@ -658,7 +661,7 @@ pub struct SetCodeAuthorization {
     /// Note: This was missing when EIP-7702 was first activated on Holesky, Sepolia, BSC Chapel,
     /// BSC Mainnet and Arbitrum Sepolia but was ready for Ethereum Mainnet hard fork. We will backfill
     /// those missing values in the near future at which point we will remove this note.
-    #[prost(bytes="vec", tag="8")]
+    #[prost(bytes = "vec", tag = "8")]
     pub address: ::prost::alloc::vec::Vec<u8>,
     /// Nonce is the nonce of the account that is authorizing delegation mechanism, EIP-7702 rules
     /// states that nonce should be verified using this rule:
@@ -667,24 +670,24 @@ pub struct SetCodeAuthorization {
     /// verify that nonce is equal to 0.
     ///
     /// Read SetCodeAuthorization to know how to recover the `authority` value.
-    #[prost(uint64, tag="3")]
+    #[prost(uint64, tag = "3")]
     pub nonce: u64,
     /// V is the recovery ID value for the signature Y point. While it's defined as a
     /// `uint32`, it's actually bounded by a `uint8` data type withing the Ethereum protocol.
-    #[prost(uint32, tag="4")]
+    #[prost(uint32, tag = "4")]
     pub v: u32,
     /// R is the signature's X point on the elliptic curve (32 bytes).
-    #[prost(bytes="vec", tag="5")]
+    #[prost(bytes = "vec", tag = "5")]
     pub r: ::prost::alloc::vec::Vec<u8>,
     /// S is the signature's Y point on the elliptic curve (32 bytes).
-    #[prost(bytes="vec", tag="6")]
+    #[prost(bytes = "vec", tag = "6")]
     pub s: ::prost::alloc::vec::Vec<u8>,
     /// Authority is the address of the account that is authorizing delegation mechanism, it
     /// is computed from the signature contained in the message and stored for convenience.
     ///
     /// If the authority cannot be recovered from the signature, this field will be empty and
     /// the `discarded` field will be set to `true`.
-    #[prost(bytes="vec", optional, tag="7")]
+    #[prost(bytes = "vec", optional, tag = "7")]
     pub authority: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -701,13 +704,13 @@ pub struct TransactionReceipt {
     /// field, following `EIP-658`.
     ///
     /// Before Byzantinium hard fork, this field is always empty.
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub state_root: ::prost::alloc::vec::Vec<u8>,
-    #[prost(uint64, tag="2")]
+    #[prost(uint64, tag = "2")]
     pub cumulative_gas_used: u64,
-    #[prost(bytes="vec", tag="3")]
+    #[prost(bytes = "vec", tag = "3")]
     pub logs_bloom: ::prost::alloc::vec::Vec<u8>,
-    #[prost(message, repeated, tag="4")]
+    #[prost(message, repeated, tag = "4")]
     pub logs: ::prost::alloc::vec::Vec<Log>,
     /// BlobGasUsed is the amount of blob gas that has been used within this transaction. At time
     /// of writing, this is equal to `self.blob_gas_fee_cap * len(self.blob_hashes)`.
@@ -716,7 +719,7 @@ pub struct TransactionReceipt {
     ///
     /// This will is populated only if `TransactionTrace.Type == TRX_TYPE_BLOB` which is possible only
     /// if Cancun fork is active on the chain.
-    #[prost(uint64, optional, tag="5")]
+    #[prost(uint64, optional, tag = "5")]
     pub blob_gas_used: ::core::option::Option<u64>,
     /// BlobGasPrice is the amount to pay per blob item in the transaction.
     ///
@@ -724,24 +727,24 @@ pub struct TransactionReceipt {
     ///
     /// This will is populated only if `TransactionTrace.Type == TRX_TYPE_BLOB` which is possible only
     /// if Cancun fork is active on the chain.
-    #[prost(message, optional, tag="6")]
+    #[prost(message, optional, tag = "6")]
     pub blob_gas_price: ::core::option::Option<BigInt>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Log {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub address: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", repeated, tag="2")]
+    #[prost(bytes = "vec", repeated, tag = "2")]
     pub topics: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
-    #[prost(bytes="vec", tag="3")]
+    #[prost(bytes = "vec", tag = "3")]
     pub data: ::prost::alloc::vec::Vec<u8>,
     /// Index is the index of the log relative to the transaction. This index
     /// is always populated regardless of the state reversion of the the call
     /// that emitted this log.
     ///
     /// Only available in DetailLevel: EXTENDED
-    #[prost(uint32, tag="4")]
+    #[prost(uint32, tag = "4")]
     pub index: u32,
     /// BlockIndex represents the index of the log relative to the Block.
     ///
@@ -758,27 +761,27 @@ pub struct Log {
     ///
     /// In the case of `calls` case, for `call` where `stateReverted == true`,
     /// the `blockIndex` value will always be 0.
-    #[prost(uint32, tag="6")]
+    #[prost(uint32, tag = "6")]
     pub block_index: u32,
     /// The block's global ordinal when the log was recorded, refer to \[Block\]
     /// documentation for further information about ordinals and total ordering.
-    #[prost(uint64, tag="7")]
+    #[prost(uint64, tag = "7")]
     pub ordinal: u64,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Call {
-    #[prost(uint32, tag="1")]
+    #[prost(uint32, tag = "1")]
     pub index: u32,
-    #[prost(uint32, tag="2")]
+    #[prost(uint32, tag = "2")]
     pub parent_index: u32,
-    #[prost(uint32, tag="3")]
+    #[prost(uint32, tag = "3")]
     pub depth: u32,
-    #[prost(enumeration="CallType", tag="4")]
+    #[prost(enumeration = "CallType", tag = "4")]
     pub call_type: i32,
-    #[prost(bytes="vec", tag="5")]
+    #[prost(bytes = "vec", tag = "5")]
     pub caller: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="6")]
+    #[prost(bytes = "vec", tag = "6")]
     pub address: ::prost::alloc::vec::Vec<u8>,
     /// AddressDelegatesTo contains the address from which the actual code to execute will be loaded
     /// as defined per EIP-7702 rules. If the Call's address value resolves to a code
@@ -797,15 +800,15 @@ pub struct Call {
     ///
     /// It will be populated only if EIP-7702 is active on the chain (Prague fork) and if the
     /// 'address' of the call was pointing to another address at time of execution.
-    #[prost(bytes="vec", optional, tag="34")]
+    #[prost(bytes = "vec", optional, tag = "34")]
     pub address_delegates_to: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
-    #[prost(message, optional, tag="7")]
+    #[prost(message, optional, tag = "7")]
     pub value: ::core::option::Option<BigInt>,
-    #[prost(uint64, tag="8")]
+    #[prost(uint64, tag = "8")]
     pub gas_limit: u64,
-    #[prost(uint64, tag="9")]
+    #[prost(uint64, tag = "9")]
     pub gas_consumed: u64,
-    #[prost(bytes="vec", tag="13")]
+    #[prost(bytes = "vec", tag = "13")]
     pub return_data: ::prost::alloc::vec::Vec<u8>,
     /// Known Issues
     /// - Version 3:
@@ -814,7 +817,7 @@ pub struct Call {
     ///       2. In the root `CREATE` call, you can directly use the `TransactionTrace`'s input field.
     ///
     ///     Fixed in `Version 4`, see <https://docs.substreams.dev/reference-material/chains-and-endpoints/ethereum-data-model> for information about block versions.
-    #[prost(bytes="vec", tag="14")]
+    #[prost(bytes = "vec", tag = "14")]
     pub input: ::prost::alloc::vec::Vec<u8>,
     /// Indicates whether the call executed code.
     ///
@@ -826,27 +829,29 @@ pub struct Call {
     ///     and later adjusted if the tracer detects an account without code.
     ///
     ///     Fixed in `Version 4`, see <https://docs.substreams.dev/reference-material/chains-and-endpoints/ethereum-data-model> for information about block versions.
-    #[prost(bool, tag="15")]
+    #[prost(bool, tag = "15")]
     pub executed_code: bool,
-    #[prost(bool, tag="16")]
+    #[prost(bool, tag = "16")]
     pub suicide: bool,
-    /// hex representation of the hash -> preimage 
-    #[prost(map="string, string", tag="20")]
-    pub keccak_preimages: ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
+    /// hex representation of the hash -> preimage
+    /// Note: not populated by the Monad tracer, the Monad execution layer does not emit keccak preimage events
+    #[prost(map = "string, string", tag = "20")]
+    pub keccak_preimages:
+        ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
     /// Known Issues
     /// - Version 3:
     ///     The data might be not be in order.
     ///
     ///     Fixed in `Version 4`, see <https://docs.substreams.dev/reference-material/chains-and-endpoints/ethereum-data-model> for information about block versions.
-    #[prost(message, repeated, tag="21")]
+    #[prost(message, repeated, tag = "21")]
     pub storage_changes: ::prost::alloc::vec::Vec<StorageChange>,
-    #[prost(message, repeated, tag="22")]
+    #[prost(message, repeated, tag = "22")]
     pub balance_changes: ::prost::alloc::vec::Vec<BalanceChange>,
-    #[prost(message, repeated, tag="24")]
+    #[prost(message, repeated, tag = "24")]
     pub nonce_changes: ::prost::alloc::vec::Vec<NonceChange>,
-    #[prost(message, repeated, tag="25")]
+    #[prost(message, repeated, tag = "25")]
     pub logs: ::prost::alloc::vec::Vec<Log>,
-    #[prost(message, repeated, tag="26")]
+    #[prost(message, repeated, tag = "26")]
     pub code_changes: ::prost::alloc::vec::Vec<CodeChange>,
     /// Known Issues
     /// - Version 3:
@@ -855,7 +860,7 @@ pub struct Call {
     ///       2. Initial gas allocation (0 -> GasLimit) at the start of a call.
     ///       3. Final gas deduction (LeftOver -> 0) at the end of a call (if applicable).
     ///     Fixed in `Version 4`, see <https://docs.substreams.dev/reference-material/chains-and-endpoints/ethereum-data-model> for information about block versions.
-    #[prost(message, repeated, tag="28")]
+    #[prost(message, repeated, tag = "28")]
     pub gas_changes: ::prost::alloc::vec::Vec<GasChange>,
     /// In Ethereum, a call can be either:
     /// - Successful, execution passes without any problem encountered
@@ -865,13 +870,13 @@ pub struct Call {
     /// When a call is either `failed` or `reverted`, the `status_failed` field
     /// below is set to `true`. If the status is `reverted`, then both `status_failed`
     /// and `status_reverted` are going to be set to `true`.
-    #[prost(bool, tag="10")]
+    #[prost(bool, tag = "10")]
     pub status_failed: bool,
-    #[prost(bool, tag="12")]
+    #[prost(bool, tag = "12")]
     pub status_reverted: bool,
     /// Populated when a call either failed or reverted, so when `status_failed == true`,
     /// see above for details about those flags.
-    #[prost(string, tag="11")]
+    #[prost(string, tag = "11")]
     pub failure_reason: ::prost::alloc::string::String,
     /// This field represents whether or not the state changes performed
     /// by this call were correctly recorded by the blockchain.
@@ -902,7 +907,7 @@ pub struct Call {
     ///
     /// Refer to \[TransactionTrace#status\] field for more details about the handling you must
     /// perform.
-    #[prost(bool, tag="30")]
+    #[prost(bool, tag = "30")]
     pub state_reverted: bool,
     /// Known Issues
     /// - Version 3:
@@ -913,7 +918,7 @@ pub struct Call {
     ///       `trx.Calls\[0\].BeginOrdinal = trx.BeginOrdinal`.
     ///
     ///     Fixed in `Version 4`, see <https://docs.substreams.dev/reference-material/chains-and-endpoints/ethereum-data-model> for information about block versions.
-    #[prost(uint64, tag="31")]
+    #[prost(uint64, tag = "31")]
     pub begin_ordinal: u64,
     /// Known Issues
     /// - Version 3:
@@ -923,29 +928,29 @@ pub struct Call {
     ///      `rx.Calls\[0\].EndOrdinal = max.Uint64`.
     ///
     ///     Fixed in `Version 4`, see <https://docs.substreams.dev/reference-material/chains-and-endpoints/ethereum-data-model> for information about block versions.
-    #[prost(uint64, tag="32")]
+    #[prost(uint64, tag = "32")]
     pub end_ordinal: u64,
     /// Known Issues
     /// - Version 4:
     ///     AccountCreations are NOT SUPPORTED anymore. DO NOT rely on them.
     #[deprecated]
-    #[prost(message, repeated, tag="33")]
+    #[prost(message, repeated, tag = "33")]
     pub account_creations: ::prost::alloc::vec::Vec<AccountCreation>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StorageChange {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub address: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="2")]
+    #[prost(bytes = "vec", tag = "2")]
     pub key: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="3")]
+    #[prost(bytes = "vec", tag = "3")]
     pub old_value: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="4")]
+    #[prost(bytes = "vec", tag = "4")]
     pub new_value: ::prost::alloc::vec::Vec<u8>,
     /// The block's global ordinal when the storage change was recorded, refer to \[Block\]
     /// documentation for further information about ordinals and total ordering.
-    #[prost(uint64, tag="5")]
+    #[prost(uint64, tag = "5")]
     pub ordinal: u64,
 }
 /// Note: Balance changes may occur even for failed transactions in certain cases (see Block documentation for details).
@@ -953,7 +958,7 @@ pub struct StorageChange {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BalanceChange {
     /// Address is the address of the account that has changed balance.
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub address: ::prost::alloc::vec::Vec<u8>,
     /// OldValue is the balance of the address before the change. This value
     /// can be **nil/null/None** if there was no previous balance for the address.
@@ -964,7 +969,7 @@ pub struct BalanceChange {
     /// ```ignore
     ///      let old_value = old_value.unwrap_or_default();
     /// ```
-    #[prost(message, optional, tag="2")]
+    #[prost(message, optional, tag = "2")]
     pub old_value: ::core::option::Option<BigInt>,
     /// NewValue is the balance of the address after the change. This value
     /// can be **nil/null/None** if there was no previous balance for the address
@@ -976,15 +981,15 @@ pub struct BalanceChange {
     /// ```ignore
     ///      let new_value = new_value.unwrap_or_default();
     /// ```
-    #[prost(message, optional, tag="3")]
+    #[prost(message, optional, tag = "3")]
     pub new_value: ::core::option::Option<BigInt>,
     /// Reason is the reason why the balance has changed. This is useful to determine
     /// why the balance has changed and what is the context of the change.
-    #[prost(enumeration="balance_change::Reason", tag="4")]
+    #[prost(enumeration = "balance_change::Reason", tag = "4")]
     pub reason: i32,
     /// The block's global ordinal when the balance change was recorded, refer to \[Block\]
     /// documentation for further information about ordinals and total ordering.
-    #[prost(uint64, tag="5")]
+    #[prost(uint64, tag = "5")]
     pub ordinal: u64,
 }
 /// Nested message and enum types in `BalanceChange`.
@@ -1140,44 +1145,44 @@ pub mod balance_change {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct NonceChange {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub address: ::prost::alloc::vec::Vec<u8>,
-    #[prost(uint64, tag="2")]
+    #[prost(uint64, tag = "2")]
     pub old_value: u64,
-    #[prost(uint64, tag="3")]
+    #[prost(uint64, tag = "3")]
     pub new_value: u64,
     /// The block's global ordinal when the nonce change was recorded, refer to \[Block\]
     /// documentation for further information about ordinals and total ordering.
-    #[prost(uint64, tag="4")]
+    #[prost(uint64, tag = "4")]
     pub ordinal: u64,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AccountCreation {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub account: ::prost::alloc::vec::Vec<u8>,
     /// The block's global ordinal when the account creation was recorded, refer to \[Block\]
     /// documentation for further information about ordinals and total ordering.
-    #[prost(uint64, tag="2")]
+    #[prost(uint64, tag = "2")]
     pub ordinal: u64,
 }
 /// Note: Code changes may have special handling for failed transactions (see Block documentation for details).
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CodeChange {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub address: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="2")]
+    #[prost(bytes = "vec", tag = "2")]
     pub old_hash: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="3")]
+    #[prost(bytes = "vec", tag = "3")]
     pub old_code: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="4")]
+    #[prost(bytes = "vec", tag = "4")]
     pub new_hash: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes="vec", tag="5")]
+    #[prost(bytes = "vec", tag = "5")]
     pub new_code: ::prost::alloc::vec::Vec<u8>,
     /// The block's global ordinal when the code change was recorded, refer to \[Block\]
     /// documentation for further information about ordinals and total ordering.
-    #[prost(uint64, tag="6")]
+    #[prost(uint64, tag = "6")]
     pub ordinal: u64,
 }
 /// The gas change model represents the reason why some gas cost has occurred.
@@ -1189,15 +1194,15 @@ pub struct CodeChange {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct GasChange {
-    #[prost(uint64, tag="1")]
+    #[prost(uint64, tag = "1")]
     pub old_value: u64,
-    #[prost(uint64, tag="2")]
+    #[prost(uint64, tag = "2")]
     pub new_value: u64,
-    #[prost(enumeration="gas_change::Reason", tag="3")]
+    #[prost(enumeration = "gas_change::Reason", tag = "3")]
     pub reason: i32,
     /// The block's global ordinal when the gas change was recorded, refer to \[Block\]
     /// documentation for further information about ordinals and total ordering.
-    #[prost(uint64, tag="4")]
+    #[prost(uint64, tag = "4")]
     pub ordinal: u64,
 }
 /// Nested message and enum types in `GasChange`.
@@ -1415,7 +1420,9 @@ pub mod gas_change {
                 "REASON_WITNESS_CONTRACT_INIT" => Some(Self::WitnessContractInit),
                 "REASON_WITNESS_CONTRACT_CREATION" => Some(Self::WitnessContractCreation),
                 "REASON_WITNESS_CODE_CHUNK" => Some(Self::WitnessCodeChunk),
-                "REASON_WITNESS_CONTRACT_COLLISION_CHECK" => Some(Self::WitnessContractCollisionCheck),
+                "REASON_WITNESS_CONTRACT_COLLISION_CHECK" => {
+                    Some(Self::WitnessContractCollisionCheck)
+                }
                 "REASON_TX_DATA_FLOOR" => Some(Self::TxDataFloor),
                 _ => None,
             }
@@ -1431,7 +1438,7 @@ pub mod gas_change {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct HeaderOnlyBlock {
-    #[prost(message, optional, tag="5")]
+    #[prost(message, optional, tag = "5")]
     pub header: ::core::option::Option<BlockHeader>,
 }
 /// BlockWithRefs is a lightweight block, with traces and transactions
@@ -1440,35 +1447,35 @@ pub struct HeaderOnlyBlock {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BlockWithRefs {
-    #[prost(string, tag="1")]
+    #[prost(string, tag = "1")]
     pub id: ::prost::alloc::string::String,
-    #[prost(message, optional, tag="2")]
+    #[prost(message, optional, tag = "2")]
     pub block: ::core::option::Option<Block>,
-    #[prost(message, optional, tag="3")]
+    #[prost(message, optional, tag = "3")]
     pub transaction_trace_refs: ::core::option::Option<TransactionRefs>,
-    #[prost(bool, tag="4")]
+    #[prost(bool, tag = "4")]
     pub irreversible: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TransactionTraceWithBlockRef {
-    #[prost(message, optional, tag="1")]
+    #[prost(message, optional, tag = "1")]
     pub trace: ::core::option::Option<TransactionTrace>,
-    #[prost(message, optional, tag="2")]
+    #[prost(message, optional, tag = "2")]
     pub block_ref: ::core::option::Option<BlockRef>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TransactionRefs {
-    #[prost(bytes="vec", repeated, tag="1")]
+    #[prost(bytes = "vec", repeated, tag = "1")]
     pub hashes: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BlockRef {
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub hash: ::prost::alloc::vec::Vec<u8>,
-    #[prost(uint64, tag="2")]
+    #[prost(uint64, tag = "2")]
     pub number: u64,
 }
 /// Withdrawal represents a validator withdrawal from the beacon chain to the EVM.
@@ -1477,17 +1484,31 @@ pub struct BlockRef {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Withdrawal {
     /// Index is the monotonically increasing identifier of the withdrawal
-    #[prost(uint64, tag="1")]
+    #[prost(uint64, tag = "1")]
     pub index: u64,
     /// ValidatorIndex is the index of the validator that is withdrawing
-    #[prost(uint64, tag="2")]
+    #[prost(uint64, tag = "2")]
     pub validator_index: u64,
     /// Address is the Ethereum address receiving the withdrawn funds
-    #[prost(bytes="vec", tag="3")]
+    #[prost(bytes = "vec", tag = "3")]
     pub address: ::prost::alloc::vec::Vec<u8>,
     /// Amount is the value of the withdrawal in gwei (1 gwei = 1e9 wei)
-    #[prost(uint64, tag="4")]
+    #[prost(uint64, tag = "4")]
     pub amount: u64,
+}
+/// BoolOptional and BoolRequired are test messages used to verify the wire-encoding
+/// difference between optional bool (state: true / false / nil) and plain bool
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct BoolOptional {
+    #[prost(bool, optional, tag = "1")]
+    pub state: ::core::option::Option<bool>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct BoolRequired {
+    #[prost(bool, tag = "1")]
+    pub state: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

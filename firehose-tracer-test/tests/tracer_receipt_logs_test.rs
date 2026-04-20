@@ -1,9 +1,9 @@
 use alloy_primitives::Address;
+use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 use firehose_tracer_test::{
     alice_addr, big_int, bob_addr, charlie_addr, failed_receipt_with_logs, log0, log1, log2,
     receipt_at, receipt_with_logs, test_legacy_trx, topic, TracerTester, ERR_EXECUTION_REVERTED,
 };
-use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 
 // =============================================================================
 // Receipt Assignment Tests

@@ -1,8 +1,8 @@
+use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 use firehose_tracer_test::{
     alice_addr, big_int, bob_addr, charlie_addr, success_receipt, test_access_list_trx,
     test_blob_trx, test_dynamic_fee_trx, test_legacy_trx, test_set_code_trx, TracerTester,
 };
-use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 
 // =============================================================================
 // Transaction Type Tests
