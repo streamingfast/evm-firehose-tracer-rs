@@ -328,10 +328,6 @@ impl FirehosePlugin {
                     B256::from(txn_header_start.txn_hash.bytes)
                 );
 
-                // if self.tracer.is_in_system_call() {
-                //     self.tracer.on_system_call_end();
-                // }
-
                 let h = &txn_header_start.txn_header;
                 let blob_gas_fee_cap =
                     alloy_primitives::U256::from_limbs(h.max_fee_per_blob_gas.limbs);
@@ -479,8 +475,6 @@ impl FirehosePlugin {
             ExecEvent::TxnEnd => {
                 tracing::debug!("txn end");
 
-                // self.tracer.flush_open_calls(0);
-
                 let receipt_logs = std::mem::take(&mut self.pending_receipt_logs);
                 let mut bloom = alloy_primitives::Bloom::ZERO;
                 for log in &receipt_logs {
@@ -562,10 +556,6 @@ impl FirehosePlugin {
             } => {
                 tracing::debug!("txn call frame (txn={:?} depth={} opcode=0x{:02x} from={:?} to={:?} gas={} gas_used={} status={})", txn_index, txn_call_frame.depth, txn_call_frame.opcode, alloy_primitives::Address::from(txn_call_frame.caller.bytes), alloy_primitives::Address::from(txn_call_frame.call_target.bytes), txn_call_frame.gas, txn_call_frame.gas_used, txn_call_frame.evmc_status);
 
-                // if !self.tracer.is_in_transaction() {
-                //     self.tracer.on_system_call_start();
-                // }
-
                 let depth = txn_call_frame.depth as i32;
                 let from = alloy_primitives::Address::from(txn_call_frame.caller.bytes);
                 let to = alloy_primitives::Address::from(txn_call_frame.call_target.bytes);
@@ -601,11 +591,6 @@ impl FirehosePlugin {
                     header.access_context,
                     header.entry_count
                 );
-
-                // if header.access_context == AccountAccessContext::Transaction as u8 {
-                //     // flush all sub-calls but keep the root call open
-                //     self.tracer.flush_open_calls(1);
-                // }
             }
             ExecEvent::AccountAccess(account_access) => {
                 tracing::debug!(
