@@ -920,12 +920,6 @@ where
 
         log_journal("create_enter", context);
 
-        // For root-level CREATE/CREATE2 (depth 0), the TxEvent.to was None (contract creation),
-        // leaving the transaction trace's `to` field empty. Patch it now that we know the address.
-        if depth == 0 {
-            self.tracer.set_transaction_to(created_address);
-        }
-
         if depth == 0 {
             // Same rationale as in `call` hook: skip process_journal_changes at depth 0
             // to avoid double-emitting deduct_caller's BalanceChange/NonceBump with wrong
