@@ -322,9 +322,6 @@ impl FirehosePlugin {
                 data_bytes,
                 blob_bytes,
             } => {
-                if txn_index == 0 {
-                    panic!("TEST PANIC: mid-block at txn_index=0");
-                }
                 tracing::debug!(
                     "txn header start (txn={} hash={:?})",
                     txn_index,
