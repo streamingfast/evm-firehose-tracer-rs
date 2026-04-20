@@ -2,7 +2,9 @@ use crate::{exex::inspector, exex::mapper, prelude::*};
 use eyre::Context;
 use firehose;
 use reth::chainspec::{EthChainSpec, EthereumHardforks};
+use reth::revm::revm::Database as _;
 use reth_evm::execute::BlockExecutor;
+use reth_evm::block::TxResult as _;
 use reth_provider::BlockIdReader;
 
 /// Ethereum-specific firehose tracer
@@ -161,11 +163,52 @@ where
             .tracer_mut()
             .on_tx_start(tx_event, Some(state_reader));
 
-        // execute_transaction accepts Recovered<&SignedTx<Node>> directly (ExecutableTx impl)
-        // Inspector hooks (on_call_enter, on_call_exit, on_opcode, etc.) fire automatically
-        executor
-            .execute_transaction(recovered_tx)
+        // execute_transaction_without_commit runs the full EVM execution (including post-execution
+        // gas refund and miner fee) and returns the final EvmState without committing to DB.
+        // Inspector hooks (on_call_enter, on_call_exit, on_opcode, etc.) fire during transact().
+        let tx_result = executor
+            .execute_transaction_without_commit(recovered_tx)
             .wrap_err_with(|| format!("Failed to execute transaction {tx_index}"))?;
+
+        // Emit post-execution balance changes (gas refund to sender, miner fee to coinbase).
+        // revm's post_execution runs reimburse_caller and reward_beneficiary after the last
+        // inspector hook, so we explicitly compute and emit them using Ethereum gas rules.
+        {
+            let result_gas_used = tx_result.result().result.gas_used();
+            let sender = recovered_tx.signer();
+            let coinbase = block.header().beneficiary();
+            let gas_limit = tx.gas_limit();
+            let base_fee = block.header().base_fee_per_gas().unwrap_or(0);
+            let effective_gas_price: u128 = if tx.is_dynamic_fee() {
+                std::cmp::min(
+                    tx.max_fee_per_gas(),
+                    base_fee as u128 + tx.max_priority_fee_per_gas().unwrap_or(0),
+                )
+            } else {
+                tx.gas_price().unwrap_or(0)
+            };
+
+            let (db, inspector, _) = executor.evm_mut().components_mut();
+            inspector.process_post_tx_balance_changes(
+                sender,
+                coinbase,
+                gas_limit,
+                result_gas_used,
+                effective_gas_price,
+                base_fee,
+                |addr| {
+                    db.basic(addr)
+                        .ok()
+                        .flatten()
+                        .map(|info| info.balance)
+                        .unwrap_or(U256::ZERO)
+                },
+            );
+        }
+
+        executor
+            .commit_transaction(tx_result)
+            .wrap_err_with(|| format!("Failed to commit transaction {tx_index}"))?;
 
         let cumulative_gas = receipt.cumulative_gas_used();
         let gas_used = cumulative_gas - prev_cumulative_gas;
