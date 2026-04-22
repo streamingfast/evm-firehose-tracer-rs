@@ -13,7 +13,7 @@ use super::{
     open_callstack::{OpenCall, OpenCallStack},
     ordinal::Ordinal,
 };
-use crate::pb::sf::ethereum::r#type::v2::{Block, Call, TransactionTrace};
+use crate::pb::sf::ethereum::r#type::v2::{Block, Call, TransactionTrace, Withdrawal};
 use crate::types::{BlockEvent, FlashBlockData, ReceiptData, StateReader, TxEvent};
 use crate::{
     config::ChainConfig, config::Rules, firehose_debug, firehose_info, firehose_trace, utils,
@@ -304,6 +304,14 @@ impl Tracer {
     pub fn on_block_start(&mut self, event: BlockEvent) {
         self.ensure_blockchain_init();
 
+        // Defensive cleanup: if the previous block's on_block_end was never called
+        // (e.g., an executor error returned early without cleanup), reset leftover
+        // state so this block can start cleanly instead of panicking downstream.
+        if self.block.is_some() {
+            self.reset_block();
+            self.reset_transaction();
+        }
+
         let block_data = &event.block;
         let block_number = block_data.number;
 
@@ -353,9 +361,15 @@ impl Tracer {
             self.block_base_fee = Some(base_fee);
         }
 
-        // Note: Block withdrawals (EIP-4895) are always recorded in v5 when present.
-        // The protobuf Block does not yet have a withdrawals array field in this Rust version.
-        // Withdrawals root hash is set in the block header (see new_block_header_from_block_data).
+        // Populate EIP-4895 withdrawals into the block.
+        if let Some(block) = &mut self.block {
+            block.withdrawals = block_data.withdrawals.iter().map(|w| Withdrawal {
+                index: w.index,
+                validator_index: w.validator_index,
+                address: w.address.0.to_vec(),
+                amount: w.amount,
+            }).collect();
+        }
 
         // Populate finality status
         if let Some(finalized) = event.finalized {
