@@ -363,12 +363,16 @@ impl Tracer {
 
         // Populate EIP-4895 withdrawals into the block.
         if let Some(block) = &mut self.block {
-            block.withdrawals = block_data.withdrawals.iter().map(|w| Withdrawal {
-                index: w.index,
-                validator_index: w.validator_index,
-                address: w.address.0.to_vec(),
-                amount: w.amount,
-            }).collect();
+            block.withdrawals = block_data
+                .withdrawals
+                .iter()
+                .map(|w| Withdrawal {
+                    index: w.index,
+                    validator_index: w.validator_index,
+                    address: w.address.0.to_vec(),
+                    amount: w.amount,
+                })
+                .collect();
         }
 
         // Populate finality status
@@ -684,7 +688,7 @@ impl Tracer {
         }
 
         // Step 5: Check if root call reverted (overrides receipt status)
-        if root_call_reverted {
+        if root_call_reverted && !self.block_rules.is_optimism {
             trx.status =
                 crate::pb::sf::ethereum::r#type::v2::TransactionTraceStatus::Reverted as i32;
         }

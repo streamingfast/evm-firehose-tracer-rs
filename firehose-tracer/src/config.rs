@@ -72,6 +72,7 @@ impl ChainConfig {
             is_cancun: self.is_cancun(num, timestamp),
             is_prague: self.is_prague(num, timestamp),
             is_verkle: self.is_verkle(num, timestamp),
+            is_optimism: is_optimism(self.chain_id),
         }
     }
 }
@@ -105,6 +106,36 @@ pub struct Rules {
 
     /// Verkle tree transition
     pub is_verkle: bool,
+
+    /// Optimism-based chain
+    pub is_optimism: bool,
+}
+
+/// Returns whether the given chain comes from optimism stack
+fn is_optimism(chain_id: u64) -> bool {
+    match chain_id {
+        8453 | 84532 => true,        // base, base-sepolia
+        10 | 11155420 => true,       // OP mainnet + testnet
+        57073 | 763373 => true,      // Ink mainnet + testnet
+        1135 | 4202 => true,         // Lisk mainnet + testnet
+        1750 | 1740 => true,         // Metal L2 mainnet + testnet
+        34443 | 919 => true,         // Mode mainnet + testnet
+        8008 => true,                // Polynomial mainnet
+        360 | 11011 => true,         // Shape mainnet + testnet
+        5330 => true,                // Superseed mainnet
+        1923 => true,                // Swell mainnet
+        7897 | 9899 => true,         // arena-z mainnet + testnet
+        183 | 233 => true,           // Ethernity mainnet + testnet
+        480 | 4801 => true,          // Worldchain + testnet
+        747474 | 737373 => true,     // Katana + testnet
+        130 | 1301 => true,          // Unichain mainnet + testnet
+        204 | 5611 => true,          // OP BNB mainnet + testnet
+        1868 | 1946 => true,         // Soneium
+        7777777 | 999999999 => true, // Zora + testnet
+        252 | 2523 => true,          // Fraxtal + testnet
+        17000 | 17001 => true,       // Zircuit mainnet + testnet
+        _ => false,
+    }
 }
 
 impl Rules {
@@ -117,6 +148,7 @@ impl Rules {
             is_cancun: false,
             is_prague: false,
             is_verkle: false,
+            is_optimism: is_optimism(chain_id),
         }
     }
 
@@ -147,6 +179,12 @@ impl Rules {
     /// Builder method to set Verkle flag
     pub fn with_verkle(mut self, is_verkle: bool) -> Self {
         self.is_verkle = is_verkle;
+        self
+    }
+
+    /// Builder method to set Optimism flag
+    pub fn with_optimism(mut self, is_optimism: bool) -> Self {
+        self.is_optimism = is_optimism;
         self
     }
 }
