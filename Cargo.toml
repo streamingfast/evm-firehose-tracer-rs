@@ -1,5 +1,5 @@
 [workspace]
-members = ["firehose", "firehose-test", "monad", "pb", "reth"]
+members = ["firehose", "firehose-test", "pb", "reth"]
 exclude = ["resources"]
 resolver = "2"
 
@@ -38,9 +38,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
 color-eyre = "0.6"
 
-# Monad-specific dependencies
-monad-exec-events = { git = "https://github.com/streamingfast/monad-bft", branch = "feature/add-sys-calls-v0.12.7" }
-monad-event-ring = { git = "https://github.com/streamingfast/monad-bft", branch = "feature/add-sys-calls-v0.12.7" }
 
 [patch.crates-io]
 # Patch alloy-evm to inspect system calls (EIP-4788, EIP-2935, etc.) through the
