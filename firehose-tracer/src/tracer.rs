@@ -552,10 +552,14 @@ impl Tracer {
             to: event.to.map(|a| a.0.to_vec()).unwrap_or_default(),
             nonce: event.nonce,
             gas_limit: event.gas,
+            // Match streamingfast/go-ethereum (release/optimism-1.x-fh3.0) firehose.go:
+            // a zero effective gas price is encoded as nil (omitted) rather than the
+            // explicit "00" big-int. This is the OP deposit-tx case
+            // (tx.gas_price()=None and max_fee_per_gas=None → effective price collapses to 0).
             gas_price: if is_genesis {
                 None
             } else {
-                utils::u256_to_protobuf_always(effective_gas_price)
+                utils::u256_to_protobuf(effective_gas_price)
             },
             value: if is_genesis {
                 None
