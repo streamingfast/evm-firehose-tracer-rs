@@ -410,3 +410,86 @@ fn test_system_call_before_and_after_transaction() {
             );
         });
 }
+
+/// reth/alloy-evm wraps `apply_pre_execution_changes` (which runs EIP-2935 then EIP-4788)
+/// in ONE `OnSystemCallStart`/`OnSystemCallEnd` pair. Geth's firehose tracer wraps each
+/// EIP separately and applies them in the opposite order (EIP-4788 then EIP-2935), so each
+/// system call lands in `block.system_calls` with `call.index = 1`.
+///
+/// `on_system_call_end` reverses the accumulated calls and stamps `index = 1` on every
+/// entry to match the geth shape regardless of how many system calls share a single window.
+#[test]
+fn test_two_system_calls_in_one_window_are_reversed_and_indexed_at_1() {
+    use firehose_tracer::types::Opcode;
+
+    let beacon_root = hash32(7777);
+    let parent_hash = hash32(8888);
+
+    let mut tester = TracerTester::new();
+    tester.start_block().start_system_call();
+
+    // Mimic alloy-evm's apply order inside a single system-call window:
+    //   1. EIP-2935: blockhash history (parent_hash → history_storage_address)
+    //   2. EIP-4788: beacon root (beacon_root → beacon_roots_address)
+    tester
+        .tracer
+        .on_call_enter(
+            0,
+            Opcode::Call as u8,
+            system_address(),
+            history_storage_address(),
+            &parent_hash.0,
+            30_000_000,
+            alloy_primitives::U256::ZERO,
+        );
+    tester
+        .tracer
+        .on_call_exit(0, &[], 45_000, None, false);
+    tester
+        .tracer
+        .on_call_enter(
+            0,
+            Opcode::Call as u8,
+            system_address(),
+            beacon_roots_address(),
+            &beacon_root.0,
+            30_000_000,
+            alloy_primitives::U256::ZERO,
+        );
+    tester
+        .tracer
+        .on_call_exit(0, &[], 50_000, None, false);
+
+    tester
+        .end_system_call()
+        .start_trx(test_legacy_trx())
+        .start_call(alice_addr(), bob_addr(), alloy_primitives::U256::ZERO, 21000, vec![])
+        .end_call(vec![], 21000)
+        .end_block_trx(Some(success_receipt(21000)), None, None)
+        .validate(|block| {
+            assert_eq!(2, block.system_calls.len(), "two system calls");
+
+            // Reversed: beacon comes BEFORE blockhash even though execution order was
+            // (blockhash, beacon) — matching geth's spec-canonical order.
+            let first = &block.system_calls[0];
+            let second = &block.system_calls[1];
+            assert_eq!(
+                beacon_roots_address().as_slice(),
+                first.address.as_slice(),
+                "first system call after reversal must be beacon root (EIP-4788)",
+            );
+            assert_eq!(
+                history_storage_address().as_slice(),
+                second.address.as_slice(),
+                "second system call after reversal must be blockhash history (EIP-2935)",
+            );
+
+            // Both stamped to index = 1 — geth wraps each system call separately so neither
+            // ever sees a sibling in its own window, leaving the call_stack reset between.
+            assert_eq!(
+                1, first.index,
+                "every system call's index is forced to 1 to match geth"
+            );
+            assert_eq!(1, second.index, "every system call's index is forced to 1");
+        });
+}
