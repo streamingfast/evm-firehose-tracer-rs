@@ -491,6 +491,25 @@ fn test_two_system_calls_in_one_window_are_reversed_and_indexed_at_1() {
                 "every system call's index is forced to 1 to match geth"
             );
             assert_eq!(1, second.index, "every system call's index is forced to 1");
+
+            // Ordinals must follow array order: the canonical-first call (beacon) carries
+            // the LOWER ordinal range, even though it executed second in alloy-evm. Without
+            // ordinal swapping the trace would have first.begin_ordinal > second.begin_ordinal,
+            // which contradicts geth's per-window emission and the firehose ordinal contract.
+            assert!(
+                first.begin_ordinal < second.begin_ordinal,
+                "canonical-first call must carry lower begin_ordinal than canonical-second \
+                 (got first={}, second={})",
+                first.begin_ordinal,
+                second.begin_ordinal,
+            );
+            assert!(
+                first.end_ordinal < second.begin_ordinal,
+                "canonical-first call must end before canonical-second starts \
+                 (got first.end={}, second.begin={})",
+                first.end_ordinal,
+                second.begin_ordinal,
+            );
         });
 }
 

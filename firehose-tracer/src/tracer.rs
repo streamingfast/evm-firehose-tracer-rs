@@ -1507,6 +1507,13 @@ impl Tracer {
             let calls = std::mem::take(&mut trx.calls);
             let mut groups = Self::partition_into_call_groups(calls);
 
+            // Snapshot every group's ordinal range BEFORE we sort, so we can later swap
+            // the ranges so they line up with each group's NEW position. Without this,
+            // a canonical-reordered window has begin/end_ordinal values that contradict
+            // the array order — geth's first system call would carry HIGHER ordinals
+            // than the second, since alloy-evm executed them in the opposite order.
+            let original_ranges = Self::snapshot_group_ordinal_ranges(&groups);
+
             // Reorder ONLY when every root in the window is a recognized system-call
             // predeploy. Unknown root → leave the whole window in execution order to
             // avoid rearranging something we don't understand.
@@ -1515,6 +1522,11 @@ impl Tracer {
                 .all(|g| canonical_system_call_position(&g[0].address).is_some());
             if all_known {
                 groups.sort_by_key(|g| canonical_system_call_position(&g[0].address));
+                // Walk groups in their NEW (canonical) order and assign each one the
+                // i-th smallest original ordinal range, shifting every event in the
+                // group by a uniform delta. This preserves intra-group ordering while
+                // making inter-group ordinals match geth's per-window emission order.
+                Self::reassign_group_ordinal_ranges(&mut groups, &original_ranges);
             } else if groups.len() > 1 {
                 firehose_debug!(
                     "system call window has {} groups but at least one root address is \
@@ -1584,6 +1596,152 @@ impl Tracer {
             if call.parent_index > 0 {
                 call.parent_index = call.parent_index.saturating_sub(offset);
             }
+        }
+    }
+
+    /// Snapshot each group's `(min_ord, max_ord)` range over every ordinal-bearing
+    /// field across every call in the group (begin/end ordinals plus per-event
+    /// ordinals on balance/nonce/code/storage/gas/log/account-creation entries).
+    ///
+    /// Two system calls in a single window do not interleave at the ordinal level —
+    /// no other event fires between one root call's `end_ordinal` and the next
+    /// root call's `begin_ordinal` (deferred state aside; see the deferred-call
+    /// machinery, which attaches to the next call rather than emitting standalone
+    /// ordinals). So a group's ordinals form a contiguous range, and ranges across
+    /// groups are non-overlapping and totally ordered.
+    fn snapshot_group_ordinal_ranges(groups: &[Vec<Call>]) -> Vec<(u64, u64)> {
+        groups
+            .iter()
+            .map(|group| {
+                let mut min_ord = u64::MAX;
+                let mut max_ord = 0u64;
+                for call in group {
+                    let mut update = |o: u64| {
+                        if o < min_ord {
+                            min_ord = o;
+                        }
+                        if o > max_ord {
+                            max_ord = o;
+                        }
+                    };
+                    update(call.begin_ordinal);
+                    update(call.end_ordinal);
+                    for c in &call.balance_changes {
+                        update(c.ordinal);
+                    }
+                    for c in &call.nonce_changes {
+                        update(c.ordinal);
+                    }
+                    for c in &call.code_changes {
+                        update(c.ordinal);
+                    }
+                    for c in &call.storage_changes {
+                        update(c.ordinal);
+                    }
+                    for c in &call.gas_changes {
+                        update(c.ordinal);
+                    }
+                    for log in &call.logs {
+                        update(log.ordinal);
+                    }
+                    #[allow(deprecated)]
+                    for ac in &call.account_creations {
+                        update(ac.ordinal);
+                    }
+                }
+                if min_ord == u64::MAX {
+                    (0, 0)
+                } else {
+                    (min_ord, max_ord)
+                }
+            })
+            .collect()
+    }
+
+    /// Reassign per-group ordinal ranges so a window that's been sorted into
+    /// canonical order presents ordinals in matching ascending order.
+    ///
+    /// `original_ranges` is the snapshot taken from `groups` BEFORE sorting; it's in
+    /// execution order (matching `groups` at snapshot time). After `groups.sort_by_key`
+    /// the i-th group is the i-th in canonical order, and we want it to carry the
+    /// i-th *smallest* original range. We sort `original_ranges` ascending and pair
+    /// them up; for each group we apply a uniform delta to every ordinal-bearing
+    /// field so its `min_ord` lands on the target range's start. Inner ordering is
+    /// preserved because the delta is constant within a group.
+    fn reassign_group_ordinal_ranges(
+        groups: &mut [Vec<Call>],
+        original_ranges: &[(u64, u64)],
+    ) {
+        if groups.len() <= 1 {
+            return;
+        }
+        let mut sorted_ranges = original_ranges.to_vec();
+        sorted_ranges.sort_by_key(|(min, _)| *min);
+
+        // Each group's CURRENT range (we computed `original_ranges` before the sort,
+        // so by index those are now in the wrong slot — recompute per-group post-sort).
+        let current_ranges = Self::snapshot_group_ordinal_ranges(groups);
+
+        for (i, group) in groups.iter_mut().enumerate() {
+            let target = sorted_ranges[i];
+            let current = current_ranges[i];
+            // Width must match (groups don't grow/shrink across this transformation).
+            // If they ever differ — orphan child or unexpected event between groups —
+            // fall back to no-op rather than producing inconsistent ordinals.
+            let target_width = target.1.saturating_sub(target.0);
+            let current_width = current.1.saturating_sub(current.0);
+            if target_width != current_width {
+                firehose_debug!(
+                    "system call ordinal swap: group {} width mismatch \
+                     (current={}..={}, target={}..={}); skipping ordinal rewrite",
+                    i,
+                    current.0,
+                    current.1,
+                    target.0,
+                    target.1,
+                );
+                continue;
+            }
+            if current.0 == target.0 {
+                continue; // already in place
+            }
+            // Compute delta as i64 to handle both directions safely.
+            let delta = target.0 as i64 - current.0 as i64;
+            for call in group.iter_mut() {
+                Self::shift_call_ordinals(call, delta);
+            }
+        }
+    }
+
+    /// Apply `delta` to every ordinal-bearing field on `call`. `delta` may be
+    /// negative; arithmetic is checked-cast through i64.
+    fn shift_call_ordinals(call: &mut Call, delta: i64) {
+        let shift = |o: &mut u64| {
+            *o = (*o as i64 + delta) as u64;
+        };
+        shift(&mut call.begin_ordinal);
+        shift(&mut call.end_ordinal);
+        for c in &mut call.balance_changes {
+            shift(&mut c.ordinal);
+        }
+        for c in &mut call.nonce_changes {
+            shift(&mut c.ordinal);
+        }
+        for c in &mut call.code_changes {
+            shift(&mut c.ordinal);
+        }
+        for c in &mut call.storage_changes {
+            shift(&mut c.ordinal);
+        }
+        for c in &mut call.gas_changes {
+            shift(&mut c.ordinal);
+        }
+        for log in &mut call.logs {
+            shift(&mut log.ordinal);
+        }
+        #[allow(deprecated)]
+        for ac in &mut call.account_creations {
+            shift(&mut ac.ordinal);
         }
     }
 
