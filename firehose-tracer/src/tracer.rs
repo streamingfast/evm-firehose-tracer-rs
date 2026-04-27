@@ -2,7 +2,52 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use alloy_eips::{
+    eip2935::HISTORY_STORAGE_ADDRESS, eip4788::BEACON_ROOTS_ADDRESS,
+    eip7002::WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS,
+    eip7251::CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS,
+};
 use alloy_primitives::{Address, B256, U256};
+
+/// System-call predeploys in geth's canonical apply order
+/// (release/optimism-1.x-fh3.0 firehose tracer).
+///
+/// `on_system_call_end` uses this list to:
+///   1. Re-sort system calls in a single window into geth's order. alloy-evm runs
+///      EIP-2935 (HISTORY_STORAGE) before EIP-4788 (BEACON_ROOTS) inside a single
+///      `apply_pre_execution_changes`; geth wraps each separately and applies them in
+///      the reverse order. The two predeploys touch independent storage slots in
+///      independent contracts via the same caller, so reordering the trace is purely
+///      cosmetic — chain state is invariant.
+///   2. Decide whether reordering is safe at all. Only when EVERY root call in the
+///      window has its address listed below do we apply the canonical order. If any
+///      root call is unknown (chain-specific predeploy, future EIP, custom system call,
+///      …), the window passes through in execution order — no silent rearrangement.
+///
+/// Renumbering (resetting `call.index` to start at 1 within each group) is applied
+/// unconditionally because geth's per-window wrapping always resets the call_stack
+/// between system calls; that's a property of the model, not of any specific EIP.
+///
+/// To support a new system-call EIP, append its predeploy address here in geth's
+/// apply order. Until that's done the new EIP just won't get reordered, which is the
+/// safe default.
+const CANONICAL_SYSTEM_CALL_ORDER: [Address; 4] = [
+    BEACON_ROOTS_ADDRESS,                     // EIP-4788 (Cancun, pre-execution)
+    HISTORY_STORAGE_ADDRESS,                  // EIP-2935 (Prague, pre-execution)
+    WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS,     // EIP-7002 (Prague, post-execution)
+    CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS,  // EIP-7251 (Prague, post-execution)
+];
+
+/// Position of `addr` in [`CANONICAL_SYSTEM_CALL_ORDER`], or `None` if the address is
+/// not a known system-call predeploy. The protobuf `Call.address` field is a raw
+/// `Vec<u8>`, so we accept a byte slice.
+fn canonical_system_call_position(addr: &[u8]) -> Option<usize> {
+    if addr.len() != 20 {
+        return None;
+    }
+    let address = Address::from_slice(addr);
+    CANONICAL_SYSTEM_CALL_ORDER.iter().position(|a| *a == address)
+}
 
 use super::{
     callstack::CallStack,
@@ -1425,43 +1470,121 @@ impl Tracer {
         self.transaction = Some(TransactionTrace::default());
     }
 
-    /// OnSystemCallEnd is called when a system call ends (chain-specific)
+    /// OnSystemCallEnd is called when a system call ends (chain-specific).
+    ///
+    /// Reshapes the accumulated calls to match streamingfast/go-ethereum's firehose
+    /// tracer (release/optimism-1.x-fh3.0/eth/tracers/firehose.go), which wraps each
+    /// system call (EIP-4788, EIP-2935, …) in its own `OnSystemCallStart`/`End` pair.
+    /// reth/alloy-evm wraps multiple system calls in a single window (one
+    /// `apply_pre_execution_changes` runs both EIP-2935 + EIP-4788), so two adjustments
+    /// are needed:
+    ///
+    ///  1. **Renumbering** (always applied). Geth's per-window wrapping resets the call
+    ///     stack between system calls; every system call's root has `index = 1`. Our
+    ///     shared window assigns sequential indices (1, 2, …). Renumber per-group so
+    ///     each root is index 1 and its nested calls follow contiguously, with
+    ///     `parent_index` remapped accordingly. This preserves the call tree structure
+    ///     while matching geth's per-system-call indexing.
+    ///
+    ///  2. **Reordering** (gated). alloy-evm applies EIP-2935 then EIP-4788; geth runs
+    ///     them in reverse. Sort groups by their root address's position in
+    ///     [`CANONICAL_SYSTEM_CALL_ORDER`], BUT ONLY if every root in the window is in
+    ///     that list. The moment we see an unknown root address (chain-specific
+    ///     predeploy, future EIP, custom system call, …) we leave the window in
+    ///     execution order — silently rearranging unknown calls based on a guess (e.g.
+    ///     a blanket reverse) was the original concern. New EIPs are picked up by
+    ///     appending to [`CANONICAL_SYSTEM_CALL_ORDER`] in geth's apply order.
+    ///
+    /// The two pre-exec EIPs (EIP-4788 / EIP-2935) currently target independent
+    /// storage slots in independent contracts, so the trace reordering does not change
+    /// chain state.
     pub fn on_system_call_end(&mut self) {
         firehose_info!("system call end");
         self.ensure_in_block_and_in_trx();
         self.ensure_in_system_call();
 
-        // Move any calls created during system call to block's system calls list, but match
-        // streamingfast/go-ethereum's firehose tracer
-        // (release/optimism-1.x-fh3.0/eth/tracers/firehose.go) shape:
-        //
-        //  1. Order. Geth wraps each system call (EIP-4788 beacon root, EIP-2935 block hash
-        //     history, …) in its own `OnSystemCallStart`/`End` pair, and the StateProcessor
-        //     applies them in spec-canonical order: beacon root (Cancun) THEN block hash
-        //     history (Prague). reth/alloy-evm applies them in the OPPOSITE order
-        //     (`alloy-evm/src/eth/block.rs:133-135` — blockhash then beacon) inside a single
-        //     `apply_pre_execution_changes`, which we wrap in ONE start/end pair. To produce
-        //     the geth-canonical order in the trace without reordering execution (the two
-        //     calls touch independent storage slots in independent predeploys, so the result
-        //     state is invariant), we reverse the accumulated calls here.
-        //
-        //  2. Index. Geth's per-window wrapping resets the per-tx call index, so every
-        //     system call appears with `index = 1`. Our single window assigns sequential
-        //     indices (1, 2, …). Force every call in the system-call batch to index = 1 to
-        //     match. EIP-4788 / EIP-2935 / withdrawal-style system calls have no nested
-        //     callees, so collapsing their indices doesn't break any parent/child linkage.
-        //     If a future system-call EIP introduces nested calls, this will need to be
-        //     reworked to renumber per group rather than blanket-stamp.
         if let (Some(block), Some(trx)) = (&mut self.block, &mut self.transaction) {
-            let mut calls = std::mem::take(&mut trx.calls);
-            calls.reverse();
-            for call in &mut calls {
-                call.index = 1;
+            let calls = std::mem::take(&mut trx.calls);
+            let mut groups = Self::partition_into_call_groups(calls);
+
+            // Reorder ONLY when every root in the window is a recognized system-call
+            // predeploy. Unknown root → leave the whole window in execution order to
+            // avoid rearranging something we don't understand.
+            let all_known = groups
+                .iter()
+                .all(|g| canonical_system_call_position(&g[0].address).is_some());
+            if all_known {
+                groups.sort_by_key(|g| canonical_system_call_position(&g[0].address));
+            } else if groups.len() > 1 {
+                firehose_debug!(
+                    "system call window has {} groups but at least one root address is \
+                     not in CANONICAL_SYSTEM_CALL_ORDER; leaving in execution order",
+                    groups.len()
+                );
             }
-            block.system_calls.extend(calls);
+
+            // Renumber every group so its root is index 1 — matches geth's per-window
+            // call_stack reset. Done unconditionally: it's a property of the model, not
+            // of any specific EIP, and it preserves call-tree structure within a group.
+            for group in &mut groups {
+                Self::renumber_call_group(group);
+            }
+
+            for group in groups {
+                block.system_calls.extend(group);
+            }
         }
 
         self.reset_transaction();
+    }
+
+    /// Partition `trx.calls` into per-root-call groups. trx.calls arrives in
+    /// DFS-completion order (innermost call exits first, root last), so a group's
+    /// indices are contiguous and the root has the smallest index in the group.
+    /// We sort by `index` then split on `parent_index == 0`.
+    fn partition_into_call_groups(mut calls: Vec<Call>) -> Vec<Vec<Call>> {
+        calls.sort_by_key(|c| c.index);
+        let mut groups: Vec<Vec<Call>> = Vec::new();
+        for call in calls {
+            if call.parent_index == 0 {
+                groups.push(vec![call]);
+            } else if let Some(last) = groups.last_mut() {
+                last.push(call);
+            } else {
+                // Orphan child with no preceding root — shouldn't happen in normal
+                // operation; surface it for diagnosis but don't panic.
+                firehose_debug!(
+                    "system call group: orphan call (index={}, parent_index={}) with no \
+                     preceding root; dropping from output",
+                    call.index,
+                    call.parent_index
+                );
+            }
+        }
+        groups
+    }
+
+    /// Shift `index` and `parent_index` so the group's root is `index = 1`.
+    ///
+    /// Within a group, indices are contiguous starting at the root (smallest), so a
+    /// uniform offset suffices: subtract `(min_index - 1)` from every index and from
+    /// every non-zero `parent_index`. This preserves the call-tree shape, including
+    /// nested children of the system call's root (current EIPs don't have any, but a
+    /// future one might).
+    fn renumber_call_group(group: &mut [Call]) {
+        let Some(min_idx) = group.iter().map(|c| c.index).min() else {
+            return;
+        };
+        let offset = min_idx.saturating_sub(1);
+        if offset == 0 {
+            return;
+        }
+        for call in group.iter_mut() {
+            call.index = call.index.saturating_sub(offset);
+            if call.parent_index > 0 {
+                call.parent_index = call.parent_index.saturating_sub(offset);
+            }
+        }
     }
 
     // ============================================================================
