@@ -1507,13 +1507,6 @@ impl Tracer {
             let calls = std::mem::take(&mut trx.calls);
             let mut groups = Self::partition_into_call_groups(calls);
 
-            // Snapshot every group's ordinal range BEFORE we sort, so we can later swap
-            // the ranges so they line up with each group's NEW position. Without this,
-            // a canonical-reordered window has begin/end_ordinal values that contradict
-            // the array order — geth's first system call would carry HIGHER ordinals
-            // than the second, since alloy-evm executed them in the opposite order.
-            let original_ranges = Self::snapshot_group_ordinal_ranges(&groups);
-
             // Reorder ONLY when every root in the window is a recognized system-call
             // predeploy. Unknown root → leave the whole window in execution order to
             // avoid rearranging something we don't understand.
@@ -1522,11 +1515,11 @@ impl Tracer {
                 .all(|g| canonical_system_call_position(&g[0].address).is_some());
             if all_known {
                 groups.sort_by_key(|g| canonical_system_call_position(&g[0].address));
-                // Walk groups in their NEW (canonical) order and assign each one the
-                // i-th smallest original ordinal range, shifting every event in the
-                // group by a uniform delta. This preserves intra-group ordering while
-                // making inter-group ordinals match geth's per-window emission order.
-                Self::reassign_group_ordinal_ranges(&mut groups, &original_ranges);
+                // Walk groups in their NEW (canonical) order and rebuild the per-group
+                // ordinal ranges contiguously starting at the window's lowest ordinal.
+                // Each group keeps its own width (so its internal event ordinals stay
+                // in their original relative order); only the starting ordinal shifts.
+                Self::reassign_group_ordinal_ranges(&mut groups);
             } else if groups.len() > 1 {
                 firehose_debug!(
                     "system call window has {} groups but at least one root address is \
@@ -1658,58 +1651,52 @@ impl Tracer {
             .collect()
     }
 
-    /// Reassign per-group ordinal ranges so a window that's been sorted into
-    /// canonical order presents ordinals in matching ascending order.
+    /// Repack ordinal ranges of an already-canonical-sorted `groups` so that the
+    /// canonical-first group occupies the lowest ordinals, the canonical-second
+    /// follows immediately after, and so on.
     ///
-    /// `original_ranges` is the snapshot taken from `groups` BEFORE sorting; it's in
-    /// execution order (matching `groups` at snapshot time). After `groups.sort_by_key`
-    /// the i-th group is the i-th in canonical order, and we want it to carry the
-    /// i-th *smallest* original range. We sort `original_ranges` ascending and pair
-    /// them up; for each group we apply a uniform delta to every ordinal-bearing
-    /// field so its `min_ord` lands on the target range's start. Inner ordering is
-    /// preserved because the delta is constant within a group.
-    fn reassign_group_ordinal_ranges(
-        groups: &mut [Vec<Call>],
-        original_ranges: &[(u64, u64)],
-    ) {
+    /// Each group keeps its own width (= number of ordinals it owns), so the
+    /// per-event ordering inside a group is preserved — we only shift the group's
+    /// starting ordinal. Concretely: starting from `overall_min` (the smallest
+    /// ordinal across all groups before repacking), we walk groups in their NEW
+    /// canonical order, give each group a contiguous slice equal to its own width,
+    /// and shift every ordinal in the group by a uniform delta so its smallest
+    /// ordinal lands on the slice's start.
+    ///
+    /// Widths can legitimately differ between groups (e.g. beacon-roots writes 2
+    /// storage slots while history-storage writes 1, so beacon's window is one
+    /// ordinal wider than history's). The previous implementation rejected such
+    /// windows on a misguided width-mismatch check; the correct invariant is that
+    /// per-group widths are preserved across the transform — total span equals the
+    /// sum of widths.
+    fn reassign_group_ordinal_ranges(groups: &mut [Vec<Call>]) {
         if groups.len() <= 1 {
             return;
         }
-        let mut sorted_ranges = original_ranges.to_vec();
-        sorted_ranges.sort_by_key(|(min, _)| *min);
-
-        // Each group's CURRENT range (we computed `original_ranges` before the sort,
-        // so by index those are now in the wrong slot — recompute per-group post-sort).
         let current_ranges = Self::snapshot_group_ordinal_ranges(groups);
 
+        // Window starts at the smallest pre-shift ordinal across all groups.
+        let Some(overall_min) =
+            current_ranges.iter().filter(|(min, max)| *min <= *max).map(|(min, _)| *min).min()
+        else {
+            return;
+        };
+
+        let mut next_min = overall_min;
         for (i, group) in groups.iter_mut().enumerate() {
-            let target = sorted_ranges[i];
-            let current = current_ranges[i];
-            // Width must match (groups don't grow/shrink across this transformation).
-            // If they ever differ — orphan child or unexpected event between groups —
-            // fall back to no-op rather than producing inconsistent ordinals.
-            let target_width = target.1.saturating_sub(target.0);
-            let current_width = current.1.saturating_sub(current.0);
-            if target_width != current_width {
-                firehose_debug!(
-                    "system call ordinal swap: group {} width mismatch \
-                     (current={}..={}, target={}..={}); skipping ordinal rewrite",
-                    i,
-                    current.0,
-                    current.1,
-                    target.0,
-                    target.1,
-                );
+            let (cur_min, cur_max) = current_ranges[i];
+            // Empty group (no events at all) — skip without consuming an ordinal slot.
+            if cur_min > cur_max {
                 continue;
             }
-            if current.0 == target.0 {
-                continue; // already in place
+            let width = cur_max - cur_min + 1;
+            let delta = next_min as i64 - cur_min as i64;
+            if delta != 0 {
+                for call in group.iter_mut() {
+                    Self::shift_call_ordinals(call, delta);
+                }
             }
-            // Compute delta as i64 to handle both directions safely.
-            let delta = target.0 as i64 - current.0 as i64;
-            for call in group.iter_mut() {
-                Self::shift_call_ordinals(call, delta);
-            }
+            next_min = next_min.saturating_add(width);
         }
     }
 

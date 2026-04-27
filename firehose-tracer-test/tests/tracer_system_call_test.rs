@@ -513,6 +513,151 @@ fn test_two_system_calls_in_one_window_are_reversed_and_indexed_at_1() {
         });
 }
 
+/// Mirror of a real base-mainnet pre-execution window: alloy-evm runs
+/// EIP-2935 (HISTORY_STORAGE — 1 storage write, 3 ordinals) followed by
+/// EIP-4788 (BEACON_ROOTS — 2 storage writes, 4 ordinals). The two groups have
+/// different ordinal widths.
+///
+/// The earlier ordinal-swap implementation matched groups by sort-by-min on a
+/// pre-sort snapshot AND then refused to rewrite when widths disagreed — so on
+/// real blocks it bailed out, leaving a trace with the canonical-first call
+/// (beacon) carrying ordinals 4..7 above the canonical-second (history) at 1..3.
+/// This test exercises that exact shape: the canonical-first group must end up
+/// with the lowest ordinals despite being the *wider* of the two.
+#[test]
+fn test_ordinal_swap_handles_groups_of_unequal_width() {
+    use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
+    use firehose_tracer::types::Opcode;
+
+    let beacon_root = hash32(0xAA);
+    let parent_hash = hash32(0xBB);
+    // Storage keys/values for the writes — the actual values don't matter, we
+    // just need them to occupy ordinal slots inside each call.
+    let h_key = hash32(0x14CC);
+    let h_old = hash32(0x1001);
+    let h_new = hash32(0x1002);
+    let b_key1 = hash32(0x0AEA);
+    let b_old1 = hash32(0x2001);
+    let b_new1 = hash32(0x2002);
+    let b_key2 = hash32(0x2AE9);
+    let b_old2 = hash32(0x3001);
+    let b_new2 = hash32(0x3002);
+
+    let mut tester = TracerTester::new();
+    tester.start_block().start_system_call();
+
+    // Group 1 (execution order): EIP-2935 with ONE storage write.
+    tester.tracer.on_call_enter(
+        0,
+        Opcode::Call as u8,
+        system_address(),
+        history_storage_address(),
+        &parent_hash.0,
+        30_000_000,
+        alloy_primitives::U256::ZERO,
+    );
+    tester.tracer.on_storage_change(history_storage_address(), h_key, h_old, h_new);
+    tester.tracer.on_call_exit(0, &[], 5_000, None, false);
+
+    // Group 2 (execution order): EIP-4788 with TWO storage writes — wider group.
+    tester.tracer.on_call_enter(
+        0,
+        Opcode::Call as u8,
+        system_address(),
+        beacon_roots_address(),
+        &beacon_root.0,
+        30_000_000,
+        alloy_primitives::U256::ZERO,
+    );
+    tester.tracer.on_storage_change(beacon_roots_address(), b_key1, b_old1, b_new1);
+    tester.tracer.on_storage_change(beacon_roots_address(), b_key2, b_old2, b_new2);
+    tester.tracer.on_call_exit(0, &[], 10_000, None, false);
+
+    tester
+        .end_system_call()
+        .start_trx(test_legacy_trx())
+        .start_call(alice_addr(), bob_addr(), alloy_primitives::U256::ZERO, 21000, vec![])
+        .end_call(vec![], 21000)
+        .end_block_trx(Some(success_receipt(21000)), None, None)
+        .validate(|block| {
+            assert_eq!(2, block.system_calls.len(), "two system calls");
+
+            let beacon = &block.system_calls[0];
+            let history = &block.system_calls[1];
+            assert_eq!(
+                beacon_roots_address().as_slice(),
+                beacon.address.as_slice(),
+                "canonical-first must be beacon root (EIP-4788)",
+            );
+            assert_eq!(
+                history_storage_address().as_slice(),
+                history.address.as_slice(),
+                "canonical-second must be blockhash history (EIP-2935)",
+            );
+
+            // Beacon window: begin, 2 storages, end → 4 contiguous ordinals.
+            // History window: begin, 1 storage, end → 3 contiguous ordinals.
+            // Together they must span [overall_min, overall_min + 7) without gaps.
+            let beacon_ords = collect_ordinals(beacon);
+            let history_ords = collect_ordinals(history);
+            assert_eq!(
+                4,
+                beacon_ords.len(),
+                "beacon emits 4 ordinals (begin + 2 storage + end)"
+            );
+            assert_eq!(
+                3,
+                history_ords.len(),
+                "history emits 3 ordinals (begin + 1 storage + end)"
+            );
+
+            // Inter-group: every beacon ordinal precedes every history ordinal —
+            // the canonical-first group occupies the LOWER ordinal range.
+            let beacon_max = *beacon_ords.iter().max().unwrap();
+            let history_min = *history_ords.iter().min().unwrap();
+            assert!(
+                beacon_max < history_min,
+                "every beacon ordinal must precede every history ordinal \
+                 (got beacon_max={}, history_min={})",
+                beacon_max,
+                history_min,
+            );
+
+            // Intra-group: each group's ordinals are contiguous and in the same
+            // relative order as emitted (begin < storage1 < … < end).
+            assert_eq!(beacon.begin_ordinal + 1, beacon.storage_changes[0].ordinal);
+            assert_eq!(beacon.begin_ordinal + 2, beacon.storage_changes[1].ordinal);
+            assert_eq!(beacon.begin_ordinal + 3, beacon.end_ordinal);
+            assert_eq!(history.begin_ordinal + 1, history.storage_changes[0].ordinal);
+            assert_eq!(history.begin_ordinal + 2, history.end_ordinal);
+
+            // The two groups together must occupy a contiguous range starting at
+            // the window's lowest ordinal — no gaps, no overlap.
+            assert_eq!(
+                beacon.end_ordinal + 1,
+                history.begin_ordinal,
+                "history must start one ordinal after beacon ends",
+            );
+
+            // Sanity: indices are still per-group reset to 1.
+            assert_eq!(1, beacon.index);
+            assert_eq!(1, history.index);
+
+            // Sanity: every ordinal-bearing field collected from the call.
+            fn collect_ordinals(c: &pbeth::Call) -> Vec<u64> {
+                let mut v = vec![c.begin_ordinal, c.end_ordinal];
+                v.extend(c.storage_changes.iter().map(|s| s.ordinal));
+                v.extend(c.balance_changes.iter().map(|b| b.ordinal));
+                v.extend(c.nonce_changes.iter().map(|n| n.ordinal));
+                v.extend(c.code_changes.iter().map(|cc| cc.ordinal));
+                v.extend(c.gas_changes.iter().map(|g| g.ordinal));
+                v.extend(c.logs.iter().map(|l| l.ordinal));
+                v.sort_unstable();
+                v
+            }
+        });
+}
+
 /// Safeguard: when a system-call window contains a root whose address isn't in the
 /// canonical predeploy list, leave the window in execution order. We still renumber
 /// each group's root to `index = 1` (that matches geth's per-window model regardless
