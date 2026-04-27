@@ -69,23 +69,19 @@ pub fn beacon_roots_address() -> Address {
     Address::from_str("0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02").unwrap()
 }
 
-/// HistoryStorageAddress is the EIP-2935 parent block hash storage contract.
-/// Matches `alloy_eips::eip2935::HISTORY_STORAGE_ADDRESS` so tests exercise the same
-/// predeploy address the real tracer treats as a known system-call target.
+/// HistoryStorageAddress is the EIP-2935/7709 parent block hash storage contract
 pub fn history_storage_address() -> Address {
-    Address::from_str("0x0000F90827F1C53a10cb7A02335B175320002935").unwrap()
+    Address::from_str("0x0aae40965e6800cd9b1f4b05ff21581047e3f91e").unwrap()
 }
 
-/// WithdrawalQueueAddress is the EIP-7002 withdrawal queue contract.
-/// Matches `alloy_eips::eip7002::WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS`.
+/// WithdrawalQueueAddress is the EIP-7002 withdrawal queue contract
 pub fn withdrawal_queue_address() -> Address {
-    Address::from_str("0x00000961Ef480Eb55e80D19ad83579A64c007002").unwrap()
+    Address::from_str("0x0b5df45689000000000000000000000000000000").unwrap()
 }
 
-/// ConsolidationQueueAddress is the EIP-7251 consolidation queue contract.
-/// Matches `alloy_eips::eip7251::CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS`.
+/// ConsolidationQueueAddress is the EIP-7251 consolidation queue contract
 pub fn consolidation_queue_address() -> Address {
-    Address::from_str("0x0000BBdDc7CE488642fb579F8B00f3a590007251").unwrap()
+    Address::from_str("0x0c0d961020000000000000000000000000000000").unwrap()
 }
 
 // Helper functions for creating test values
