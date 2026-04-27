@@ -281,6 +281,83 @@ fn test_multiple_transactions_ordinals_sequential() {
 // Blob Transaction Tests
 // =============================================================================
 
+/// streamingfast/go-ethereum's firehose tracer (release/optimism-1.x-fh3.0
+/// firehose.go:2787-2793) encodes a zero effective gas price as nil rather than
+/// the explicit "00" big-int. Our `TransactionTrace.gas_price` was previously
+/// populated via `u256_to_protobuf_always`, which returned `Some(BigInt(zero))`
+/// for a zero input — base-mainnet OP deposit txs have no `gas_price` and no
+/// `max_fee_per_gas`, the effective price collapses to 0, and the JSON-rendered
+/// trace surfaced `"gas_price": "00"` on every deposit. The fix switched to
+/// `u256_to_protobuf` (omits zero) so the field is `None` in the protobuf.
+///
+/// This test feeds the tracer a TxEvent whose effective price collapses to 0
+/// (legacy tx with gas_price=ZERO, no EIP-1559 fields) and asserts the emitted
+/// `TransactionTrace.gas_price` is `None`. A non-zero baseline test (default
+/// legacy tx with gas_price=10) confirms the field is still populated when the
+/// effective price is non-zero.
+#[test]
+fn test_zero_effective_gas_price_emitted_as_nil() {
+    use firehose_tracer::types::{TxEvent, TxType};
+    use firehose_tracer_test::hash32;
+
+    fn zero_gas_price_tx() -> TxEvent {
+        TxEvent {
+            tx_type: TxType::Legacy,
+            hash: hash32(0xDEAD),
+            from: alice_addr(),
+            to: Some(bob_addr()),
+            input: alloy_primitives::Bytes::new(),
+            value: alloy_primitives::U256::ZERO,
+            gas: 21000,
+            gas_price: alloy_primitives::U256::ZERO, // → effective price = 0
+            nonce: 0,
+            index: 0,
+            v: None,
+            r: alloy_primitives::B256::ZERO,
+            s: alloy_primitives::B256::ZERO,
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            access_list: vec![],
+            blob_gas_fee_cap: None,
+            blob_hashes: vec![],
+            set_code_authorizations: vec![],
+        }
+    }
+
+    let mut tester = TracerTester::new();
+    tester
+        .start_block_trx(zero_gas_price_tx())
+        .start_call(alice_addr(), bob_addr(), alloy_primitives::U256::ZERO, 21000, vec![])
+        .end_call(vec![], 21000)
+        .end_block_trx(Some(success_receipt(21000)), None, None)
+        .validate(|block| {
+            assert_eq!(1, block.transaction_traces.len());
+            let trx = &block.transaction_traces[0];
+            assert!(
+                trx.gas_price.is_none(),
+                "zero effective gas price must be encoded as nil to match \
+                 streamingfast/go-ethereum firehose tracer (got {:?})",
+                trx.gas_price,
+            );
+        });
+
+    // Sanity: non-zero baseline still populates the field.
+    let mut tester2 = TracerTester::new();
+    tester2
+        .start_block_trx(test_legacy_trx())
+        .start_call(alice_addr(), bob_addr(), alloy_primitives::U256::ZERO, 21000, vec![])
+        .end_call(vec![], 21000)
+        .end_block_trx(Some(success_receipt(21000)), None, None)
+        .validate(|block| {
+            let trx = &block.transaction_traces[0];
+            assert!(
+                trx.gas_price.is_some(),
+                "non-zero gas price must remain populated; the nil-on-zero rule \
+                 is not a blanket nil",
+            );
+        });
+}
+
 #[test]
 fn test_non_blob_transaction_no_blob_gas() {
     // Scenario: Non-blob transaction should not have blob gas fields
