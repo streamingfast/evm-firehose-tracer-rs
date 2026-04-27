@@ -1431,34 +1431,9 @@ impl Tracer {
         self.ensure_in_block_and_in_trx();
         self.ensure_in_system_call();
 
-        // Move any calls created during system call to block's system calls list, but match
-        // streamingfast/go-ethereum's firehose tracer
-        // (release/optimism-1.x-fh3.0/eth/tracers/firehose.go) shape:
-        //
-        //  1. Order. Geth wraps each system call (EIP-4788 beacon root, EIP-2935 block hash
-        //     history, …) in its own `OnSystemCallStart`/`End` pair, and the StateProcessor
-        //     applies them in spec-canonical order: beacon root (Cancun) THEN block hash
-        //     history (Prague). reth/alloy-evm applies them in the OPPOSITE order
-        //     (`alloy-evm/src/eth/block.rs:133-135` — blockhash then beacon) inside a single
-        //     `apply_pre_execution_changes`, which we wrap in ONE start/end pair. To produce
-        //     the geth-canonical order in the trace without reordering execution (the two
-        //     calls touch independent storage slots in independent predeploys, so the result
-        //     state is invariant), we reverse the accumulated calls here.
-        //
-        //  2. Index. Geth's per-window wrapping resets the per-tx call index, so every
-        //     system call appears with `index = 1`. Our single window assigns sequential
-        //     indices (1, 2, …). Force every call in the system-call batch to index = 1 to
-        //     match. EIP-4788 / EIP-2935 / withdrawal-style system calls have no nested
-        //     callees, so collapsing their indices doesn't break any parent/child linkage.
-        //     If a future system-call EIP introduces nested calls, this will need to be
-        //     reworked to renumber per group rather than blanket-stamp.
+        // Move any calls created during system call to block's system calls list
         if let (Some(block), Some(trx)) = (&mut self.block, &mut self.transaction) {
-            let mut calls = std::mem::take(&mut trx.calls);
-            calls.reverse();
-            for call in &mut calls {
-                call.index = 1;
-            }
-            block.system_calls.extend(calls);
+            block.system_calls.append(&mut trx.calls);
         }
 
         self.reset_transaction();
