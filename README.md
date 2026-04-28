@@ -56,29 +56,6 @@ cargo build --release
 cargo build --release -p monad
 ```
 
-### Mac OS X Prerequisites
-
-Monad requires a recent LLVM version. The one that comes from stock OSX is often outdated:
-
-```bash
-brew install llvm@20 zstd
-```
-
-Then configure your environment (e.g., via `.envrc`):
-
-```bash
-llvm_path="$(brew --prefix llvm@20)"
-zstd_path="$(brew --prefix zstd)"
-
-path_add PATH "$llvm_path"/bin
-path_add LIBRARY_PATH "$llvm_path"/lib
-path_add LIBRARY_PATH "$zstd_path"/lib
-
-export CC="${llvm_path}/bin/clang"
-export CXX="${llvm_path}/bin/clang++"
-export LLVM_CONFIG_PATH="${llvm_path}/bin/llvm-config"
-```
-
 ## Testing
 
 ```bash
@@ -128,7 +105,6 @@ Ordinals provide deterministic ordering of all events within a block:
 - **`firehose`**: Core chain-agnostic tracer implementation
 - **`pb`**: Generated protobuf types for `sf.ethereum.type.v2.Block`
 - **`firehose-test`**: Test helpers and the full integration test suite
-- **`monad`**: Monad-specific tracer adapter and execution environment
 
 ## Repository
 
