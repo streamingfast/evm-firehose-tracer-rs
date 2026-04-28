@@ -5,7 +5,7 @@ mod eip7702;
 pub mod finality;
 pub mod logging;
 pub mod mapper;
-mod open_callstack;
+pub mod open_callstack;
 mod ordinal;
 pub mod pb;
 pub mod printer;

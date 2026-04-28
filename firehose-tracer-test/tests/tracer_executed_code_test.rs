@@ -1,4 +1,5 @@
 use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
+use firehose_tracer::types::Opcode;
 use firehose_tracer_test::{
     alice_addr, bob_addr, charlie_addr, success_receipt, test_legacy_trx, TracerTester,
 };
@@ -128,5 +129,60 @@ fn test_create_executed_code_true() {
 
             assert_eq!(pbeth::CallType::Create as i32, call.call_type);
             assert!(call.executed_code, "ExecutedCode should be true for CREATE");
+        });
+}
+
+#[test]
+fn test_call_no_opcodes_executed_code_false() {
+    // ExecutedCode = false when a call completes with no opcodes (e.g. plain value transfer)
+    let mut tester = TracerTester::new();
+    tester
+        .start_block_trx(test_legacy_trx())
+        .start_call(
+            alice_addr(),
+            bob_addr(),
+            alloy_primitives::U256::from(100),
+            21000,
+            vec![],
+        )
+        // no opcode fired
+        .end_call(vec![], 21000)
+        .end_block_trx(Some(success_receipt(21000)), None, None)
+        .validate_with_category("executedcode", |block| {
+            let call = &block.transaction_traces[0].calls[0];
+            assert!(
+                !call.executed_code,
+                "ExecutedCode should be false when no opcodes execute"
+            );
+        });
+}
+
+#[test]
+fn test_on_call_executed_code_false() {
+    // ExecutedCode = false when the call was recorded via on_call (no per-opcode visibility)
+    // e.g. Monad pre-aggregated call frame events
+    let mut tester = TracerTester::new();
+    tester.start_block_trx(test_legacy_trx());
+    tester.tracer.on_call(
+        0,
+        Opcode::Call as u8,
+        alice_addr(),
+        bob_addr(),
+        &[0x01],
+        21000,
+        alloy_primitives::U256::ZERO,
+        vec![],
+        21000,
+        None,
+        true,
+    );
+    tester
+        .end_block_trx(Some(success_receipt(21000)), None, None)
+        .validate_with_category("executedcode", |block| {
+            let call = &block.transaction_traces[0].calls[0];
+            assert!(
+                !call.executed_code,
+                "ExecutedCode should be false when recorded via on_call (no opcode visibility)"
+            );
         });
 }

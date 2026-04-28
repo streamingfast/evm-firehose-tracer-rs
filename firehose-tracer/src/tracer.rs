@@ -144,7 +144,7 @@ impl Tracer {
         self.in_system_call = false;
 
         self.call_stack.reset();
-        self.open_calls.clear();
+        self.open_calls.reset();
         self.latest_call_enter_suicided = false;
         self.deferred_call_state.reset();
     }
@@ -601,6 +601,8 @@ impl Tracer {
         // Validate state: Must be in block and in transaction
         self.ensure_in_block_and_in_trx();
 
+        self.flush_open_calls(0);
+
         // Complete the transaction
         if let Some(trx) = self.transaction.take() {
             let completed_trx = self.complete_transaction(trx, receipt, err);
@@ -639,12 +641,6 @@ impl Tracer {
             .map(|c| c.status_reverted)
             .unwrap_or(false);
 
-        // Step 2.5: Discard SetCode authorizations that don't have corresponding nonce changes
-        // (matching native tracer's discardUncommittedSetCodeAuthorization)
-        // This MUST happen BEFORE deferred state is populated, since we need to check
-        // the initial deferred state that was already transferred into the root call
-        Self::discard_uncommitted_set_code_authorizations(&mut trx);
-
         // Step 3: Move any remaining deferred state to root call
         if !self.deferred_call_state.is_empty() {
             if let Some(root_call) = trx.calls.first_mut() {
@@ -656,6 +652,12 @@ impl Tracer {
                 }
             }
         }
+
+        // Step 3.5: Discard SetCode authorizations that don't have corresponding nonce changes
+        // (matching native tracer's discardUncommittedSetCodeAuthorization)
+        // This MUST happen BEFORE deferred state is populated, since we need to check
+        // the initial deferred state that was already transferred into the root call
+        Self::discard_uncommitted_set_code_authorizations(&mut trx);
 
         // Step 4: Populate receipt data (BEFORE state reverted)
         if let Some(receipt) = receipt {
@@ -921,71 +923,64 @@ impl Tracer {
         input: &[u8],
         gas: u64,
         value: U256,
-        output: &[u8],
+        output: Vec<u8>,
         gas_used: u64,
-        executed_code: bool,
         err: Option<super::types::StringError>,
+        is_last: bool,
     ) {
         // Close any open calls at depth >= incoming depth before opening the new one
-        self.flush_open_calls_at_or_below(depth);
+        let mut open_calls = std::mem::take(&mut self.open_calls);
+        open_calls.flush_at_or_below(depth, self);
+        self.open_calls = open_calls;
 
-        self.on_call_enter(depth, opcode, from, to, input, gas, value);
+        if opcode == Opcode::SelfDestruct as u8 {
+            // SELFDESTRUCT is atomic: enter as CALL, emit the opcode, exit immediately
+            self.on_call_enter(depth, Opcode::Call as u8, from, to, input, gas, value);
+            self.on_opcode(
+                0,
+                Opcode::SelfDestruct as u8,
+                gas,
+                gas_used,
+                &[],
+                depth,
+                None,
+            );
+            let failed = err.is_some();
+            self.on_call_exit(
+                depth,
+                &output,
+                gas_used,
+                err.as_ref().map(|e| e as &dyn std::error::Error),
+                failed,
+            );
+        } else {
+            self.on_call_enter(depth, opcode, from, to, input, gas, value);
 
-        if executed_code {
-            if let Some(ref e) = err {
-                self.on_opcode_fault(0, opcode, gas, gas_used, depth, e as &dyn std::error::Error);
-            } else {
-                self.on_opcode(0, opcode, gas, gas_used, &[], depth, None);
+            // Successful CREATE: emit code change
+            let is_create = opcode == Opcode::Create as u8 || opcode == Opcode::Create2 as u8;
+            if is_create && err.is_none() && !output.is_empty() {
+                let empty_hash = utils::hash_bytes(&[]);
+                let new_hash = utils::hash_bytes(&output);
+                self.on_code_change(to, empty_hash, new_hash, &[], &output);
             }
+
+            self.open_calls.push(OpenCall {
+                depth,
+                output,
+                gas_used,
+                error: err,
+            });
         }
 
-        self.open_calls.push(OpenCall {
-            depth,
-            addr: to,
-            call_type: self.opcode_to_call_type(opcode),
-            output: output.into(),
-            gas_used,
-            failed: err.is_some(),
-            error: err,
-        });
+        if is_last {
+            self.flush_open_calls(0);
+        }
     }
 
-    /// Flushes all open calls whose depth is >= min_depth, closing them (deepest first)
-    /// Use min_depth = 0 to flush everything, min_depth = 1 to keep the root call open
     pub fn flush_open_calls(&mut self, min_depth: i32) {
-        while self
-            .open_calls
-            .peek_depth()
-            .map_or(false, |d| d >= min_depth)
-        {
-            let open = self.open_calls.pop().unwrap();
-            self.close_open_call(open);
-        }
-    }
-
-    /// Flushes open calls at depth >= incoming_depth to make room for a new call at that depth.
-    fn flush_open_calls_at_or_below(&mut self, incoming_depth: i32) {
-        while self
-            .open_calls
-            .peek_depth()
-            .map_or(false, |d| d >= incoming_depth)
-        {
-            let open = self.open_calls.pop().unwrap();
-            self.close_open_call(open);
-        }
-    }
-
-    fn close_open_call(&mut self, open: OpenCall) {
-        // Successful CREATE: output is the deployed bytecode, emit a code change
-        let is_create =
-            open.call_type == crate::pb::sf::ethereum::r#type::v2::CallType::Create as i32;
-        if !open.failed && is_create && !open.output.is_empty() {
-            let empty_hash = utils::hash_bytes(&[]);
-            let new_hash = utils::hash_bytes(&open.output);
-            self.on_code_change(open.addr, empty_hash, new_hash, &[], &open.output);
-        }
-        let err = open.error.as_ref().map(|e| e as &dyn std::error::Error);
-        self.on_call_exit(open.depth, &open.output, open.gas_used, err, open.failed);
+        let mut open_calls = std::mem::take(&mut self.open_calls);
+        open_calls.flush(min_depth, self);
+        self.open_calls = open_calls;
     }
 
     /// OnCallEnter is called when entering a call
@@ -1035,6 +1030,16 @@ impl Tracer {
                 .maybe_populate_call_and_reset("enter", &mut call)
             {
                 panic!("failed to populate deferred state on call enter: {}", e);
+            }
+
+            // For root CREATE/CREATE2, patch the transaction's "to" with the deployed address if it hasn't been set yet
+            let is_create = call.call_type == crate::pb::sf::ethereum::r#type::v2::CallType::Create as i32;
+            if is_create {
+                if let Some(trx) = self.transaction.as_mut() {
+                    if trx.to.is_empty() {
+                        trx.to = to.0.to_vec();
+                    }
+                }
             }
         }
 
@@ -1371,9 +1376,13 @@ impl Tracer {
 
         // Mark SELFDESTRUCT opcode
         if op == Opcode::SelfDestruct as u8 {
-            if let Some(active_call) = self.call_stack.peek_mut() {
-                active_call.suicide = true;
-            }
+            self.mark_active_call_suicide();
+        }
+    }
+
+    pub fn mark_active_call_suicide(&mut self) {
+        if let Some(active_call) = self.call_stack.peek_mut() {
+            active_call.suicide = true;
         }
     }
 
@@ -1788,14 +1797,6 @@ impl Tracer {
         }
     }
 
-    /// Sets the "to" address on the active transaction. Used for CREATE/CREATE2
-    /// to patch the deployed contract address after it is known at depth 0
-    pub fn set_transaction_to(&mut self, to: Address) {
-        if self.transaction.is_none() {
-            panic!("set_transaction_to called outside of an active transaction");
-        }
-        self.transaction.as_mut().unwrap().to = to.0.to_vec();
-    }
 }
 
 /// Computes the effective gas price for a transaction based on its type and block base fee.
