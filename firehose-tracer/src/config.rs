@@ -73,6 +73,9 @@ impl ChainConfig {
             is_prague: self.is_prague(num, timestamp),
             is_verkle: self.is_verkle(num, timestamp),
             is_optimism: is_optimism(self.chain_id),
+            // Per the comment on the function, "all historical block-based forks are assumed
+            // active" — EIP-158 (spurious dragon) is one of those. Always true here.
+            is_eip158: true,
         }
     }
 }
@@ -109,6 +112,21 @@ pub struct Rules {
 
     /// Optimism-based chain
     pub is_optimism: bool,
+
+    /// EIP-158 spurious dragon — empty-account clearing.
+    ///
+    /// Used by [`Tracer::compute_executed_code_at_call_start`] to mirror geth-firehose's
+    /// `getExecutedCode` early-return for non-existent targets with zero value (the
+    /// "account_without_code" path). Active on every chain modern enough to be of interest
+    /// here (mainnet block 2675000+, every L2). Default `true` so the executed_code fix
+    /// works out-of-the-box on supported chains.
+    ///
+    /// TODO(integrator): wire from your `EthereumHardforks::is_spurious_dragon_active_at_block`
+    /// (or chain-equivalent) when computing `Rules` per-block. The default is correct for
+    /// any post-spurious-dragon block, which means every block this codebase realistically
+    /// processes — but pre-spurious-dragon blocks (mainnet < 2675000) need the explicit
+    /// `false` for trace fidelity.
+    pub is_eip158: bool,
 }
 
 /// Returns whether the given chain comes from optimism stack
@@ -149,6 +167,9 @@ impl Rules {
             is_prague: false,
             is_verkle: false,
             is_optimism: is_optimism(chain_id),
+            // Default true: every chain this tracer realistically runs on is post-spurious-dragon.
+            // Override via `with_eip158(false)` for pre-EIP-158 mainnet blocks if needed.
+            is_eip158: true,
         }
     }
 
@@ -185,6 +206,12 @@ impl Rules {
     /// Builder method to set Optimism flag
     pub fn with_optimism(mut self, is_optimism: bool) -> Self {
         self.is_optimism = is_optimism;
+        self
+    }
+
+    /// Builder method to set EIP-158 (spurious dragon) flag.
+    pub fn with_eip158(mut self, is_eip158: bool) -> Self {
+        self.is_eip158 = is_eip158;
         self
     }
 }
