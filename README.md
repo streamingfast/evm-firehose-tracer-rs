@@ -44,17 +44,13 @@ This repository contains a **shared tracer implementation** that can be integrat
            (sf.ethereum.type.v2.Block)
 ```
 
-## Build
+## Integrations
 
-Build from source using Cargo:
+This library is consumed by the following StreamingFast forks that add Firehose tracing to their respective clients:
 
-```bash
-# Build all workspace crates
-cargo build --release
-
-# Build the Monad tracer specifically
-cargo build --release -p monad
-```
+- **[streamingfast/reth](https://github.com/streamingfast/reth)** — Reth fork with Firehose instrumentation
+- **[streamingfast/base](https://github.com/streamingfast/base)** — Base (OP-Stack) Reth fork with Firehose instrumentation
+- **[streamingfast/monad-firehose-tracer](https://github.com/streamingfast/monad-firehose-tracer)** — Monad client fork with Firehose instrumentation
 
 ## Testing
 
