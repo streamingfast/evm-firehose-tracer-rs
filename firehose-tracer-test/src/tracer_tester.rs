@@ -5,8 +5,7 @@ use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 use firehose_tracer::types::{BlockData, BlockEvent, Opcode, ReceiptData, TxEvent};
 use firehose_tracer::Tracer;
 use prost::Message;
-use std::io::{BufRead, BufReader, Write};
-use std::sync::{Arc, Mutex};
+use std::io::{BufRead, BufReader};
 
 use crate::mock_state::MockStateDB;
 use crate::testing_helpers::*;
@@ -288,33 +287,8 @@ pub fn test_set_code_trx_with_auth(
     }
 }
 
-/// InMemoryBuffer is a thread-safe in-memory buffer that implements Write
-#[derive(Clone)]
-pub struct InMemoryBuffer {
-    buffer: Arc<Mutex<Vec<u8>>>,
-}
-
-impl InMemoryBuffer {
-    pub fn new() -> Self {
-        Self {
-            buffer: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-
-    pub fn get_bytes(&self) -> Vec<u8> {
-        self.buffer.lock().unwrap().clone()
-    }
-}
-
-impl Write for InMemoryBuffer {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.buffer.lock().unwrap().write(buf)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.buffer.lock().unwrap().flush()
-    }
-}
+// Re-export InMemoryBuffer from the core crate for backwards compatibility.
+pub use firehose_tracer::InMemoryBuffer;
 
 /// FirehoseBlockEntry holds a parsed FIRE BLOCK line: the decoded protobuf block
 /// together with every header field from the wire line.
@@ -467,6 +441,14 @@ impl TracerTester {
             .on_blockchain_init("test", "1.0.0", chain_config);
 
         tester
+    }
+
+    /// Decompose this tester into its tracer and output buffer, discarding
+    /// the mock state. Useful when you want the setup ergonomics of TracerTester
+    /// (Prague preset, Reth chain-client preset, etc.) but intend to drive a
+    /// real EVM rather than the mock state machine.
+    pub fn into_parts(self) -> (Tracer, InMemoryBuffer) {
+        (self.tracer, self.output_buffer)
     }
 
     // ========================================================================

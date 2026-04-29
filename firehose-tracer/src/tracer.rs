@@ -1,6 +1,6 @@
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use alloy_primitives::{Address, B256, U256};
 
@@ -31,6 +31,36 @@ struct FlashBlockSnapshot {
     code_changes_len: usize,    // Number of code changes at snapshot time
     ordinal: u64,               // Block ordinal value at snapshot time
     flash_index: u64,           // Flash block index at snapshot time (for validation)
+}
+
+/// InMemoryBuffer is a thread-safe in-memory buffer that implements Write.
+/// Useful for capturing tracer output in tests or when driving a real EVM
+/// without writing to stdout/file.
+#[derive(Clone)]
+pub struct InMemoryBuffer {
+    buffer: Arc<Mutex<Vec<u8>>>,
+}
+
+impl InMemoryBuffer {
+    pub fn new() -> Self {
+        Self {
+            buffer: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn get_bytes(&self) -> Vec<u8> {
+        self.buffer.lock().unwrap().clone()
+    }
+}
+
+impl Write for InMemoryBuffer {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.buffer.lock().unwrap().write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.buffer.lock().unwrap().flush()
+    }
 }
 
 /// Tracer is the main Firehose tracer that captures EVM execution and produces
@@ -80,6 +110,23 @@ impl Tracer {
     /// Output is written to stdout.
     pub fn new(config: Config) -> Self {
         Self::new_with_writer(config, Box::new(std::io::stdout()))
+    }
+
+    /// Creates a fully initialized tracer backed by an in-memory buffer.
+    ///
+    /// Bundles `new_with_writer` + `on_blockchain_init`, returning both the
+    /// tracer and the captured buffer. This replaces ~15 lines of setup when
+    /// driving a real EVM (or any non-mock scenario) in tests.
+    pub fn with_buffer(
+        config: Config,
+        chain_config: ChainConfig,
+        tracer_id: &str,
+        version: &str,
+    ) -> (Self, InMemoryBuffer) {
+        let buffer = InMemoryBuffer::new();
+        let mut tracer = Self::new_with_writer(config, Box::new(buffer.clone()));
+        tracer.on_blockchain_init(tracer_id, version, chain_config);
+        (tracer, buffer)
     }
 
     /// Creates a new Firehose tracer with a custom output writer.

@@ -14,5 +14,5 @@ pub mod types;
 pub mod utils;
 pub mod version;
 
-// Re-export Tracer struct so consumer can use firehose_tracer::Tracer directly.
-pub use tracer::Tracer;
+// Re-export Tracer and InMemoryBuffer so consumers can use them directly.
+pub use tracer::{InMemoryBuffer, Tracer};

@@ -1,3 +1,4 @@
+use alloy_genesis::Genesis;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
@@ -73,6 +74,18 @@ impl ChainConfig {
             is_prague: self.is_prague(num, timestamp),
             is_verkle: self.is_verkle(num, timestamp),
             is_optimism: is_optimism(self.chain_id),
+        }
+    }
+
+    /// Create a ChainConfig from an alloy Genesis struct, extracting
+    /// chain_id and timestamp-based fork activation times.
+    pub fn from_genesis(genesis: &Genesis) -> Self {
+        Self {
+            chain_id: genesis.config.chain_id,
+            shanghai_time: genesis.config.shanghai_time,
+            cancun_time: genesis.config.cancun_time,
+            prague_time: genesis.config.prague_time,
+            verkle_time: None,
         }
     }
 }
