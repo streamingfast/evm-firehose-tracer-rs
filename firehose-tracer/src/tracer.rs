@@ -1255,16 +1255,16 @@ impl Tracer {
 
     /// OnNonceChange is called when an account nonce changes
     pub fn on_nonce_change(&mut self, addr: Address, old_nonce: u64, new_nonce: u64) {
-        if old_nonce == new_nonce {
-            return;
-        }
-
         firehose_debug!(
-            "nonce changed (address={:?} old_nonce={} new_nonce={})",
+            "nonce changed (address={:?} prev_nonce={} new_nonce={})",
             addr,
             old_nonce,
             new_nonce
         );
+
+        if old_nonce == new_nonce {
+            return;
+        }
 
         self.ensure_in_block_and_in_trx();
 
@@ -1291,16 +1291,16 @@ impl Tracer {
         old_code: &[u8],
         new_code: &[u8],
     ) {
-        if prev_code_hash == new_code_hash {
-            return;
-        }
-
         firehose_debug!(
             "code changed (address={:?} prev_hash={:?} new_hash={:?})",
             addr,
             prev_code_hash,
             new_code_hash
         );
+
+        if prev_code_hash == new_code_hash {
+            return;
+        }
 
         self.ensure_in_block_or_trx();
 
@@ -1341,11 +1341,11 @@ impl Tracer {
         old_value: B256,
         new_value: B256,
     ) {
+        firehose_trace!("storage changed (address={:?} key={:?})", addr, slot);
+
         if old_value == new_value {
             return;
         }
-
-        firehose_trace!("storage changed (address={:?} key={:?})", addr, slot);
 
         self.ensure_in_block_and_in_trx();
 
