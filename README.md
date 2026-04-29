@@ -59,7 +59,7 @@ This library is consumed by the following StreamingFast forks that add Firehose 
 cargo test --workspace
 
 # Run specific test suite
-cargo test -p firehose-test tracer_setcode
+cargo test -p firehose-tracer-test tracer_setcode
 
 # Run with debug output
 RUST_LOG=debug cargo test --workspace
@@ -98,9 +98,8 @@ Ordinals provide deterministic ordering of all events within a block:
 
 ## Workspace Crates
 
-- **`firehose`**: Core chain-agnostic tracer implementation
-- **`pb`**: Generated protobuf types for `sf.ethereum.type.v2.Block`
-- **`firehose-test`**: Test helpers and the full integration test suite
+- **`firehose-tracer`**: Core chain-agnostic tracer implementation
+- **`firehose-tracer-test`**: Test helpers and the full integration test suite
 
 ## Repository
 

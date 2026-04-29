@@ -23,5 +23,5 @@ sudo apt-get update && sudo apt-get install -y libclang-dev
 To build and test only the crates that don't require native libraries:
 
 ```bash
-cargo test -p firehose -p firehose-test
+cargo test -p firehose-tracer -p firehose-tracer-test
 ```

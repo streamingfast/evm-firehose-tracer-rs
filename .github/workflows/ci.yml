@@ -24,4 +24,4 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run tests
-        run: cargo test -p firehose -p firehose-test
+        run: cargo test -p firehose-tracer -p firehose-tracer-test
