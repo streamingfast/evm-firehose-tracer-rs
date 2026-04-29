@@ -2,6 +2,8 @@
 name = "firehose-tracer"
 version.workspace = true
 edition.workspace = true
+description.workspace = true
+license.workspace = true
 
 [dependencies]
 # Alloy dependencies
