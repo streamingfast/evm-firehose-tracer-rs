@@ -7,6 +7,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+* `OpCodeView` opcode logging: `on_opcode` and `on_opcode_fault` now emit trace-full-level log lines (enabled via `FIREHOSE_ETHEREUM_TRACER_LOG_LEVEL=trace_full`) including the opcode name, gas, cost, and error. All standard EVM opcodes (including Cancun additions) resolve to their human-readable name (e.g. `CALL`, `SSTORE`); unknown opcodes fall back to `0x??` hex.
 * `FlashBlockData` struct and `BlockEvent.flash_block` field to support Optimism/Katana flash block iterations. `FlashBlockData.is_final` marks the final iteration; when set, the emitted `FIRE BLOCK` line encodes the flash block index as `idx + 1000`.
 * Flash block snapshot/restore support: `snapshot_flash_block_for_next_iteration()`, `restore_flash_block_snapshot()`, and related methods allow incremental block building across multiple flash block iterations.
 * EIP-7843 (Amsterdam): `BlockData.slot_number` field and `BlockHeader.slot_number` propagation.

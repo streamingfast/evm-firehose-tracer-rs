@@ -16,8 +16,8 @@ use super::{
 use crate::pb::sf::ethereum::r#type::v2::{Block, Call, TransactionTrace, Withdrawal};
 use crate::types::{BlockEvent, FlashBlockData, ReceiptData, StateReader, TxEvent};
 use crate::{
-    config::ChainConfig, config::Rules, firehose_debug, firehose_info, firehose_trace, utils,
-    version::PROTOCOL_VERSION,
+    config::ChainConfig, config::Rules, firehose_debug, firehose_info, firehose_trace,
+    firehose_trace_full, logging::OpCodeView, utils, version::PROTOCOL_VERSION,
 };
 
 /// FlashBlockSnapshot holds the state of a flash block at a snapshot point in time.
@@ -1401,12 +1401,21 @@ impl Tracer {
         &mut self,
         _pc: u64,
         op: u8,
-        _gas: u64,
-        _cost: u64,
+        gas: u64,
+        cost: u64,
         _data: &[u8],
         _depth: i32,
         err: Option<&dyn std::error::Error>,
     ) {
+        firehose_trace_full!(
+            "on opcode (op={} gas={} cost={} err={})",
+            OpCodeView(op),
+            gas,
+            cost,
+            err.map(|e| e.to_string())
+                .unwrap_or_else(|| "<nil>".to_string())
+        );
+
         if self.call_stack.peek().is_none() {
             return;
         }
@@ -1436,14 +1445,20 @@ impl Tracer {
     /// OnOpcodeFault is called when an opcode execution fails
     pub fn on_opcode_fault(
         &mut self,
-        pc: u64,
+        _pc: u64,
         op: u8,
-        _gas: u64,
-        _cost: u64,
+        gas: u64,
+        cost: u64,
         _depth: i32,
         err: &dyn std::error::Error,
     ) {
-        firehose_debug!("opcode fault (pc={} op={} err={})", pc, op, err);
+        firehose_debug!(
+            "on opcode fault (op={} gas={} cost={} err={})",
+            OpCodeView(op),
+            gas,
+            cost,
+            err
+        );
 
         if let Some(active_call) = self.call_stack.peek_mut() {
             // Even faulted opcodes count as executed code
