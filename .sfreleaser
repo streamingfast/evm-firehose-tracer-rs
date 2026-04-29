@@ -1,0 +1,10 @@
+global:
+  language: rust
+  variant: library
+release:
+  # This is the list of Rust crates that are going to be 'cargo publish'.
+  # **Important** Ordering must be strictly specified so that crates
+  # are ordered by dependency order, a crate that depends on another
+  # one should be listed below it's dependency.
+  rust-crates:
+  - firehose-tracer
