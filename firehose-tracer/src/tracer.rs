@@ -73,25 +73,6 @@ pub struct Tracer {
     deferred_call_state: DeferredCallState,
     latest_call_enter_suicided: bool,
     latest_call_enter_suicided_depth: i32, // Depth of the SELFDESTRUCT OnCallEnter
-
-    /// Predicate identifying precompile addresses for the current chain.
-    ///
-    /// Used by [`Self::compute_executed_code_at_call_start`] to mirror geth-firehose's
-    /// `getExecutedCode` precompile branch — calls to precompiles never run interpreter
-    /// opcodes, so `executed_code` must be initialized at call-start based on whether
-    /// the precompile received any input. Without this predicate, calls to precompiles
-    /// will end up with `executed_code = false` even when the precompile produced a result.
-    ///
-    /// `None` means "treat no addresses as precompiles", which is the safe degraded
-    /// behaviour: only the precompile branch of `getExecutedCode` is bypassed, the rest
-    /// (EIP-158 spurious dragon, non-CALL types, OnOpcode update) still works.
-    ///
-    /// TODO(integrator): set via [`Self::with_precompile_predicate`] from the chain's
-    /// hardfork-aware precompile set (e.g. revm's `PrecompileSpecId::from_spec_id` →
-    /// `PrecompileProvider`). For Ethereum mainnet at Cancun this is addresses
-    /// `0x01..=0x0a`; at Prague it's `0x01..=0x11` (EIP-2537 BLS12-381 added). OP Stack
-    /// chains share the standard set.
-    precompile_predicate: Option<Box<dyn Fn(Address) -> bool + Send + Sync>>,
 }
 
 impl Tracer {
@@ -136,21 +117,7 @@ impl Tracer {
             deferred_call_state: DeferredCallState::new(),
             latest_call_enter_suicided: false,
             latest_call_enter_suicided_depth: 0,
-            precompile_predicate: None,
         }
-    }
-
-    /// Install a predicate identifying precompile addresses on the current chain.
-    ///
-    /// See [`Self::precompile_predicate`] for the semantics. Without it, the
-    /// `executed_code` flag for calls to precompiles defaults to `false` — set this to
-    /// match geth-firehose behaviour.
-    pub fn with_precompile_predicate(
-        mut self,
-        predicate: Box<dyn Fn(Address) -> bool + Send + Sync>,
-    ) -> Self {
-        self.precompile_predicate = Some(predicate);
-        self
     }
 
     /// Resets the block state only (not transaction or call state)
@@ -1100,96 +1067,7 @@ impl Tracer {
             }
         }
 
-        // Initialize `executed_code` at call-start, mirroring geth-firehose's
-        // `getExecutedCode` (eth/tracers/firehose.go ~line 1332). The interpreter loop
-        // (and thus `on_opcode`) will further set this to `true` if any opcode runs;
-        // this initial value covers the cases where the loop is skipped entirely
-        // (empty bytecode, precompile, EIP-158 spurious-dragon target, non-CALL-type
-        // calls that geth treats as having "run code" by definition).
-        //
-        // Without this, EIP-7702 calls whose delegate address holds no code (revm short-
-        // circuits in `make_call_frame`'s `if bytecode.is_empty()` branch, never firing
-        // `step`) end up with `executed_code = false` while geth's tracer leaves it
-        // false too in that exact case — but ANY OTHER bytecode-empty CALL path with
-        // non-empty input now matches geth.
-        call.executed_code = self.compute_executed_code_at_call_start(&call);
-
         self.call_stack.push(&mut call);
-    }
-
-    /// Mirror of geth-firehose `getExecutedCode` (eth/tracers/firehose.go).
-    ///
-    /// Returns the value that should be assigned to `Call.executed_code` at the moment
-    /// `on_call_enter` fires, BEFORE the interpreter loop runs. The interpreter (via
-    /// `on_opcode`) will overwrite this to `true` as soon as any opcode executes — so
-    /// the value returned here only "wins" when the interpreter is bypassed entirely:
-    ///
-    /// 1. **Precompile target** — revm's `make_call_frame` runs the precompile and
-    ///    returns a result without ever entering `inspect_instructions`. Set based on
-    ///    `len(input) > 0` (precompiles compute on input).
-    /// 2. **Empty bytecode after EIP-158** — revm short-circuits with `Stop` when the
-    ///    target's bytecode is empty, no `step` fires. Geth treats this as "executed"
-    ///    iff `len(input) > 0` (matches the legacy "account_without_code" semantics).
-    /// 3. **Non-CALL call types** (`CALLCODE`, `DELEGATECALL`, `STATICCALL`) — geth
-    ///    sets `executed_code = len(input) > 0` at call-start regardless. revm fires
-    ///    `step` for these too, so this is redundant when bytecode is non-empty, but
-    ///    becomes load-bearing when those calls hit empty bytecode.
-    /// 4. **CallType_CREATE** — always `false` at call-start (matches geth).
-    /// 5. **Plain CallType_CALL with non-trivial target** — `false`, deferred to
-    ///    `on_opcode` (which will set it to `true` when the first opcode runs). If no
-    ///    opcode runs (empty bytecode, no spurious-dragon match, target exists), the
-    ///    flag stays `false` — which matches geth.
-    fn compute_executed_code_at_call_start(&self, call: &Call) -> bool {
-        use crate::pb::sf::ethereum::r#type::v2::CallType;
-
-        let address = Address::from_slice(&call.address);
-        let call_type = call.call_type;
-        let input_non_empty = !call.input.is_empty();
-        let value_is_zero = call
-            .value
-            .as_ref()
-            .map(|v| v.bytes.iter().all(|b| *b == 0))
-            .unwrap_or(true);
-
-        let is_precompile = self
-            .precompile_predicate
-            .as_ref()
-            .map(|p| p(address))
-            .unwrap_or(false);
-
-        // Branch 1: EIP-158 spurious dragon — non-existent target, no value, plain CALL.
-        // Geth: getExecutedCode lines 1336-1341. revm equivalent fires when the
-        // load_account_with_code returns an empty account with empty bytecode and the
-        // call's checkpoint is committed without entering the interpreter.
-        if call_type == CallType::Call as i32 && self.block_rules.is_eip158 && !is_precompile && value_is_zero {
-            let target_exists = self
-                .transaction_state_reader
-                .as_ref()
-                .map(|sr| sr.exists(address))
-                // Conservative fallback when no state reader is wired: assume the target
-                // exists (so we don't accidentally claim executed_code=true for a
-                // non-existent target). The integrator should always wire a StateReader.
-                .unwrap_or(true);
-            if !target_exists {
-                return call_type != CallType::Create as i32 && input_non_empty;
-            }
-        }
-
-        // Branch 2: Precompile.
-        // Geth: getExecutedCode lines 1344-1347.
-        if is_precompile {
-            return call_type != CallType::Create as i32 && input_non_empty;
-        }
-
-        // Branch 3: Plain CallType_CALL — defer to on_opcode (matches geth line 1349-1352).
-        if call_type == CallType::Call as i32 {
-            return false;
-        }
-
-        // Branch 4 + 5: All other call types (CALLCODE / DELEGATECALL / STATICCALL / CREATE).
-        // Geth: getExecutedCode line 1356. CREATE is forced `false` here; everything else
-        // is `len(input) > 0`.
-        call_type != CallType::Create as i32 && input_non_empty
     }
 
     /// parse_delegation tries to parse a delegation designator from bytecode
@@ -1262,24 +1140,6 @@ impl Tracer {
                 } else {
                     false
                 };
-
-                // Geth-firehose `callEnd` fallback (eth/tracers/firehose.go ~line 1396-1400):
-                // for `ErrInsufficientBalance` / `ErrDepth` failures, the interpreter never
-                // ran (balance/depth check fires before instruction dispatch), so `on_opcode`
-                // never fired and the call-start initialization in
-                // `compute_executed_code_at_call_start` returned `false` for plain CALLs.
-                // Geth force-sets `executed_code = len(input) > 0` here because semantically
-                // "the EVM tried to execute code but couldn't". Mirror that.
-                if !call.executed_code
-                    && err.map(|e| {
-                        utils::error_is_string(e, utils::TEXT_INSUFFICIENT_BALANCE_TRANSFER_ERR)
-                            || utils::error_is_string(e, utils::TEXT_MAX_CALL_DEPTH_ERR)
-                    }).unwrap_or(false)
-                {
-                    use crate::pb::sf::ethereum::r#type::v2::CallType;
-                    call.executed_code =
-                        call.call_type != CallType::Create as i32 && !call.input.is_empty();
-                }
             }
 
             call.end_ordinal = self.block_ordinal.next();
