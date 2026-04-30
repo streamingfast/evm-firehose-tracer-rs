@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
 
 use crate::pb::sf::ethereum::r#type::v2::Block;
 
@@ -46,27 +45,6 @@ impl ShutdownHandle {
             t.join().ok();
         }
     }
-}
-
-/// Returns `true` when the block is old enough to be considered historical,
-/// i.e. its age exceeds `live_threshold`.
-///
-/// Historical blocks use the `Async` emission path; recent ("live") blocks use
-/// the `Blocking` path for lower latency.
-pub(crate) fn is_historical_block(block: &Block, live_threshold: Duration) -> bool {
-    let block_timestamp_secs = block
-        .header
-        .as_ref()
-        .and_then(|h| h.timestamp.as_ref())
-        .map(|ts| ts.seconds as u64)
-        .unwrap_or(0);
-
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    now_secs.saturating_sub(block_timestamp_secs) > live_threshold.as_secs()
 }
 
 /// Atomically write the block number to the cursor file.

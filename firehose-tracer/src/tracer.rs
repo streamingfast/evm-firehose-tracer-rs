@@ -17,7 +17,7 @@ use super::{
 };
 use crate::config::EmissionMode;
 use crate::emission::{
-    background_writer_loop, is_historical_block, read_cursor_file, update_cursor_file, RawBlock,
+    background_writer_loop, read_cursor_file, update_cursor_file, RawBlock,
 };
 pub use crate::emission::ShutdownHandle;
 use crate::pb::sf::ethereum::r#type::v2::{Block, Call, TransactionTrace, Withdrawal};
@@ -494,7 +494,7 @@ impl Tracer {
                     // Use Async for historical blocks; Blocking for live tip.
                     self.block
                         .as_ref()
-                        .map(|b| is_historical_block(b, *live_threshold))
+                        .map(|b| !is_live_block(b, *live_threshold))
                         .unwrap_or(false)
                 }
             };
@@ -2012,4 +2012,25 @@ fn compute_effective_gas_price(event: &TxEvent, base_fee: Option<U256>) -> U256 
             }
         }
     }
+}
+
+/// Returns `true` when the block is recent enough to be considered live,
+/// i.e. its age is within `live_threshold` of the current wall-clock time.
+///
+/// Live blocks use the `Blocking` emission path for lower latency.
+/// Historical (older) blocks use the `Async` path during catch-up sync.
+pub(crate) fn is_live_block(block: &Block, live_threshold: std::time::Duration) -> bool {
+    let block_timestamp_secs = block
+        .header
+        .as_ref()
+        .and_then(|h| h.timestamp.as_ref())
+        .map(|ts| ts.seconds as u64)
+        .unwrap_or(0);
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    now_secs.saturating_sub(block_timestamp_secs) <= live_threshold.as_secs()
 }
