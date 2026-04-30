@@ -15,7 +15,7 @@ alloy-rlp.workspace = true
 alloy-eips.workspace = true
 
 # Other dependencies
-base64.workspace = true
+rbase64.workspace = true
 eyre.workspace = true
 hex.workspace = true
 k256 = { version = "0.13", features = ["ecdsa"] }
