@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -42,15 +42,15 @@ struct RawBlock {
 ///
 /// [`drain`]: ShutdownHandle::drain
 pub struct ShutdownHandle {
-    _sender: SyncSender<RawBlock>,
+    sender: SyncSender<RawBlock>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl ShutdownHandle {
     /// Block until the background writer has flushed all queued blocks and exited.
     pub fn drain(mut self) {
-        // Dropping _sender signals EOF (channel closed) to the writer thread.
-        drop(self._sender);
+        // Dropping sender signals EOF (channel closed) to the writer thread.
+        drop(self.sender);
         if let Some(t) = self.thread.take() {
             t.join().ok();
         }
@@ -61,9 +61,9 @@ impl ShutdownHandle {
 ///
 /// Writes to `<path>.tmp` first, then renames to `<path>` to avoid torn reads.
 /// Format: single decimal integer followed by `\n`.
-fn update_cursor_file(cursor_path: &PathBuf, block_num: u64) {
+fn update_cursor_file(cursor_path: &Path, block_num: u64) {
     let tmp_path = {
-        let mut p = cursor_path.clone();
+        let mut p = cursor_path.to_path_buf();
         let mut name = p.file_name().unwrap_or_default().to_os_string();
         name.push(".tmp");
         p.set_file_name(name);
@@ -582,7 +582,7 @@ impl Tracer {
                     );
                     drop(writer);
                     // Update cursor file on the blocking path.
-                    if let Some(path) = &self.config.cursor_path.clone() {
+                    if let Some(path) = &self.config.cursor_path {
                         update_cursor_file(path, block_number);
                     }
                 }
@@ -646,7 +646,7 @@ impl Tracer {
         let sender = self.async_sender.take()?;
         let thread = self.async_writer_thread.take();
         Some(ShutdownHandle {
-            _sender: sender,
+            sender,
             thread,
         })
     }
