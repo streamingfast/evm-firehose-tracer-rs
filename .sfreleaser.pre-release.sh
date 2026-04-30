@@ -27,8 +27,8 @@ main() {
   check_git_clean
 
   sd '^version = ".*?"$' "version = \"${version}\"" Cargo.toml
-  sd 'version = ".*?",' "version = \"${version}\"," Cargo.toml
-  sd '## Unreleased' "## ${version}" CHANGELOG.md
+  sd 'firehose-tracer = \{ version = "[^"]*"' "firehose-tracer = { version = \"${version}\"" Cargo.toml
+  sd '## Unreleased' "## v${version}" CHANGELOG.md
 
   # Important so that the Cargo.lock file is updated with the new version
   cargo test --target "$(infer_target)"
@@ -95,9 +95,8 @@ usage() {
   echo "the project in various files:"
   echo ""
   echo "This script will update the following files with the new version:"
-  echo "  - Cargo.toml: Updates the 'version' field to <version>"
-  echo "  - substreams.yaml: Updates the 'version' field to v<version>"
-  echo "  - CHANGELOG.md: Replaces '## Unreleased' with '## <version>'"
+  echo "  - Cargo.toml: Updates the workspace package version and firehose-tracer dep version"
+  echo "  - CHANGELOG.md: Replaces '## Unreleased' with '## v<version>'"
   echo ""
   echo "It will also run 'cargo test' to update Cargo.lock and validate the build."
   echo ""
