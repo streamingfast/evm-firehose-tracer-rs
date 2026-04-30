@@ -67,7 +67,9 @@ fn test_blocking_mode_multiple_blocks_in_order() {
 
 #[test]
 fn test_async_mode_emits_block_after_drain() {
-    let (mut tracer, buffer) = make_tracer(EmissionMode::Async { channel_capacity: 32 });
+    let (mut tracer, buffer) = make_tracer(EmissionMode::Async {
+        channel_capacity: 32,
+    });
 
     tracer.on_block_start(test_block());
     tracer.on_block_end(None);
@@ -83,7 +85,9 @@ fn test_async_mode_emits_block_after_drain() {
 
 #[test]
 fn test_async_mode_multiple_blocks_in_order() {
-    let (mut tracer, buffer) = make_tracer(EmissionMode::Async { channel_capacity: 32 });
+    let (mut tracer, buffer) = make_tracer(EmissionMode::Async {
+        channel_capacity: 32,
+    });
 
     for block_num in [200u64, 201, 202, 203, 204] {
         tracer.on_block_start(block_with_number(block_num));
@@ -96,20 +100,27 @@ fn test_async_mode_multiple_blocks_in_order() {
     let entries = parse_firehose_block_entries(&output);
     assert_eq!(5, entries.len(), "all 5 blocks must be emitted");
     for (i, expected_num) in [200u64, 201, 202, 203, 204].iter().enumerate() {
-        assert_eq!(*expected_num, entries[i].block_num, "block {i} out of order");
+        assert_eq!(
+            *expected_num, entries[i].block_num,
+            "block {i} out of order"
+        );
     }
 }
 
 #[test]
 fn test_async_mode_shutdown_handle_drain() {
-    let (mut tracer, buffer) = make_tracer(EmissionMode::Async { channel_capacity: 32 });
+    let (mut tracer, buffer) = make_tracer(EmissionMode::Async {
+        channel_capacity: 32,
+    });
 
     // Emit a block first.
     tracer.on_block_start(test_block());
     tracer.on_block_end(None);
 
     // Obtain a shutdown handle after emitting blocks (this moves the sender out of the tracer).
-    let handle = tracer.shutdown_handle().expect("should have a handle for Async mode");
+    let handle = tracer
+        .shutdown_handle()
+        .expect("should have a handle for Async mode");
 
     // Drain via the handle – this must wait for all blocks to be written.
     handle.drain();
@@ -160,7 +171,9 @@ fn test_cursor_file_written_on_async_mode() {
     let cursor_path = tmp_dir.path().join("cursor.txt");
 
     let config = Config::new()
-        .with_emission_mode(EmissionMode::Async { channel_capacity: 32 })
+        .with_emission_mode(EmissionMode::Async {
+            channel_capacity: 32,
+        })
         .with_cursor_path(cursor_path.clone());
 
     let buffer = InMemoryBuffer::new();
@@ -179,7 +192,7 @@ fn test_cursor_file_written_on_async_mode() {
 
 #[test]
 fn test_last_confirmed_block_returns_none_when_no_cursor() {
-    let (mut tracer, _buffer) = make_tracer(EmissionMode::Blocking);
+    let (tracer, _buffer) = make_tracer(EmissionMode::Blocking);
     assert_eq!(None, tracer.last_confirmed_block());
 }
 
@@ -267,5 +280,9 @@ fn test_auto_mode_uses_async_for_historical_blocks() {
 
     let output = buffer.get_bytes();
     let entries = parse_firehose_block_entries(&output);
-    assert_eq!(1, entries.len(), "historical block must be emitted via async path");
+    assert_eq!(
+        1,
+        entries.len(),
+        "historical block must be emitted via async path"
+    );
 }
