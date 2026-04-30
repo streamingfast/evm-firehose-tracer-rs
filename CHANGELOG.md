@@ -3,6 +3,19 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v5.1.0
+
+### Added
+
+* `EmissionMode` enum controls how encoded blocks are written to stdout: `Blocking` (default, inline on calling thread), `Async { channel_capacity }` (dedicated background writer thread with backpressure), and `Auto { channel_capacity, live_threshold }` (switches between async during catch-up sync and blocking at the live tip based on block age).
+* `Config::with_emission_mode(EmissionMode)` builder method to configure the emission strategy.
+* `Config::with_cursor_path(PathBuf)` builder method and `cursor_path` field: when set, the writer atomically updates a cursor file (write to `<path>.tmp` then rename) after each successful stdout flush so callers can detect gaps after unclean shutdowns. Format: a single decimal block number followed by `\n`.
+* `ShutdownHandle` returned by the tracer when async emission is active, allowing callers to drain the background writer and wait for a clean shutdown.
+
+### Changed
+
+* Base64 encoding switched from the `base64` crate to `rbase64` for SIMD-accelerated encoding and decoding.
+
 ## v5.0.0
 
 ### Added
