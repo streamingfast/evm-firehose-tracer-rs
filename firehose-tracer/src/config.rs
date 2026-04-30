@@ -2,7 +2,8 @@ use alloy_genesis::Genesis;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// ChainConfig defines the chain configuration for the tracer
 /// Simplified version - assumes all historical forks are active
@@ -221,6 +222,39 @@ pub enum ChainClient {
     Monad,
 }
 
+/// Controls when and how encoded blocks are written to stdout.
+#[derive(Debug, Clone)]
+pub enum EmissionMode {
+    /// Current behaviour: encode → base64 → write, all inline on the calling thread.
+    Blocking,
+
+    /// Encode and write in a dedicated background thread.
+    /// The execution thread enqueues a raw block and returns immediately.
+    /// Backpressure is applied when the channel reaches `channel_capacity`.
+    Async {
+        /// Channel capacity for backpressure (sensible default: 32).
+        channel_capacity: usize,
+    },
+
+    /// Switch automatically based on block age relative to wall-clock time.
+    ///
+    /// Blocks older than `live_threshold` use the Async path (pipeline / catch-up sync).
+    /// Blocks within `live_threshold` of now use the Blocking path (live tip, low latency).
+    Auto {
+        /// Channel capacity for the async path.
+        channel_capacity: usize,
+        /// Age threshold: blocks with timestamp more than this behind now use Async.
+        /// Sensible default: 60 seconds.
+        live_threshold: Duration,
+    },
+}
+
+impl Default for EmissionMode {
+    fn default() -> Self {
+        Self::Blocking
+    }
+}
+
 /// Config holds tracer runtime configuration
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
@@ -246,6 +280,20 @@ pub struct Config {
     /// If true, skip tracing genesis block
     #[serde(default)]
     pub ignore_genesis_block: bool,
+
+    /// Controls how encoded blocks are written to the output stream.
+    /// Defaults to `EmissionMode::Blocking` for backward compatibility.
+    #[serde(skip)]
+    pub emission_mode: EmissionMode,
+
+    /// Path to the cursor file that records the last block number successfully
+    /// written to stdout. `None` disables cursor file tracking.
+    ///
+    /// After each successful stdout flush the writer atomically updates this file
+    /// (write to `<path>.tmp`, then rename) so that callers can detect gaps after
+    /// unclean shutdowns.  Format: a single decimal integer followed by `\n`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor_path: Option<PathBuf>,
 }
 
 impl Config {
@@ -269,6 +317,18 @@ impl Config {
     /// Builder method to set output path
     pub fn with_output_path(mut self, path: String) -> Self {
         self.output_path = Some(path);
+        self
+    }
+
+    /// Builder method to set the emission mode
+    pub fn with_emission_mode(mut self, mode: EmissionMode) -> Self {
+        self.emission_mode = mode;
+        self
+    }
+
+    /// Builder method to set the cursor file path
+    pub fn with_cursor_path(mut self, path: PathBuf) -> Self {
+        self.cursor_path = Some(path);
         self
     }
 
@@ -313,6 +373,8 @@ impl Default for Config {
             concurrent_buffer_size: default_concurrent_buffer_size(),
             output_path: None,
             ignore_genesis_block: false,
+            emission_mode: EmissionMode::default(),
+            cursor_path: None,
         }
     }
 }
@@ -422,6 +484,8 @@ mod tests {
             concurrent_buffer_size: 150,
             output_path: Some("/tmp/output.log".to_string()),
             ignore_genesis_block: false,
+            emission_mode: EmissionMode::default(),
+            cursor_path: None,
         };
 
         let json = serde_json::to_string_pretty(&config).unwrap();

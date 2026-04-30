@@ -1,6 +1,10 @@
 use std::io::Write;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::SystemTime;
 
 use alloy_primitives::{Address, B256, U256};
 
@@ -13,12 +17,63 @@ use super::{
     open_callstack::{OpenCall, OpenCallStack},
     ordinal::Ordinal,
 };
+use crate::config::EmissionMode;
 use crate::pb::sf::ethereum::r#type::v2::{Block, Call, TransactionTrace, Withdrawal};
 use crate::types::{BlockEvent, FlashBlockData, ReceiptData, StateReader, TxEvent};
 use crate::{
     config::ChainConfig, config::Rules, firehose_debug, firehose_info, firehose_trace,
     firehose_trace_full, logging::OpCodeView, utils, version::PROTOCOL_VERSION,
 };
+
+/// RawBlock is an internal struct holding the already-collected raw block data
+/// ready for protobuf serialisation in the background writer thread.
+struct RawBlock {
+    block: Block,
+    lib_num: u64,
+    printed_flash_block_index: u64,
+    block_num: u64,
+}
+
+/// ShutdownHandle allows callers to wait for the background writer thread to
+/// flush all pending blocks before exiting.
+///
+/// Dropping the handle (or calling [`drain`]) signals EOF to the writer thread
+/// and waits for it to process all queued blocks.
+///
+/// [`drain`]: ShutdownHandle::drain
+pub struct ShutdownHandle {
+    _sender: SyncSender<RawBlock>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl ShutdownHandle {
+    /// Block until the background writer has flushed all queued blocks and exited.
+    pub fn drain(mut self) {
+        // Dropping _sender signals EOF (channel closed) to the writer thread.
+        drop(self._sender);
+        if let Some(t) = self.thread.take() {
+            t.join().ok();
+        }
+    }
+}
+
+/// Atomically write the block number to the cursor file.
+///
+/// Writes to `<path>.tmp` first, then renames to `<path>` to avoid torn reads.
+/// Format: single decimal integer followed by `\n`.
+fn update_cursor_file(cursor_path: &PathBuf, block_num: u64) {
+    let tmp_path = {
+        let mut p = cursor_path.clone();
+        let mut name = p.file_name().unwrap_or_default().to_os_string();
+        name.push(".tmp");
+        p.set_file_name(name);
+        p
+    };
+    let content = format!("{}\n", block_num);
+    if std::fs::write(&tmp_path, content.as_bytes()).is_ok() {
+        let _ = std::fs::rename(&tmp_path, cursor_path);
+    }
+}
 
 /// FlashBlockSnapshot holds the state of a flash block at a snapshot point in time.
 /// It is used to restore state at the start of the next flash block iteration,
@@ -70,10 +125,14 @@ impl Write for InMemoryBuffer {
 /// from this Rust port as per requirements.
 pub struct Tracer {
     // Global state
-    output_writer: Box<dyn Write + Send>,
+    output_writer: Arc<Mutex<Box<dyn Write + Send>>>,
     init_sent: Arc<AtomicBool>,
     config: Config,
     chain_config: Option<ChainConfig>,
+
+    // Async emission state (None when mode is Blocking)
+    async_sender: Option<SyncSender<RawBlock>>,
+    async_writer_thread: Option<JoinHandle<()>>,
 
     // Block state
     block: Option<Block>,
@@ -132,12 +191,37 @@ impl Tracer {
     /// Creates a new Firehose tracer with a custom output writer.
     /// This is useful for testing where you want to capture output to a buffer.
     pub fn new_with_writer(config: Config, output_writer: Box<dyn Write + Send>) -> Self {
+        // Wrap the writer in an Arc<Mutex<...>> so it can be shared with the
+        // background writer thread when running in Async or Auto mode.
+        let shared_writer: Arc<Mutex<Box<dyn Write + Send>>> =
+            Arc::new(Mutex::new(output_writer));
+
+        // Spawn a background writer thread when mode is Async or Auto.
+        let (async_sender, async_writer_thread) = match &config.emission_mode {
+            EmissionMode::Async { channel_capacity }
+            | EmissionMode::Auto { channel_capacity, .. } => {
+                let capacity = *channel_capacity;
+                let (tx, rx) = sync_channel::<RawBlock>(capacity);
+                let cursor_path = config.cursor_path.clone();
+                let thread_writer = Arc::clone(&shared_writer);
+                let handle = std::thread::spawn(move || {
+                    background_writer_loop(rx, thread_writer, cursor_path);
+                });
+                (Some(tx), Some(handle))
+            }
+            EmissionMode::Blocking => (None, None),
+        };
+
         Self {
             // Global state
-            output_writer,
+            output_writer: shared_writer,
             init_sent: Arc::new(AtomicBool::new(false)),
             config,
             chain_config: None,
+
+            // Async emission state
+            async_sender,
+            async_writer_thread,
 
             // Block state
             block: None,
@@ -212,8 +296,9 @@ impl Tracer {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
+            let mut writer = self.output_writer.lock().unwrap();
             crate::printer::print_to_firehose(
-                &mut self.output_writer,
+                &mut *writer,
                 "FIRE INIT",
                 PROTOCOL_VERSION,
                 node_name,
@@ -450,14 +535,57 @@ impl Tracer {
             let block_number = self.block.as_ref().map_or(0, |b| b.number);
             let lib_num = crate::printer::compute_lib_num(block_number, &self.block_finality);
 
+            // Determine the block timestamp (seconds since epoch) for Auto mode.
+            let block_timestamp_secs = self
+                .block
+                .as_ref()
+                .and_then(|b| b.header.as_ref())
+                .and_then(|h| h.timestamp.as_ref())
+                .map(|ts| ts.seconds as u64)
+                .unwrap_or(0);
+
+            // Decide which emission path to use.
+            let use_async = match &self.config.emission_mode {
+                EmissionMode::Blocking => false,
+                EmissionMode::Async { .. } => true,
+                EmissionMode::Auto { live_threshold, .. } => {
+                    // Use Async for historical blocks; Blocking for live tip.
+                    let now_secs = SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    now_secs.saturating_sub(block_timestamp_secs) > live_threshold.as_secs()
+                }
+            };
+
             // Flush block to firehose
             if let Some(block) = self.block.take() {
-                crate::printer::print_block_to_firehose(
-                    &mut self.output_writer,
-                    block,
-                    lib_num,
-                    printed_flash_block_index,
-                );
+                if use_async {
+                    let raw = RawBlock {
+                        block_num: block.number,
+                        block,
+                        lib_num,
+                        printed_flash_block_index,
+                    };
+                    self.async_sender
+                        .as_ref()
+                        .expect("async_sender must be set when use_async=true")
+                        .send(raw)
+                        .expect("background writer thread has died");
+                } else {
+                    let mut writer = self.output_writer.lock().unwrap();
+                    crate::printer::print_block_to_firehose(
+                        &mut *writer,
+                        block,
+                        lib_num,
+                        printed_flash_block_index,
+                    );
+                    drop(writer);
+                    // Update cursor file on the blocking path.
+                    if let Some(path) = &self.config.cursor_path.clone() {
+                        update_cursor_file(path, block_number);
+                    }
+                }
             }
         } else {
             // An error occurred, could have happened in transaction/call context
@@ -494,6 +622,43 @@ impl Tracer {
     /// OnClose is called when the tracer is being shut down
     pub fn on_close(&mut self) {
         // No concurrent flush queue in this version, nothing to clean up
+    }
+
+    /// Returns the block number last confirmed written to stdout, read from the
+    /// cursor file if `cursor_path` is set.  Returns `None` if no cursor exists yet.
+    pub fn last_confirmed_block(&self) -> Option<u64> {
+        let path = self.config.cursor_path.as_ref()?;
+        let content = std::fs::read_to_string(path).ok()?;
+        content.trim().parse::<u64>().ok()
+    }
+
+    /// Returns a handle that, when dropped or `drain()`-ed, waits for the
+    /// background writer to flush all pending blocks.
+    /// Returns `None` when mode is `Blocking` (no background thread).
+    ///
+    /// After calling this method the tracer can no longer send blocks via the
+    /// async path (the caller is responsible for not emitting further blocks
+    /// after taking the handle).  The `Tracer::Drop` impl is a no-op for the
+    /// writer thread once the handle has been taken.
+    pub fn shutdown_handle(&mut self) -> Option<ShutdownHandle> {
+        // Move the sender and thread handle out of self so that dropping the
+        // ShutdownHandle is the sole event that signals EOF to the writer thread.
+        let sender = self.async_sender.take()?;
+        let thread = self.async_writer_thread.take();
+        Some(ShutdownHandle {
+            _sender: sender,
+            thread,
+        })
+    }
+
+    /// Drain the background writer thread (blocking until it exits).
+    /// Called internally by `Drop`.
+    fn drain_writer_thread(&mut self) {
+        // Drop our sender first so the writer thread sees EOF.
+        drop(self.async_sender.take());
+        if let Some(t) = self.async_writer_thread.take() {
+            t.join().ok();
+        }
     }
 
     // ============================================================================
@@ -1859,6 +2024,42 @@ impl Tracer {
         }
     }
 
+}
+
+impl Drop for Tracer {
+    fn drop(&mut self) {
+        self.drain_writer_thread();
+    }
+}
+
+/// Background writer thread loop.
+///
+/// Receives [`RawBlock`] messages, serialises to protobuf, base64-encodes, writes the
+/// Firehose line to the given writer, and optionally updates the cursor file.
+/// The loop exits cleanly when the channel is closed (all senders dropped).
+fn background_writer_loop(
+    rx: std::sync::mpsc::Receiver<RawBlock>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    cursor_path: Option<PathBuf>,
+) {
+    loop {
+        match rx.recv() {
+            Ok(raw) => {
+                let mut w = writer.lock().unwrap();
+                crate::printer::print_block_to_firehose(
+                    &mut *w,
+                    raw.block,
+                    raw.lib_num,
+                    raw.printed_flash_block_index,
+                );
+                drop(w);
+                if let Some(path) = &cursor_path {
+                    update_cursor_file(path, raw.block_num);
+                }
+            }
+            Err(_) => break, // sender dropped → drain complete → exit
+        }
+    }
 }
 
 /// Computes the effective gas price for a transaction based on its type and block base fee.
