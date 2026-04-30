@@ -1,10 +1,8 @@
 use std::io::Write;
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::SystemTime;
 
 use alloy_primitives::{Address, B256, U256};
 
@@ -18,62 +16,16 @@ use super::{
     ordinal::Ordinal,
 };
 use crate::config::EmissionMode;
+use crate::emission::{
+    background_writer_loop, is_historical_block, read_cursor_file, update_cursor_file, RawBlock,
+};
+pub use crate::emission::ShutdownHandle;
 use crate::pb::sf::ethereum::r#type::v2::{Block, Call, TransactionTrace, Withdrawal};
 use crate::types::{BlockEvent, FlashBlockData, ReceiptData, StateReader, TxEvent};
 use crate::{
     config::ChainConfig, config::Rules, firehose_debug, firehose_info, firehose_trace,
     firehose_trace_full, logging::OpCodeView, utils, version::PROTOCOL_VERSION,
 };
-
-/// RawBlock is an internal struct holding the already-collected raw block data
-/// ready for protobuf serialisation in the background writer thread.
-struct RawBlock {
-    block: Block,
-    lib_num: u64,
-    printed_flash_block_index: u64,
-    block_num: u64,
-}
-
-/// ShutdownHandle allows callers to wait for the background writer thread to
-/// flush all pending blocks before exiting.
-///
-/// Dropping the handle (or calling [`drain`]) signals EOF to the writer thread
-/// and waits for it to process all queued blocks.
-///
-/// [`drain`]: ShutdownHandle::drain
-pub struct ShutdownHandle {
-    sender: SyncSender<RawBlock>,
-    thread: Option<JoinHandle<()>>,
-}
-
-impl ShutdownHandle {
-    /// Block until the background writer has flushed all queued blocks and exited.
-    pub fn drain(mut self) {
-        // Dropping sender signals EOF (channel closed) to the writer thread.
-        drop(self.sender);
-        if let Some(t) = self.thread.take() {
-            t.join().ok();
-        }
-    }
-}
-
-/// Atomically write the block number to the cursor file.
-///
-/// Writes to `<path>.tmp` first, then renames to `<path>` to avoid torn reads.
-/// Format: single decimal integer followed by `\n`.
-fn update_cursor_file(cursor_path: &Path, block_num: u64) {
-    let tmp_path = {
-        let mut p = cursor_path.to_path_buf();
-        let mut name = p.file_name().unwrap_or_default().to_os_string();
-        name.push(".tmp");
-        p.set_file_name(name);
-        p
-    };
-    let content = format!("{}\n", block_num);
-    if std::fs::write(&tmp_path, content.as_bytes()).is_ok() {
-        let _ = std::fs::rename(&tmp_path, cursor_path);
-    }
-}
 
 /// FlashBlockSnapshot holds the state of a flash block at a snapshot point in time.
 /// It is used to restore state at the start of the next flash block iteration,
@@ -296,9 +248,8 @@ impl Tracer {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
-            let mut writer = self.output_writer.lock().unwrap();
             crate::printer::print_to_firehose(
-                &mut *writer,
+                &mut *self.output_writer.lock().unwrap(),
                 "FIRE INIT",
                 PROTOCOL_VERSION,
                 node_name,
@@ -535,26 +486,16 @@ impl Tracer {
             let block_number = self.block.as_ref().map_or(0, |b| b.number);
             let lib_num = crate::printer::compute_lib_num(block_number, &self.block_finality);
 
-            // Determine the block timestamp (seconds since epoch) for Auto mode.
-            let block_timestamp_secs = self
-                .block
-                .as_ref()
-                .and_then(|b| b.header.as_ref())
-                .and_then(|h| h.timestamp.as_ref())
-                .map(|ts| ts.seconds as u64)
-                .unwrap_or(0);
-
             // Decide which emission path to use.
             let use_async = match &self.config.emission_mode {
                 EmissionMode::Blocking => false,
                 EmissionMode::Async { .. } => true,
                 EmissionMode::Auto { live_threshold, .. } => {
                     // Use Async for historical blocks; Blocking for live tip.
-                    let now_secs = SystemTime::now()
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    now_secs.saturating_sub(block_timestamp_secs) > live_threshold.as_secs()
+                    self.block
+                        .as_ref()
+                        .map(|b| is_historical_block(b, *live_threshold))
+                        .unwrap_or(false)
                 }
             };
 
@@ -627,9 +568,7 @@ impl Tracer {
     /// Returns the block number last confirmed written to stdout, read from the
     /// cursor file if `cursor_path` is set.  Returns `None` if no cursor exists yet.
     pub fn last_confirmed_block(&self) -> Option<u64> {
-        let path = self.config.cursor_path.as_ref()?;
-        let content = std::fs::read_to_string(path).ok()?;
-        content.trim().parse::<u64>().ok()
+        read_cursor_file(self.config.cursor_path.as_deref()?)
     }
 
     /// Returns a handle that, when dropped or `drain()`-ed, waits for the
@@ -2029,36 +1968,6 @@ impl Tracer {
 impl Drop for Tracer {
     fn drop(&mut self) {
         self.drain_writer_thread();
-    }
-}
-
-/// Background writer thread loop.
-///
-/// Receives [`RawBlock`] messages, serialises to protobuf, base64-encodes, writes the
-/// Firehose line to the given writer, and optionally updates the cursor file.
-/// The loop exits cleanly when the channel is closed (all senders dropped).
-fn background_writer_loop(
-    rx: std::sync::mpsc::Receiver<RawBlock>,
-    writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    cursor_path: Option<PathBuf>,
-) {
-    loop {
-        match rx.recv() {
-            Ok(raw) => {
-                let mut w = writer.lock().unwrap();
-                crate::printer::print_block_to_firehose(
-                    &mut *w,
-                    raw.block,
-                    raw.lib_num,
-                    raw.printed_flash_block_index,
-                );
-                drop(w);
-                if let Some(path) = &cursor_path {
-                    update_cursor_file(path, raw.block_num);
-                }
-            }
-            Err(_) => break, // sender dropped → drain complete → exit
-        }
     }
 }
 

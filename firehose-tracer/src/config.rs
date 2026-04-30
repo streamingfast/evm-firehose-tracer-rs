@@ -244,7 +244,7 @@ pub enum EmissionMode {
         /// Channel capacity for the async path.
         channel_capacity: usize,
         /// Age threshold: blocks with timestamp more than this behind now use Async.
-        /// Sensible default: 60 seconds.
+        /// Sensible default: 30 seconds.
         live_threshold: Duration,
     },
 }
