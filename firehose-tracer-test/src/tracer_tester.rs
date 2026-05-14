@@ -1,5 +1,5 @@
 use alloy_primitives::{Address, Bloom, Bytes, B256, U256};
-use rbase64;
+use base64_simd::STANDARD as B64_SIMD;
 use firehose_tracer::config::{ChainClient, ChainConfig, Config};
 use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 use firehose_tracer::types::{BlockData, BlockEvent, Opcode, ReceiptData, TxEvent};
@@ -357,11 +357,10 @@ fn parse_firehose_output(output: &[u8]) -> Vec<FirehoseBlockEntry> {
             let timestamp_nano: i64 = parts[8].parse().expect("parse timestamp");
 
             let payload_base64 = parts[9];
-            let decoded = rbase64::decode(payload_base64)
-                .expect(&format!(
-                    "Failed to decode base64 (len={})",
-                    payload_base64.len(),
-                ));
+            let decoded = B64_SIMD.decode_to_vec(payload_base64).expect(&format!(
+                "Failed to decode base64 (len={})",
+                payload_base64.len(),
+            ));
             let block = pbeth::Block::decode(&decoded[..]).expect("Failed to decode protobuf");
 
             // Validate block_num matches protobuf

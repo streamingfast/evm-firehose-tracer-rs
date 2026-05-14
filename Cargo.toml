@@ -4,14 +4,14 @@ exclude = ["resources"]
 resolver = "2"
 
 [workspace.package]
-version = "5.1.0"
+version = "5.1.1"
 edition = "2021"
 description = "Chain-agnostic EVM execution tracer producing Firehose protobuf blocks"
 license = "Apache-2.0"
 
 [workspace.dependencies]
 # Internal workspace crates
-firehose-tracer = { version = "5.1.0", path = "firehose-tracer" }
+firehose-tracer = { version = "5.1.1", path = "firehose-tracer" }
 firehose-tracer-test = { path = "firehose-tracer-test" }
 
 # Alloy dependencies
@@ -22,7 +22,6 @@ alloy-primitives = "1.5"
 alloy-rlp = "0.3"
 
 # Other dependencies
-rbase64 = "2"
 clap = { version = "4", features = ["derive", "env"] }
 eyre = "0.6"
 futures-util = "0.3"
@@ -39,3 +38,4 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
 color-eyre = "0.6"
+base64-simd = "0.8"

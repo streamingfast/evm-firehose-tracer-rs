@@ -6,6 +6,11 @@ description.workspace = true
 license.workspace = true
 readme = "../README.md"
 
+[dev-dependencies]
+base64-simd.workspace = true
+prost.workspace = true
+alloy-primitives.workspace = true
+
 [dependencies]
 # Alloy dependencies
 alloy-genesis.workspace = true
@@ -15,7 +20,7 @@ alloy-rlp.workspace = true
 alloy-eips.workspace = true
 
 # Other dependencies
-rbase64.workspace = true
+base64-simd.workspace = true
 eyre.workspace = true
 hex.workspace = true
 k256 = { version = "0.13", features = ["ecdsa"] }
