@@ -15,10 +15,10 @@ firehose-tracer = { version = "5.1.1", path = "firehose-tracer" }
 firehose-tracer-test = { path = "firehose-tracer-test" }
 
 # Alloy dependencies
-alloy-consensus = "1.5"
-alloy-eips = "1.5"
-alloy-genesis = "1.5"
-alloy-primitives = "1.5"
+alloy-consensus = "2.0"
+alloy-eips = "2.0"
+alloy-genesis = "2.0"
+alloy-primitives = "1.6"
 alloy-rlp = "0.3"
 
 # Other dependencies
