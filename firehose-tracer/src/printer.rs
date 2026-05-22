@@ -5,7 +5,7 @@
 
 use super::finality::FinalityStatus;
 use crate::pb::sf::ethereum::r#type::v2::Block;
-use rbase64;
+use base64_simd::STANDARD as B64_SIMD;
 use prost::Message;
 use std::io::Write;
 
@@ -68,7 +68,7 @@ pub fn print_block_to_firehose<W: Write>(
     let marshalled = block.encode_to_vec();
 
     // Encode the marshalled protobuf to base64
-    let encoded = rbase64::encode(&marshalled);
+    let encoded = B64_SIMD.encode_to_string(&marshalled);
 
     let line = format!(
         "FIRE BLOCK {} {} {} {} {} {} {} {}\n",
