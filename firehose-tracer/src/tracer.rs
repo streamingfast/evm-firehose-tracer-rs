@@ -546,6 +546,38 @@ impl Tracer {
         firehose_info!("block end");
     }
 
+    /// Overrides the in-progress block's hash and state_root, and marks the current
+    /// flashblock as the final partial for its block (`+1000` printed sentinel).
+    ///
+    /// Intended for the flashblock tracing path where the canonical block hash is only
+    /// known **after** the EVM has executed all of the block's transactions and the
+    /// post-execution state root has been computed — typically because the wire-level
+    /// `diff.state_root` carried by the flashblock payload is null/zero and the sealed
+    /// hash that would have come from `on_block_start` is therefore wrong.
+    ///
+    /// Call order:
+    /// 1. `on_block_start` (populates the in-progress block with a placeholder hash).
+    /// 2. EVM execution (inspector populates tx traces, balance/code changes, etc.).
+    /// 3. `set_final_flash_block(recomputed_hash, recomputed_state_root)` — mutates the
+    ///    in-progress block's `hash`, `header.hash`, and `header.state_root` in place
+    ///    and flips `flash_block_is_final` so the next `on_block_end` flush prints
+    ///    `idx + 1000` as the FIRE BLOCK index.
+    /// 4. `on_block_end(None)` — flushes the block to firehose with the updated hash
+    ///    and is_final-marked printed index.
+    ///
+    /// Mirrors `eth/tracers/firehose.go::SetFinalFlashBlock` in
+    /// `streamingfast/go-ethereum`. A no-op when there is no in-progress block.
+    pub fn set_final_flash_block(&mut self, block_hash: B256, state_root: B256) {
+        self.flash_block_is_final = true;
+        if let Some(block) = self.block.as_mut() {
+            block.hash = block_hash.0.to_vec();
+            if let Some(header) = block.header.as_mut() {
+                header.hash = block_hash.0.to_vec();
+                header.state_root = state_root.0.to_vec();
+            }
+        }
+    }
+
     /// OnSkippedBlock is called for blocks that are skipped
     pub fn on_skipped_block(&mut self, event: BlockEvent) {
         // Validate we're not in a transaction (skipped blocks should never have transactions)
