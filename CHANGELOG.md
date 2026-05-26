@@ -3,6 +3,12 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v5.2.0
+
+### Added
+
+* `Tracer::set_final_flash_block(block_hash, state_root)` — overrides the in-progress block's hash and `state_root` and marks the current flashblock as the final partial (prints `idx + 1000` sentinel on the next `on_block_end` flush). Mirrors `SetFinalFlashBlock` from `streamingfast/go-ethereum`.
+
 ## v5.1.1
 
 ### Changed
