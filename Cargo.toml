@@ -11,7 +11,7 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 # Internal workspace crates
-firehose-tracer = { version = "5.2.0", path = "firehose-tracer" }
+firehose-tracer = { version = "5.2.1", path = "firehose-tracer" }
 firehose-tracer-test = { path = "firehose-tracer-test" }
 
 # Alloy dependencies
