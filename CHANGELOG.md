@@ -3,6 +3,11 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v5.2.1
+
+* Flashblocks: offset tx index / cumulative gas / log block_index (without this, they always restart at 0 between partial blocks)
+* Bump alloy-eips/consensus/genesis to 2.0 (to make them compatible with base 1.0.0 and reth 2.2.0
+
 ## v5.2.0
 
 ### Added

@@ -4,7 +4,7 @@ exclude = ["resources"]
 resolver = "2"
 
 [workspace.package]
-version = "5.2.0"
+version = "5.2.1"
 edition = "2021"
 description = "Chain-agnostic EVM execution tracer producing Firehose protobuf blocks"
 license = "Apache-2.0"
