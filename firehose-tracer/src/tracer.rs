@@ -108,6 +108,27 @@ pub struct Tracer {
     flash_block_is_final: bool,
     snapshot_for_next_flash_block: Option<FlashBlockSnapshot>,
 
+    // Cumulative-across-block adjustments applied to transaction / receipt / log
+    // fields produced by the EVM. Always 0 on regular (non-flash) blocks. For
+    // flash-block continuations they're set from `block.transaction_traces`
+    // immediately after `restore_flash_block_snapshot` runs.
+    //
+    // Background: geth's `StateProcessor` shares `usedGas`, `gp`, and
+    // `lastTxIndex` across the `Process()` calls that span a single block's
+    // flashblocks, so the receipts it produces already carry cumulative
+    // values. Other ports that drive the EVM with a fresh executor per
+    // flashblock (e.g. the alloy_evm `BlockExecutor` pattern in
+    // `streamingfast/base/crates/firehose-flashblocks`) get per-iteration
+    // values from revm — `cumulative_gas_used` starts at 0 again, tx
+    // indices start at 0 again, log block_index starts at 0 again. To keep
+    // the wire-level FIRE BLOCK protobuf consistent (every flashblock at
+    // index K must report values cumulative across the *whole block* through
+    // K, not just this iteration), the tracer offsets the EVM-supplied
+    // values by these three counters.
+    flashblock_tx_index_offset: u32,
+    flashblock_cumulative_gas_offset: u64,
+    flashblock_log_block_index_offset: u32,
+
     // Call state
     call_stack: CallStack,
     open_calls: OpenCallStack,
@@ -193,6 +214,9 @@ impl Tracer {
             flash_block_index: None,
             flash_block_is_final: false,
             snapshot_for_next_flash_block: None,
+            flashblock_tx_index_offset: 0,
+            flashblock_cumulative_gas_offset: 0,
+            flashblock_log_block_index_offset: 0,
 
             // Call state
             call_stack: CallStack::new(),
@@ -217,6 +241,14 @@ impl Tracer {
         // (handled in handleFlashBlockStart).
         self.flash_block_index = None;
         self.flash_block_is_final = false;
+        // Cumulative-across-block adjustments are per-block: clear them whenever
+        // the in-progress block is torn down. They'll be recomputed from
+        // `block.transaction_traces` inside `restore_flash_block_snapshot` on a
+        // flash-block continuation, and stay at 0 for the first iteration of a
+        // block (and for regular non-flash blocks).
+        self.flashblock_tx_index_offset = 0;
+        self.flashblock_cumulative_gas_offset = 0;
+        self.flashblock_log_block_index_offset = 0;
     }
 
     /// Resets the transaction state and call state in one shot
@@ -844,7 +876,15 @@ impl Tracer {
 
         // Step 4: Populate receipt data (BEFORE state reverted)
         if let Some(receipt) = receipt {
-            trx.index = receipt.transaction_index;
+            // `flashblock_tx_index_offset` is the count of transactions that
+            // already landed in `block.transaction_traces` (via
+            // `restore_flash_block_snapshot`) from prior flash-block iterations
+            // of this block. For regular (non-flash) blocks and the first
+            // iteration of a flash-block sequence the offset is 0, so this
+            // matches what `receipt.transaction_index` already is.
+            trx.index = receipt
+                .transaction_index
+                .saturating_add(self.flashblock_tx_index_offset);
             trx.gas_used = receipt.gas_used;
             trx.receipt = Some(self.new_receipt_from_data(receipt, trx.r#type));
 
@@ -1053,7 +1093,14 @@ impl Tracer {
         use crate::pb::sf::ethereum::r#type::v2::{Log, TransactionReceipt};
 
         let mut r = TransactionReceipt {
-            cumulative_gas_used: receipt.cumulative_gas_used,
+            // `flashblock_cumulative_gas_offset` carries the cumulative_gas_used
+            // of the *last* transaction restored from prior flash-block
+            // iterations. Adding the EVM's per-iteration value yields the
+            // canonical cumulative-across-block total. 0 for regular blocks
+            // and the first iteration of a flash-block sequence.
+            cumulative_gas_used: receipt
+                .cumulative_gas_used
+                .saturating_add(self.flashblock_cumulative_gas_offset),
             logs_bloom: receipt.logs_bloom.to_vec(),
             state_root: receipt
                 .state_root
@@ -1081,7 +1128,14 @@ impl Tracer {
                 topics: log.topics.iter().map(|t| t.0.to_vec()).collect(),
                 data: log.data.to_vec(),
                 index: 0, // Will be assigned later
-                block_index: log.block_index,
+                // Match the offset applied to call-side logs in `on_log` so
+                // the receipt's logs carry cumulative-across-block
+                // block_index values consistent with the call-side ones.
+                // The `assign_ordinal_and_index_to_receipt_logs` validator
+                // panics if call_log.block_index != receipt_log.block_index.
+                block_index: log
+                    .block_index
+                    .saturating_add(self.flashblock_log_block_index_offset),
                 ordinal: 0, // Will be assigned later
             };
             r.logs.push(pb_log);
@@ -1519,7 +1573,16 @@ impl Tracer {
             address: addr.0.to_vec(),
             data: data.to_vec(),
             index: self.transaction_log_index,
-            block_index,
+            // `flashblock_log_block_index_offset` is the cumulative log count
+            // from prior flash-block iterations of this block (restored in
+            // `restore_flash_block_snapshot`). The EVM's per-iteration
+            // `block_index` is offset here so call-side logs match the
+            // similarly-offset receipt-side logs constructed in
+            // `new_receipt_from_data` — the
+            // `assign_ordinal_and_index_to_receipt_logs` validation panics if
+            // the two diverge. 0 for non-flash blocks and the first iteration
+            // of a flash-block sequence.
+            block_index: block_index.saturating_add(self.flashblock_log_block_index_offset),
             ordinal: self.block_ordinal.next(),
             topics: topics.iter().map(|t| t.0.to_vec()).collect(),
         };
@@ -1719,6 +1782,26 @@ impl Tracer {
                         .cloned(),
                 );
             }
+
+            // Compute the cumulative-across-block offsets from the restored
+            // traces. The EVM running for this flash-block iteration produces
+            // per-iteration tx indices / cumulative gas / log block_index
+            // values; we add these offsets in `complete_transaction`,
+            // `new_receipt_from_data`, and `on_log` so the FIRE BLOCK
+            // protobuf carries values cumulative across the whole block.
+            self.flashblock_tx_index_offset = block.transaction_traces.len() as u32;
+            self.flashblock_cumulative_gas_offset = block
+                .transaction_traces
+                .last()
+                .and_then(|t| t.receipt.as_ref())
+                .map(|r| r.cumulative_gas_used)
+                .unwrap_or(0);
+            self.flashblock_log_block_index_offset = block
+                .transaction_traces
+                .iter()
+                .filter_map(|t| t.receipt.as_ref())
+                .map(|r| r.logs.len() as u32)
+                .sum();
         }
 
         self.block_ordinal.restore(snap.ordinal);
