@@ -3,6 +3,12 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+* Invalid-state panics in the tracer now route through a common `panic_invalid_state` sink that enriches the message with the active block (number + hash), transaction (hash + index) and call (index), plus a snapshot of the state flags (`init`, `in_block`, `in_transaction`, `in_call`, `in_system_call`) and the failing guard's `caller=` location — making "expected to be in block state" failures pinpoint the offending block/trx/call.
+
 ## v5.2.1
 
 * Flashblocks: offset tx index / cumulative gas / log block_index (without this, they always restart at 0 between partial blocks)
