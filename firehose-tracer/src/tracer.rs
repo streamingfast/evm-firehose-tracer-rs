@@ -288,7 +288,7 @@ impl Tracer {
                 node_version,
             );
         } else {
-            panic!("OnBlockchainInit was called more than once");
+            self.panic_invalid_state("OnBlockchainInit was called more than once");
         }
 
         firehose_info!("tracer initialized (chain_id={})", chain_config.chain_id);
@@ -614,8 +614,8 @@ impl Tracer {
     pub fn on_skipped_block(&mut self, event: BlockEvent) {
         // Validate we're not in a transaction (skipped blocks should never have transactions)
         if self.transaction.is_some() {
-            panic!(
-                "OnSkippedBlock called while in transaction state - skipped blocks must have 0 transactions"
+            self.panic_invalid_state(
+                "OnSkippedBlock called while in transaction state - skipped blocks must have 0 transactions",
             );
         }
 
@@ -1722,10 +1722,10 @@ impl Tracer {
             if snap.block.number == block_number {
                 // Same block number: flash block index must strictly advance
                 if fb.idx <= snap.flash_index {
-                    panic!(
+                    self.panic_invalid_state(format!(
                         "flash block index must be strictly greater than previous: block={} last_idx={} new_idx={}",
                         block_number, snap.flash_index, fb.idx
-                    );
+                    ));
                 }
             } else {
                 // Different block number: discard stale snapshot
@@ -1822,7 +1822,10 @@ impl Tracer {
             return;
         }
 
-        let block = self.block.as_ref().expect("must be in block state");
+        let block = match self.block.as_ref() {
+            Some(block) => block,
+            None => self.panic_invalid_state("must be in block state to snapshot flash block"),
+        };
 
         self.snapshot_for_next_flash_block = Some(FlashBlockSnapshot {
             block: block.clone(),
@@ -1953,9 +1956,56 @@ impl Tracer {
     // State Validation Methods
     // ============================================================================
 
+    /// Common sink for every invalid-state / broken-invariant panic in the tracer.
+    ///
+    /// On top of the caller-supplied `message`, it appends the position we were at
+    /// when the invariant broke — the block (number + hash), the transaction (hash +
+    /// index) and the active call (index) — plus a snapshot of the boolean state
+    /// flags. This turns an opaque "expected to be in block state" into something
+    /// that pinpoints the offending block/trx/call, which is the whole point.
+    ///
+    /// `#[track_caller]` is the Rust equivalent of the Go port's `callerSkip`
+    /// argument: it makes [`std::panic::Location::caller`] (and the panic location
+    /// itself) point at the `panic_invalid_state` call site rather than at this
+    /// method, so the reported `caller=` is the guard that actually failed.
+    ///
+    /// Mirrors `panicInvalidState` from `streamingfast/evm-firehose-tracer-go`.
+    #[track_caller]
+    fn panic_invalid_state(&self, message: impl std::fmt::Display) -> ! {
+        let caller = std::panic::Location::caller();
+
+        let mut context = String::new();
+        if let Some(block) = &self.block {
+            context.push_str(&format!(
+                " at block #{} ({})",
+                block.number,
+                hex::encode(&block.hash)
+            ));
+        }
+        if let Some(transaction) = &self.transaction {
+            context.push_str(&format!(
+                " in transaction {} (index {})",
+                hex::encode(&transaction.hash),
+                transaction.index
+            ));
+        }
+        if let Some(call) = self.call_stack.peek() {
+            context.push_str(&format!(" in call (index {})", call.index));
+        }
+
+        panic!(
+            "{message}{context} (caller={caller}, init={}, in_block={}, in_transaction={}, in_call={}, in_system_call={})",
+            self.chain_config.is_some(),
+            self.block.is_some(),
+            self.transaction.is_some(),
+            self.call_stack.has_active_call(),
+            self.in_system_call,
+        );
+    }
+
     fn ensure_blockchain_init(&self) {
         if self.chain_config.is_none() {
-            panic!("the OnBlockchainInit hook should have been called at this point");
+            self.panic_invalid_state("the OnBlockchainInit hook should have been called at this point");
         }
     }
 
@@ -1976,52 +2026,54 @@ impl Tracer {
 
     pub fn ensure_in_block(&self) {
         if self.block.is_none() {
-            panic!("caller expected to be in block state but we were not");
+            self.panic_invalid_state("caller expected to be in block state but we were not");
         }
     }
 
     fn ensure_in_block_and_in_trx(&self) {
         self.ensure_in_block();
         if self.transaction.is_none() {
-            panic!("caller expected to be in transaction state but we were not");
+            self.panic_invalid_state("caller expected to be in transaction state but we were not");
         }
     }
 
     fn ensure_in_block_and_not_in_trx(&self) {
         self.ensure_in_block();
         if self.transaction.is_some() {
-            panic!("caller expected to not be in transaction state but we were");
+            self.panic_invalid_state("caller expected to not be in transaction state but we were");
         }
     }
 
     fn ensure_in_block_and_not_in_trx_and_not_in_call(&self) {
         self.ensure_in_block();
         if self.transaction.is_some() {
-            panic!("caller expected to not be in transaction state but we were");
+            self.panic_invalid_state("caller expected to not be in transaction state but we were");
         }
         if self.call_stack.has_active_call() {
-            panic!("caller expected to not be in call state but we were");
+            self.panic_invalid_state("caller expected to not be in call state but we were");
         }
     }
 
     fn ensure_in_block_or_trx(&self) {
         if self.transaction.is_none() && self.block.is_none() {
-            panic!("caller expected to be in either block or transaction state but we were not");
+            self.panic_invalid_state(
+                "caller expected to be in either block or transaction state but we were not",
+            );
         }
     }
 
     fn ensure_in_block_and_in_trx_and_in_call(&self) {
         if self.transaction.is_none() || self.block.is_none() {
-            panic!("caller expected to be in block and in transaction but we were not");
+            self.panic_invalid_state("caller expected to be in block and in transaction but we were not");
         }
         if !self.call_stack.has_active_call() {
-            panic!("caller expected to be in call state but we were not");
+            self.panic_invalid_state("caller expected to be in call state but we were not");
         }
     }
 
     fn ensure_in_system_call(&self) {
         if !self.in_system_call {
-            panic!("caller expected to be in system call state but we were not");
+            self.panic_invalid_state("caller expected to be in system call state but we were not");
         }
     }
 
