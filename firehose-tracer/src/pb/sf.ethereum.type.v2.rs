@@ -1081,6 +1081,9 @@ pub mod balance_change {
         /// transaction, representing the state change. Consumers should not expect granular per-operation
         /// entries (i.e. GAS_BUY, TRANSFER, GAS_REFUND, REWARD_TRANSACTION_FEE) because of this.
         MonadTxPostState = 20,
+        /// This reason is used only on Monad chain for block prologue/epilogue post-state
+        /// balance changes that are not attributable to a transaction.
+        MonadBlockPostState = 21,
     }
     impl Reason {
         /// String value of the enum field names used in the ProtoBuf definition.
@@ -1110,6 +1113,7 @@ pub mod balance_change {
                 Reason::IncreaseMint => "REASON_INCREASE_MINT",
                 Reason::Revert => "REASON_REVERT",
                 Reason::MonadTxPostState => "REASON_MONAD_TX_POST_STATE",
+                Reason::MonadBlockPostState => "REASON_MONAD_BLOCK_POST_STATE",
             }
         }
         /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1136,6 +1140,7 @@ pub mod balance_change {
                 "REASON_INCREASE_MINT" => Some(Self::IncreaseMint),
                 "REASON_REVERT" => Some(Self::Revert),
                 "REASON_MONAD_TX_POST_STATE" => Some(Self::MonadTxPostState),
+                "REASON_MONAD_BLOCK_POST_STATE" => Some(Self::MonadBlockPostState),
                 _ => None,
             }
         }
