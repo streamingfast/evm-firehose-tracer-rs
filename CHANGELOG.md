@@ -5,8 +5,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## v5.2.2
+
 ### Changed
 
+* Log-count / BlockIndex mismatches in `assign_ordinal_and_index_to_receipt_logs` can now be downgraded from a panic to a warning by setting the `FIREHOSE_TRACER_IGNORE_LOG_MISMATCH` env var; when set, the tracer logs the mismatch and skips ordinal/index assignment for that transaction instead of crashing.
 * Invalid-state panics in the tracer now route through a common `panic_invalid_state` sink that enriches the message with the active block (number + hash), transaction (hash + index) and call (index), plus a snapshot of the state flags (`init`, `in_block`, `in_transaction`, `in_call`, `in_system_call`) and the failing guard's `caller=` location — making "expected to be in block state" failures pinpoint the offending block/trx/call.
 
 ## v5.2.1

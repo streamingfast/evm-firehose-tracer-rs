@@ -964,8 +964,20 @@ impl Tracer {
             return; // No receipt, nothing to do
         };
 
+        // Hotfix escape hatch: when FIREHOSE_TRACER_IGNORE_LOG_MISMATCH is set, log
+        // instead of panicking on log inconsistencies and skip ordinal assignment.
+        let ignore_mismatch = std::env::var_os("FIREHOSE_TRACER_IGNORE_LOG_MISMATCH").is_some();
+
         // Validate counts match
         if call_logs.len() != receipt_logs.len() {
+            if ignore_mismatch {
+                tracing::warn!(
+                    call_logs = call_logs.len(),
+                    receipt_logs = receipt_logs.len(),
+                    "mismatch between call logs and receipt logs, ignoring (FIREHOSE_TRACER_IGNORE_LOG_MISMATCH set)"
+                );
+                return;
+            }
             panic!(
                 "mismatch between call logs and receipt logs: transaction has {} call logs but {} receipt logs",
                 call_logs.len(),
@@ -979,6 +991,15 @@ impl Tracer {
 
             // Validate BlockIndex matches
             if call_log.block_index != receipt_log.block_index {
+                if ignore_mismatch {
+                    tracing::warn!(
+                        index = i,
+                        call_log_block_index = call_log.block_index,
+                        receipt_log_block_index = receipt_log.block_index,
+                        "mismatch between call log and receipt log BlockIndex, ignoring (FIREHOSE_TRACER_IGNORE_LOG_MISMATCH set)"
+                    );
+                    return;
+                }
                 panic!(
                     "mismatch between call log and receipt log BlockIndex at index {}: call log has {} but receipt log has {}",
                     i, call_log.block_index, receipt_log.block_index
