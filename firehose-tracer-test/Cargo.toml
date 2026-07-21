@@ -9,7 +9,7 @@ firehose-tracer.workspace = true
 # External dependencies
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
-base64.workspace = true
+base64-simd.workspace = true
 eyre.workspace = true
 hex.workspace = true
 k256 = { version = "0.13", features = ["ecdsa"] }
@@ -19,6 +19,7 @@ serde_json.workspace = true
 
 # Test dependencies (always available in this crate)
 [dev-dependencies]
+tempfile = "3"
 
 [lib]
 name = "firehose_tracer_test"
@@ -140,3 +141,7 @@ path = "tests/tracer_setcode_test.rs"
 [[test]]
 name = "tracer_delegation_test"
 path = "tests/tracer_delegation_test.rs"
+
+[[test]]
+name = "tracer_emission_mode_test"
+path = "tests/tracer_emission_mode_test.rs"

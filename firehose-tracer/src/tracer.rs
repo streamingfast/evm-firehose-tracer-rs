@@ -1,6 +1,8 @@
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::mpsc::{sync_channel, SyncSender};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 
 use alloy_primitives::{Address, B256, U256};
 
@@ -13,11 +15,16 @@ use super::{
     open_callstack::{OpenCall, OpenCallStack},
     ordinal::Ordinal,
 };
+use crate::config::EmissionMode;
+use crate::emission::{
+    background_writer_loop, read_cursor_file, update_cursor_file, RawBlock,
+};
+pub use crate::emission::ShutdownHandle;
 use crate::pb::sf::ethereum::r#type::v2::{Block, Call, TransactionTrace, Withdrawal};
 use crate::types::{BlockEvent, FlashBlockData, ReceiptData, StateReader, TxEvent};
 use crate::{
-    config::ChainConfig, config::Rules, firehose_debug, firehose_info, firehose_trace, utils,
-    version::PROTOCOL_VERSION,
+    config::ChainConfig, config::Rules, firehose_debug, firehose_info, firehose_trace,
+    firehose_trace_full, logging::OpCodeView, utils, version::PROTOCOL_VERSION,
 };
 
 /// FlashBlockSnapshot holds the state of a flash block at a snapshot point in time.
@@ -33,6 +40,36 @@ struct FlashBlockSnapshot {
     flash_index: u64,           // Flash block index at snapshot time (for validation)
 }
 
+/// InMemoryBuffer is a thread-safe in-memory buffer that implements Write.
+/// Useful for capturing tracer output in tests or when driving a real EVM
+/// without writing to stdout/file.
+#[derive(Clone)]
+pub struct InMemoryBuffer {
+    buffer: Arc<Mutex<Vec<u8>>>,
+}
+
+impl InMemoryBuffer {
+    pub fn new() -> Self {
+        Self {
+            buffer: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn get_bytes(&self) -> Vec<u8> {
+        self.buffer.lock().unwrap().clone()
+    }
+}
+
+impl Write for InMemoryBuffer {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.buffer.lock().unwrap().write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.buffer.lock().unwrap().flush()
+    }
+}
+
 /// Tracer is the main Firehose tracer that captures EVM execution and produces
 /// protobuf blocks for indexing.
 ///
@@ -40,10 +77,14 @@ struct FlashBlockSnapshot {
 /// from this Rust port as per requirements.
 pub struct Tracer {
     // Global state
-    output_writer: Box<dyn Write + Send>,
+    output_writer: Arc<Mutex<Box<dyn Write + Send>>>,
     init_sent: Arc<AtomicBool>,
     config: Config,
     chain_config: Option<ChainConfig>,
+
+    // Async emission state (None when mode is Blocking)
+    async_sender: Option<SyncSender<RawBlock>>,
+    async_writer_thread: Option<JoinHandle<()>>,
 
     // Block state
     block: Option<Block>,
@@ -67,6 +108,27 @@ pub struct Tracer {
     flash_block_is_final: bool,
     snapshot_for_next_flash_block: Option<FlashBlockSnapshot>,
 
+    // Cumulative-across-block adjustments applied to transaction / receipt / log
+    // fields produced by the EVM. Always 0 on regular (non-flash) blocks. For
+    // flash-block continuations they're set from `block.transaction_traces`
+    // immediately after `restore_flash_block_snapshot` runs.
+    //
+    // Background: geth's `StateProcessor` shares `usedGas`, `gp`, and
+    // `lastTxIndex` across the `Process()` calls that span a single block's
+    // flashblocks, so the receipts it produces already carry cumulative
+    // values. Other ports that drive the EVM with a fresh executor per
+    // flashblock (e.g. the alloy_evm `BlockExecutor` pattern in
+    // `streamingfast/base/crates/firehose-flashblocks`) get per-iteration
+    // values from revm — `cumulative_gas_used` starts at 0 again, tx
+    // indices start at 0 again, log block_index starts at 0 again. To keep
+    // the wire-level FIRE BLOCK protobuf consistent (every flashblock at
+    // index K must report values cumulative across the *whole block* through
+    // K, not just this iteration), the tracer offsets the EVM-supplied
+    // values by these three counters.
+    flashblock_tx_index_offset: u32,
+    flashblock_cumulative_gas_offset: u64,
+    flashblock_log_block_index_offset: u32,
+
     // Call state
     call_stack: CallStack,
     open_calls: OpenCallStack,
@@ -82,15 +144,57 @@ impl Tracer {
         Self::new_with_writer(config, Box::new(std::io::stdout()))
     }
 
+    /// Creates a fully initialized tracer backed by an in-memory buffer.
+    ///
+    /// Bundles `new_with_writer` + `on_blockchain_init`, returning both the
+    /// tracer and the captured buffer. This replaces ~15 lines of setup when
+    /// driving a real EVM (or any non-mock scenario) in tests.
+    pub fn with_buffer(
+        config: Config,
+        chain_config: ChainConfig,
+        tracer_id: &str,
+        version: &str,
+    ) -> (Self, InMemoryBuffer) {
+        let buffer = InMemoryBuffer::new();
+        let mut tracer = Self::new_with_writer(config, Box::new(buffer.clone()));
+        tracer.on_blockchain_init(tracer_id, version, chain_config);
+        (tracer, buffer)
+    }
+
     /// Creates a new Firehose tracer with a custom output writer.
     /// This is useful for testing where you want to capture output to a buffer.
     pub fn new_with_writer(config: Config, output_writer: Box<dyn Write + Send>) -> Self {
+        // Wrap the writer in an Arc<Mutex<...>> so it can be shared with the
+        // background writer thread when running in Async or Auto mode.
+        let shared_writer: Arc<Mutex<Box<dyn Write + Send>>> =
+            Arc::new(Mutex::new(output_writer));
+
+        // Spawn a background writer thread when mode is Async or Auto.
+        let (async_sender, async_writer_thread) = match &config.emission_mode {
+            EmissionMode::Async { channel_capacity }
+            | EmissionMode::Auto { channel_capacity, .. } => {
+                let capacity = *channel_capacity;
+                let (tx, rx) = sync_channel::<RawBlock>(capacity);
+                let cursor_path = config.cursor_path.clone();
+                let thread_writer = Arc::clone(&shared_writer);
+                let handle = std::thread::spawn(move || {
+                    background_writer_loop(rx, thread_writer, cursor_path);
+                });
+                (Some(tx), Some(handle))
+            }
+            EmissionMode::Blocking => (None, None),
+        };
+
         Self {
             // Global state
-            output_writer,
+            output_writer: shared_writer,
             init_sent: Arc::new(AtomicBool::new(false)),
             config,
             chain_config: None,
+
+            // Async emission state
+            async_sender,
+            async_writer_thread,
 
             // Block state
             block: None,
@@ -110,6 +214,9 @@ impl Tracer {
             flash_block_index: None,
             flash_block_is_final: false,
             snapshot_for_next_flash_block: None,
+            flashblock_tx_index_offset: 0,
+            flashblock_cumulative_gas_offset: 0,
+            flashblock_log_block_index_offset: 0,
 
             // Call state
             call_stack: CallStack::new(),
@@ -134,6 +241,14 @@ impl Tracer {
         // (handled in handleFlashBlockStart).
         self.flash_block_index = None;
         self.flash_block_is_final = false;
+        // Cumulative-across-block adjustments are per-block: clear them whenever
+        // the in-progress block is torn down. They'll be recomputed from
+        // `block.transaction_traces` inside `restore_flash_block_snapshot` on a
+        // flash-block continuation, and stay at 0 for the first iteration of a
+        // block (and for regular non-flash blocks).
+        self.flashblock_tx_index_offset = 0;
+        self.flashblock_cumulative_gas_offset = 0;
+        self.flashblock_log_block_index_offset = 0;
     }
 
     /// Resets the transaction state and call state in one shot
@@ -166,14 +281,14 @@ impl Tracer {
             .is_ok()
         {
             crate::printer::print_to_firehose(
-                &mut self.output_writer,
+                &mut *self.output_writer.lock().unwrap(),
                 "FIRE INIT",
                 PROTOCOL_VERSION,
                 node_name,
                 node_version,
             );
         } else {
-            panic!("OnBlockchainInit was called more than once");
+            self.panic_invalid_state("OnBlockchainInit was called more than once");
         }
 
         firehose_info!("tracer initialized (chain_id={})", chain_config.chain_id);
@@ -403,14 +518,47 @@ impl Tracer {
             let block_number = self.block.as_ref().map_or(0, |b| b.number);
             let lib_num = crate::printer::compute_lib_num(block_number, &self.block_finality);
 
+            // Decide which emission path to use.
+            let use_async = match &self.config.emission_mode {
+                EmissionMode::Blocking => false,
+                EmissionMode::Async { .. } => true,
+                EmissionMode::Auto { live_threshold, .. } => {
+                    // Use Async for historical blocks; Blocking for live tip.
+                    self.block
+                        .as_ref()
+                        .map(|b| !is_live_block(b, *live_threshold))
+                        .unwrap_or(false)
+                }
+            };
+
             // Flush block to firehose
             if let Some(block) = self.block.take() {
-                crate::printer::print_block_to_firehose(
-                    &mut self.output_writer,
-                    block,
-                    lib_num,
-                    printed_flash_block_index,
-                );
+                if use_async {
+                    let raw = RawBlock {
+                        block_num: block.number,
+                        block,
+                        lib_num,
+                        printed_flash_block_index,
+                    };
+                    self.async_sender
+                        .as_ref()
+                        .expect("async_sender must be set when use_async=true")
+                        .send(raw)
+                        .expect("background writer thread has died");
+                } else {
+                    let mut writer = self.output_writer.lock().unwrap();
+                    crate::printer::print_block_to_firehose(
+                        &mut *writer,
+                        block,
+                        lib_num,
+                        printed_flash_block_index,
+                    );
+                    drop(writer);
+                    // Update cursor file on the blocking path.
+                    if let Some(path) = &self.config.cursor_path {
+                        update_cursor_file(path, block_number);
+                    }
+                }
             }
         } else {
             // An error occurred, could have happened in transaction/call context
@@ -430,12 +578,44 @@ impl Tracer {
         firehose_info!("block end");
     }
 
+    /// Overrides the in-progress block's hash and state_root, and marks the current
+    /// flashblock as the final partial for its block (`+1000` printed sentinel).
+    ///
+    /// Intended for the flashblock tracing path where the canonical block hash is only
+    /// known **after** the EVM has executed all of the block's transactions and the
+    /// post-execution state root has been computed — typically because the wire-level
+    /// `diff.state_root` carried by the flashblock payload is null/zero and the sealed
+    /// hash that would have come from `on_block_start` is therefore wrong.
+    ///
+    /// Call order:
+    /// 1. `on_block_start` (populates the in-progress block with a placeholder hash).
+    /// 2. EVM execution (inspector populates tx traces, balance/code changes, etc.).
+    /// 3. `set_final_flash_block(recomputed_hash, recomputed_state_root)` — mutates the
+    ///    in-progress block's `hash`, `header.hash`, and `header.state_root` in place
+    ///    and flips `flash_block_is_final` so the next `on_block_end` flush prints
+    ///    `idx + 1000` as the FIRE BLOCK index.
+    /// 4. `on_block_end(None)` — flushes the block to firehose with the updated hash
+    ///    and is_final-marked printed index.
+    ///
+    /// Mirrors `eth/tracers/firehose.go::SetFinalFlashBlock` in
+    /// `streamingfast/go-ethereum`. A no-op when there is no in-progress block.
+    pub fn set_final_flash_block(&mut self, block_hash: B256, state_root: B256) {
+        self.flash_block_is_final = true;
+        if let Some(block) = self.block.as_mut() {
+            block.hash = block_hash.0.to_vec();
+            if let Some(header) = block.header.as_mut() {
+                header.hash = block_hash.0.to_vec();
+                header.state_root = state_root.0.to_vec();
+            }
+        }
+    }
+
     /// OnSkippedBlock is called for blocks that are skipped
     pub fn on_skipped_block(&mut self, event: BlockEvent) {
         // Validate we're not in a transaction (skipped blocks should never have transactions)
         if self.transaction.is_some() {
-            panic!(
-                "OnSkippedBlock called while in transaction state - skipped blocks must have 0 transactions"
+            self.panic_invalid_state(
+                "OnSkippedBlock called while in transaction state - skipped blocks must have 0 transactions",
             );
         }
 
@@ -447,6 +627,41 @@ impl Tracer {
     /// OnClose is called when the tracer is being shut down
     pub fn on_close(&mut self) {
         // No concurrent flush queue in this version, nothing to clean up
+    }
+
+    /// Returns the block number last confirmed written to stdout, read from the
+    /// cursor file if `cursor_path` is set.  Returns `None` if no cursor exists yet.
+    pub fn last_confirmed_block(&self) -> Option<u64> {
+        read_cursor_file(self.config.cursor_path.as_deref()?)
+    }
+
+    /// Returns a handle that, when dropped or `drain()`-ed, waits for the
+    /// background writer to flush all pending blocks.
+    /// Returns `None` when mode is `Blocking` (no background thread).
+    ///
+    /// After calling this method the tracer can no longer send blocks via the
+    /// async path (the caller is responsible for not emitting further blocks
+    /// after taking the handle).  The `Tracer::Drop` impl is a no-op for the
+    /// writer thread once the handle has been taken.
+    pub fn shutdown_handle(&mut self) -> Option<ShutdownHandle> {
+        // Move the sender and thread handle out of self so that dropping the
+        // ShutdownHandle is the sole event that signals EOF to the writer thread.
+        let sender = self.async_sender.take()?;
+        let thread = self.async_writer_thread.take();
+        Some(ShutdownHandle {
+            sender,
+            thread,
+        })
+    }
+
+    /// Drain the background writer thread (blocking until it exits).
+    /// Called internally by `Drop`.
+    fn drain_writer_thread(&mut self) {
+        // Drop our sender first so the writer thread sees EOF.
+        drop(self.async_sender.take());
+        if let Some(t) = self.async_writer_thread.take() {
+            t.join().ok();
+        }
     }
 
     // ============================================================================
@@ -661,7 +876,15 @@ impl Tracer {
 
         // Step 4: Populate receipt data (BEFORE state reverted)
         if let Some(receipt) = receipt {
-            trx.index = receipt.transaction_index;
+            // `flashblock_tx_index_offset` is the count of transactions that
+            // already landed in `block.transaction_traces` (via
+            // `restore_flash_block_snapshot`) from prior flash-block iterations
+            // of this block. For regular (non-flash) blocks and the first
+            // iteration of a flash-block sequence the offset is 0, so this
+            // matches what `receipt.transaction_index` already is.
+            trx.index = receipt
+                .transaction_index
+                .saturating_add(self.flashblock_tx_index_offset);
             trx.gas_used = receipt.gas_used;
             trx.receipt = Some(self.new_receipt_from_data(receipt, trx.r#type));
 
@@ -741,8 +964,20 @@ impl Tracer {
             return; // No receipt, nothing to do
         };
 
+        // Hotfix escape hatch: when FIREHOSE_TRACER_IGNORE_LOG_MISMATCH is set, log
+        // instead of panicking on log inconsistencies and skip ordinal assignment.
+        let ignore_mismatch = std::env::var_os("FIREHOSE_TRACER_IGNORE_LOG_MISMATCH").is_some();
+
         // Validate counts match
         if call_logs.len() != receipt_logs.len() {
+            if ignore_mismatch {
+                tracing::warn!(
+                    call_logs = call_logs.len(),
+                    receipt_logs = receipt_logs.len(),
+                    "mismatch between call logs and receipt logs, ignoring (FIREHOSE_TRACER_IGNORE_LOG_MISMATCH set)"
+                );
+                return;
+            }
             panic!(
                 "mismatch between call logs and receipt logs: transaction has {} call logs but {} receipt logs",
                 call_logs.len(),
@@ -756,6 +991,15 @@ impl Tracer {
 
             // Validate BlockIndex matches
             if call_log.block_index != receipt_log.block_index {
+                if ignore_mismatch {
+                    tracing::warn!(
+                        index = i,
+                        call_log_block_index = call_log.block_index,
+                        receipt_log_block_index = receipt_log.block_index,
+                        "mismatch between call log and receipt log BlockIndex, ignoring (FIREHOSE_TRACER_IGNORE_LOG_MISMATCH set)"
+                    );
+                    return;
+                }
                 panic!(
                     "mismatch between call log and receipt log BlockIndex at index {}: call log has {} but receipt log has {}",
                     i, call_log.block_index, receipt_log.block_index
@@ -870,7 +1114,14 @@ impl Tracer {
         use crate::pb::sf::ethereum::r#type::v2::{Log, TransactionReceipt};
 
         let mut r = TransactionReceipt {
-            cumulative_gas_used: receipt.cumulative_gas_used,
+            // `flashblock_cumulative_gas_offset` carries the cumulative_gas_used
+            // of the *last* transaction restored from prior flash-block
+            // iterations. Adding the EVM's per-iteration value yields the
+            // canonical cumulative-across-block total. 0 for regular blocks
+            // and the first iteration of a flash-block sequence.
+            cumulative_gas_used: receipt
+                .cumulative_gas_used
+                .saturating_add(self.flashblock_cumulative_gas_offset),
             logs_bloom: receipt.logs_bloom.to_vec(),
             state_root: receipt
                 .state_root
@@ -898,7 +1149,14 @@ impl Tracer {
                 topics: log.topics.iter().map(|t| t.0.to_vec()).collect(),
                 data: log.data.to_vec(),
                 index: 0, // Will be assigned later
-                block_index: log.block_index,
+                // Match the offset applied to call-side logs in `on_log` so
+                // the receipt's logs carry cumulative-across-block
+                // block_index values consistent with the call-side ones.
+                // The `assign_ordinal_and_index_to_receipt_logs` validator
+                // panics if call_log.block_index != receipt_log.block_index.
+                block_index: log
+                    .block_index
+                    .saturating_add(self.flashblock_log_block_index_offset),
                 ordinal: 0, // Will be assigned later
             };
             r.logs.push(pb_log);
@@ -1208,16 +1466,16 @@ impl Tracer {
 
     /// OnNonceChange is called when an account nonce changes
     pub fn on_nonce_change(&mut self, addr: Address, old_nonce: u64, new_nonce: u64) {
-        if old_nonce == new_nonce {
-            return;
-        }
-
         firehose_debug!(
-            "nonce changed (address={:?} old_nonce={} new_nonce={})",
+            "nonce changed (address={:?} prev_nonce={} new_nonce={})",
             addr,
             old_nonce,
             new_nonce
         );
+
+        if old_nonce == new_nonce {
+            return;
+        }
 
         self.ensure_in_block_and_in_trx();
 
@@ -1244,16 +1502,16 @@ impl Tracer {
         old_code: &[u8],
         new_code: &[u8],
     ) {
-        if prev_code_hash == new_code_hash {
-            return;
-        }
-
         firehose_debug!(
             "code changed (address={:?} prev_hash={:?} new_hash={:?})",
             addr,
             prev_code_hash,
             new_code_hash
         );
+
+        if prev_code_hash == new_code_hash {
+            return;
+        }
 
         self.ensure_in_block_or_trx();
 
@@ -1294,11 +1552,11 @@ impl Tracer {
         old_value: B256,
         new_value: B256,
     ) {
+        firehose_trace!("storage changed (address={:?} key={:?})", addr, slot);
+
         if old_value == new_value {
             return;
         }
-
-        firehose_trace!("storage changed (address={:?} key={:?})", addr, slot);
 
         self.ensure_in_block_and_in_trx();
 
@@ -1336,7 +1594,16 @@ impl Tracer {
             address: addr.0.to_vec(),
             data: data.to_vec(),
             index: self.transaction_log_index,
-            block_index,
+            // `flashblock_log_block_index_offset` is the cumulative log count
+            // from prior flash-block iterations of this block (restored in
+            // `restore_flash_block_snapshot`). The EVM's per-iteration
+            // `block_index` is offset here so call-side logs match the
+            // similarly-offset receipt-side logs constructed in
+            // `new_receipt_from_data` — the
+            // `assign_ordinal_and_index_to_receipt_logs` validation panics if
+            // the two diverge. 0 for non-flash blocks and the first iteration
+            // of a flash-block sequence.
+            block_index: block_index.saturating_add(self.flashblock_log_block_index_offset),
             ordinal: self.block_ordinal.next(),
             topics: topics.iter().map(|t| t.0.to_vec()).collect(),
         };
@@ -1354,12 +1621,21 @@ impl Tracer {
         &mut self,
         _pc: u64,
         op: u8,
-        _gas: u64,
-        _cost: u64,
+        gas: u64,
+        cost: u64,
         _data: &[u8],
         _depth: i32,
         err: Option<&dyn std::error::Error>,
     ) {
+        firehose_trace_full!(
+            "on opcode (op={} gas={} cost={} err={})",
+            OpCodeView(op),
+            gas,
+            cost,
+            err.map(|e| e.to_string())
+                .unwrap_or_else(|| "<nil>".to_string())
+        );
+
         if self.call_stack.peek().is_none() {
             return;
         }
@@ -1389,14 +1665,20 @@ impl Tracer {
     /// OnOpcodeFault is called when an opcode execution fails
     pub fn on_opcode_fault(
         &mut self,
-        pc: u64,
+        _pc: u64,
         op: u8,
-        _gas: u64,
-        _cost: u64,
+        gas: u64,
+        cost: u64,
         _depth: i32,
         err: &dyn std::error::Error,
     ) {
-        firehose_debug!("opcode fault (pc={} op={} err={})", pc, op, err);
+        firehose_debug!(
+            "on opcode fault (op={} gas={} cost={} err={})",
+            OpCodeView(op),
+            gas,
+            cost,
+            err
+        );
 
         if let Some(active_call) = self.call_stack.peek_mut() {
             // Even faulted opcodes count as executed code
@@ -1461,10 +1743,10 @@ impl Tracer {
             if snap.block.number == block_number {
                 // Same block number: flash block index must strictly advance
                 if fb.idx <= snap.flash_index {
-                    panic!(
+                    self.panic_invalid_state(format!(
                         "flash block index must be strictly greater than previous: block={} last_idx={} new_idx={}",
                         block_number, snap.flash_index, fb.idx
-                    );
+                    ));
                 }
             } else {
                 // Different block number: discard stale snapshot
@@ -1521,6 +1803,26 @@ impl Tracer {
                         .cloned(),
                 );
             }
+
+            // Compute the cumulative-across-block offsets from the restored
+            // traces. The EVM running for this flash-block iteration produces
+            // per-iteration tx indices / cumulative gas / log block_index
+            // values; we add these offsets in `complete_transaction`,
+            // `new_receipt_from_data`, and `on_log` so the FIRE BLOCK
+            // protobuf carries values cumulative across the whole block.
+            self.flashblock_tx_index_offset = block.transaction_traces.len() as u32;
+            self.flashblock_cumulative_gas_offset = block
+                .transaction_traces
+                .last()
+                .and_then(|t| t.receipt.as_ref())
+                .map(|r| r.cumulative_gas_used)
+                .unwrap_or(0);
+            self.flashblock_log_block_index_offset = block
+                .transaction_traces
+                .iter()
+                .filter_map(|t| t.receipt.as_ref())
+                .map(|r| r.logs.len() as u32)
+                .sum();
         }
 
         self.block_ordinal.restore(snap.ordinal);
@@ -1541,7 +1843,10 @@ impl Tracer {
             return;
         }
 
-        let block = self.block.as_ref().expect("must be in block state");
+        let block = match self.block.as_ref() {
+            Some(block) => block,
+            None => self.panic_invalid_state("must be in block state to snapshot flash block"),
+        };
 
         self.snapshot_for_next_flash_block = Some(FlashBlockSnapshot {
             block: block.clone(),
@@ -1672,9 +1977,56 @@ impl Tracer {
     // State Validation Methods
     // ============================================================================
 
+    /// Common sink for every invalid-state / broken-invariant panic in the tracer.
+    ///
+    /// On top of the caller-supplied `message`, it appends the position we were at
+    /// when the invariant broke — the block (number + hash), the transaction (hash +
+    /// index) and the active call (index) — plus a snapshot of the boolean state
+    /// flags. This turns an opaque "expected to be in block state" into something
+    /// that pinpoints the offending block/trx/call, which is the whole point.
+    ///
+    /// `#[track_caller]` is the Rust equivalent of the Go port's `callerSkip`
+    /// argument: it makes [`std::panic::Location::caller`] (and the panic location
+    /// itself) point at the `panic_invalid_state` call site rather than at this
+    /// method, so the reported `caller=` is the guard that actually failed.
+    ///
+    /// Mirrors `panicInvalidState` from `streamingfast/evm-firehose-tracer-go`.
+    #[track_caller]
+    fn panic_invalid_state(&self, message: impl std::fmt::Display) -> ! {
+        let caller = std::panic::Location::caller();
+
+        let mut context = String::new();
+        if let Some(block) = &self.block {
+            context.push_str(&format!(
+                " at block #{} ({})",
+                block.number,
+                hex::encode(&block.hash)
+            ));
+        }
+        if let Some(transaction) = &self.transaction {
+            context.push_str(&format!(
+                " in transaction {} (index {})",
+                hex::encode(&transaction.hash),
+                transaction.index
+            ));
+        }
+        if let Some(call) = self.call_stack.peek() {
+            context.push_str(&format!(" in call (index {})", call.index));
+        }
+
+        panic!(
+            "{message}{context} (caller={caller}, init={}, in_block={}, in_transaction={}, in_call={}, in_system_call={})",
+            self.chain_config.is_some(),
+            self.block.is_some(),
+            self.transaction.is_some(),
+            self.call_stack.has_active_call(),
+            self.in_system_call,
+        );
+    }
+
     fn ensure_blockchain_init(&self) {
         if self.chain_config.is_none() {
-            panic!("the OnBlockchainInit hook should have been called at this point");
+            self.panic_invalid_state("the OnBlockchainInit hook should have been called at this point");
         }
     }
 
@@ -1695,52 +2047,54 @@ impl Tracer {
 
     pub fn ensure_in_block(&self) {
         if self.block.is_none() {
-            panic!("caller expected to be in block state but we were not");
+            self.panic_invalid_state("caller expected to be in block state but we were not");
         }
     }
 
     fn ensure_in_block_and_in_trx(&self) {
         self.ensure_in_block();
         if self.transaction.is_none() {
-            panic!("caller expected to be in transaction state but we were not");
+            self.panic_invalid_state("caller expected to be in transaction state but we were not");
         }
     }
 
     fn ensure_in_block_and_not_in_trx(&self) {
         self.ensure_in_block();
         if self.transaction.is_some() {
-            panic!("caller expected to not be in transaction state but we were");
+            self.panic_invalid_state("caller expected to not be in transaction state but we were");
         }
     }
 
     fn ensure_in_block_and_not_in_trx_and_not_in_call(&self) {
         self.ensure_in_block();
         if self.transaction.is_some() {
-            panic!("caller expected to not be in transaction state but we were");
+            self.panic_invalid_state("caller expected to not be in transaction state but we were");
         }
         if self.call_stack.has_active_call() {
-            panic!("caller expected to not be in call state but we were");
+            self.panic_invalid_state("caller expected to not be in call state but we were");
         }
     }
 
     fn ensure_in_block_or_trx(&self) {
         if self.transaction.is_none() && self.block.is_none() {
-            panic!("caller expected to be in either block or transaction state but we were not");
+            self.panic_invalid_state(
+                "caller expected to be in either block or transaction state but we were not",
+            );
         }
     }
 
     fn ensure_in_block_and_in_trx_and_in_call(&self) {
         if self.transaction.is_none() || self.block.is_none() {
-            panic!("caller expected to be in block and in transaction but we were not");
+            self.panic_invalid_state("caller expected to be in block and in transaction but we were not");
         }
         if !self.call_stack.has_active_call() {
-            panic!("caller expected to be in call state but we were not");
+            self.panic_invalid_state("caller expected to be in call state but we were not");
         }
     }
 
     fn ensure_in_system_call(&self) {
         if !self.in_system_call {
-            panic!("caller expected to be in system call state but we were not");
+            self.panic_invalid_state("caller expected to be in system call state but we were not");
         }
     }
 
@@ -1799,6 +2153,12 @@ impl Tracer {
 
 }
 
+impl Drop for Tracer {
+    fn drop(&mut self) {
+        self.drain_writer_thread();
+    }
+}
+
 /// Computes the effective gas price for a transaction based on its type and block base fee.
 /// Follows the same logic as go-ethereum's gasPrice function:
 /// - For legacy/access list transactions (types 0, 1): use gas_price
@@ -1840,4 +2200,25 @@ fn compute_effective_gas_price(event: &TxEvent, base_fee: Option<U256>) -> U256 
             }
         }
     }
+}
+
+/// Returns `true` when the block is recent enough to be considered live,
+/// i.e. its age is within `live_threshold` of the current wall-clock time.
+///
+/// Live blocks use the `Blocking` emission path for lower latency.
+/// Historical (older) blocks use the `Async` path during catch-up sync.
+pub(crate) fn is_live_block(block: &Block, live_threshold: std::time::Duration) -> bool {
+    let block_timestamp_secs = block
+        .header
+        .as_ref()
+        .and_then(|h| h.timestamp.as_ref())
+        .map(|ts| ts.seconds as u64)
+        .unwrap_or(0);
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    now_secs.saturating_sub(block_timestamp_secs) <= live_threshold.as_secs()
 }

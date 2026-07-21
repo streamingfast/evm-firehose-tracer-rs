@@ -44,17 +44,13 @@ This repository contains a **shared tracer implementation** that can be integrat
            (sf.ethereum.type.v2.Block)
 ```
 
-## Build
+## Integrations
 
-Build from source using Cargo:
+This library is consumed by the following StreamingFast forks that add Firehose tracing to their respective clients:
 
-```bash
-# Build all workspace crates
-cargo build --release
-
-# Build the Monad tracer specifically
-cargo build --release -p monad
-```
+- **[streamingfast/reth](https://github.com/streamingfast/reth)** — Reth fork with Firehose instrumentation
+- **[streamingfast/base](https://github.com/streamingfast/base)** — Base (OP-Stack) Reth fork with Firehose instrumentation
+- **[streamingfast/monad-firehose-tracer](https://github.com/streamingfast/monad-firehose-tracer)** — Monad client fork with Firehose instrumentation
 
 ## Testing
 
@@ -63,7 +59,7 @@ cargo build --release -p monad
 cargo test --workspace
 
 # Run specific test suite
-cargo test -p firehose-test tracer_setcode
+cargo test -p firehose-tracer-test tracer_setcode
 
 # Run with debug output
 RUST_LOG=debug cargo test --workspace
@@ -102,9 +98,8 @@ Ordinals provide deterministic ordering of all events within a block:
 
 ## Workspace Crates
 
-- **`firehose`**: Core chain-agnostic tracer implementation
-- **`pb`**: Generated protobuf types for `sf.ethereum.type.v2.Block`
-- **`firehose-test`**: Test helpers and the full integration test suite
+- **`firehose-tracer`**: Core chain-agnostic tracer implementation
+- **`firehose-tracer-test`**: Test helpers and the full integration test suite
 
 ## Repository
 

@@ -1,7 +1,15 @@
 [package]
 name = "firehose-tracer"
-version = "5.0.0-rc.0"
+version.workspace = true
 edition.workspace = true
+description.workspace = true
+license.workspace = true
+readme = "../README.md"
+
+[dev-dependencies]
+base64-simd.workspace = true
+prost.workspace = true
+alloy-primitives.workspace = true
 
 [dependencies]
 # Alloy dependencies
@@ -12,7 +20,7 @@ alloy-rlp.workspace = true
 alloy-eips.workspace = true
 
 # Other dependencies
-base64.workspace = true
+base64-simd.workspace = true
 eyre.workspace = true
 hex.workspace = true
 k256 = { version = "0.13", features = ["ecdsa"] }

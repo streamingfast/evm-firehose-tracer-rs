@@ -1,0 +1,9 @@
+global:
+  language: rust
+  variant: library
+release:
+  pre-build-hooks:
+    - ./.sfreleaser.pre-release.sh "{{ .release.Version }}"
+  rust-crates:
+  # Needs to be ordered in publishing order
+  - firehose-tracer
