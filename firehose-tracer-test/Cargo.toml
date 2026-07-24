@@ -14,8 +14,10 @@ eyre.workspace = true
 hex.workspace = true
 k256 = { version = "0.13", features = ["ecdsa"] }
 prost.workspace = true
+prost-reflect.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+tokio = { workspace = true, features = ["time", "rt", "macros"] }
 
 # Test dependencies (always available in this crate)
 [dev-dependencies]

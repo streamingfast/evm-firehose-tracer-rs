@@ -5,6 +5,21 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Added
+
+* `firehose-tracer-test` now ships a shared tracing-regression framework, so each chain embedding the tracer (Base, Optimism, Unichain, base-reth) stops re-implementing one. Nothing in `firehose-tracer` changed.
+  * `FirehoseCapture` — reads back the `FIRE BLOCK` lines a running node's tracer wrote to an `InMemoryBuffer`: `block(number)`, `blocks()`, `traced_block_numbers()` and an async `wait_for_block(number, timeout)` for tests whose traced node lags the sequencer. Installing the process-wide tracer stays with each chain's reth binding; hand the buffer it returns to `FirehoseCapture::new`.
+  * `BlockInvariants` — content-independent property assertions over an emitted block (ordinal uniqueness and nesting, call-tree shape, receipt/call log agreement, no no-op state changes, dense log `block_index`, status consistency). A violation is always a tracing bug, so these never need a golden regenerated. `InvariantConfig` carries the expected block version and the root-call nonce carve-out.
+  * `BlockProjection` + `SymbolTable` + `VolatilePolicy` — a readable JSON projection of a block or a single transaction, used as a golden. The walk is driven by the protobuf descriptor rather than a hand-written field mapping, so a field added upstream shows up on the next regeneration instead of being silently invisible. `bytes` render as `0x…` hex or as a `@alias`, enums render as their protobuf value names, `BigInt` collapses to minimal hex, and unset fields are omitted.
+  * `VolatilePolicy::none()` (the default, right for deterministic prestate tests) and `VolatilePolicy::live_node()`, which drops hashes, timestamps, gas and absolute ordinals and turns balance/nonce changes into signed deltas. Storage changes keep their values under both.
+  * `Golden` + `BlockDiff` — golden comparison with `GOLDEN_UPDATE=1` regeneration. `is_json_equal` / `is_text_equal` do no diffing themselves; they return a `BlockDiff::{Equal, NotEqual { message, golden, new }}` carrying both sides verbatim, so the caller asserts on it (`BlockDiff::assert_equal`, `pretty_assertions`, …) and gets the test framework's own value diff.
+* `try_parse_firehose_block_entries` — a non-panicking counterpart to `parse_firehose_block_entries`, for output read while the node writing it is still running. The panicking versions are unchanged.
+* `firehose-tracer-test/descriptor.binpb` — the protobuf descriptor set backing the projection. Regenerate it whenever the generated types are regenerated; see `AGENTS.md`.
+
+### Changed
+
+* `firehose-tracer-test` gained `prost-reflect` and `tokio` dependencies. It still depends on `firehose-tracer` only among workspace crates and needs no native system libraries.
+
 ## v5.2.2
 
 ### Changed
