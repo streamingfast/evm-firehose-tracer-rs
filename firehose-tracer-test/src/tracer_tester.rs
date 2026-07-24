@@ -323,6 +323,77 @@ pub fn parse_firehose_block_entries(output: &[u8]) -> Vec<FirehoseBlockEntry> {
     parse_firehose_output(output)
 }
 
+/// Parses all FIRE BLOCK lines, reporting malformed output as an error instead of panicking.
+///
+/// The panicking [`parse_firehose_block_entries`] is right for the tracer's own unit tests, where
+/// malformed output is a bug in the code under test. [`crate::FirehoseCapture`] reads output
+/// produced by a live node while it is still running, so a partially written line is expected
+/// rather than exceptional and must be reportable.
+pub fn try_parse_firehose_block_entries(output: &[u8]) -> eyre::Result<Vec<FirehoseBlockEntry>> {
+    let mut entries = Vec::new();
+
+    for line in BufReader::new(output).lines() {
+        let line = line.map_err(|error| eyre::eyre!("reading Firehose output line: {error}"))?;
+        if !line.starts_with("FIRE BLOCK ") {
+            continue;
+        }
+
+        entries.push(parse_fire_block_line(&line)?);
+    }
+
+    Ok(entries)
+}
+
+/// Decodes a single `FIRE BLOCK <num> <flash_idx> <hash> <prev_num> <prev_hash> <lib> <ts> <b64>`
+/// line.
+fn parse_fire_block_line(line: &str) -> eyre::Result<FirehoseBlockEntry> {
+    let parts: Vec<&str> = line.splitn(10, ' ').collect();
+    if parts.len() < 10 {
+        return Err(eyre::eyre!(
+            "FIRE BLOCK line should have 10 parts, got {}: {line}",
+            parts.len()
+        ));
+    }
+
+    let field = |index: usize, name: &str| -> eyre::Result<u64> {
+        parts[index]
+            .parse()
+            .map_err(|error| eyre::eyre!("parsing {name} from {:?}: {error}", parts[index]))
+    };
+
+    let block_num = field(2, "block_num")?;
+    let flash_block_idx = field(3, "flash_block_idx")?;
+    let prev_num = field(5, "prev_num")?;
+    let lib_num = field(7, "lib_num")?;
+    let timestamp_nano: i64 = parts[8]
+        .parse()
+        .map_err(|error| eyre::eyre!("parsing timestamp from {:?}: {error}", parts[8]))?;
+
+    let decoded = B64_SIMD.decode_to_vec(parts[9]).map_err(|error| {
+        eyre::eyre!("decoding base64 payload (len={}): {error}", parts[9].len())
+    })?;
+    let block = pbeth::Block::decode(&decoded[..])
+        .map_err(|error| eyre::eyre!("decoding protobuf block #{block_num}: {error}"))?;
+
+    if block_num != block.number {
+        return Err(eyre::eyre!(
+            "FIRE BLOCK header says #{block_num} but the protobuf says #{}",
+            block.number
+        ));
+    }
+
+    Ok(FirehoseBlockEntry {
+        block,
+        block_num,
+        flash_block_idx,
+        block_hash: parts[4].to_string(),
+        prev_num,
+        prev_hash: parts[6].to_string(),
+        lib_num,
+        timestamp_nano,
+    })
+}
+
 /// Shared parser for FIRE BLOCK output. Returns full entries including wire-level header fields.
 fn parse_firehose_output(output: &[u8]) -> Vec<FirehoseBlockEntry> {
     let reader = BufReader::new(output);
