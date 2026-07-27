@@ -57,3 +57,28 @@ GOLDEN_UPDATE=1 cargo test -p firehose-tracer-test
 `Golden::is_json_equal` / `is_text_equal` do no diffing themselves: they return a `BlockDiff` with
 the golden and captured sides verbatim, and the caller asserts on it (e.g. `diff.assert_equal()`),
 so the diff you see is the test framework's own. Review it before committing a regenerated golden.
+
+## Publishing to crates.io
+
+Both `firehose-tracer` and `firehose-tracer-test` are published, at the same workspace version.
+`firehose-tracer-test` depends on `firehose-tracer` by `version` + `path`, so it can only be
+published once the matching `firehose-tracer` version exists on the registry. Publish both in one
+command and let cargo order them:
+
+```bash
+cargo publish --dry-run -p firehose-tracer -p firehose-tracer-test   # verify first
+cargo publish -p firehose-tracer -p firehose-tracer-test
+```
+
+The dry run resolves the not-yet-published sibling from the local packaging output, so it works even
+though `firehose-tracer` at the new version is not on crates.io yet.
+
+Notes:
+
+- `descriptor.binpb` is `include_bytes!`-ed by `firehose-tracer-test`, so it must stay inside the
+  crate directory to be packaged. Verify with `cargo package -p firehose-tracer-test --list`.
+- The `[[test]]` targets are declared in `firehose-tracer-test/Cargo.toml`, so `tests/` cannot be
+  `exclude`d from the package — cargo refuses to package a manifest whose declared targets are
+  missing.
+- `readme = "../README.md"` in both crates is resolved and copied at package time; the repository
+  README is the crates.io front page for both.
