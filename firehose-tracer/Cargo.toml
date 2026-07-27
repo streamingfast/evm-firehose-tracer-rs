@@ -4,7 +4,11 @@ version.workspace = true
 edition.workspace = true
 description.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 readme = "../README.md"
+keywords = ["ethereum", "evm", "firehose", "tracer", "blockchain"]
+categories = ["cryptography::cryptocurrencies", "development-tools::debugging"]
 
 [dev-dependencies]
 base64-simd.workspace = true

@@ -15,6 +15,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   * `Golden` + `BlockDiff` — golden comparison with `GOLDEN_UPDATE=1` regeneration. `is_json_equal` / `is_text_equal` do no diffing themselves; they return a `BlockDiff::{Equal, NotEqual { message, golden, new }}` carrying both sides verbatim, so the caller asserts on it (`BlockDiff::assert_equal`, `pretty_assertions`, …) and gets the test framework's own value diff.
 * `try_parse_firehose_block_entries` — a non-panicking counterpart to `parse_firehose_block_entries`, for output read while the node writing it is still running. The panicking versions are unchanged.
 * `firehose-tracer-test/descriptor.binpb` — the protobuf descriptor set backing the projection. Regenerate it whenever the generated types are regenerated; see `AGENTS.md`.
+* `firehose-tracer-test` is now published to crates.io alongside `firehose-tracer`, at the same workspace version, so chains embedding the tracer can pull the regression framework as a `dev-dependency` instead of vendoring it. Publish both together (`cargo publish -p firehose-tracer -p firehose-tracer-test`) since the test crate requires the matching `firehose-tracer` version to already be on the registry; CI now runs `cargo publish --dry-run` for both.
 
 ### Changed
 

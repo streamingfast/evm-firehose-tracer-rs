@@ -99,7 +99,21 @@ Ordinals provide deterministic ordering of all events within a block:
 ## Workspace Crates
 
 - **`firehose-tracer`**: Core chain-agnostic tracer implementation
-- **`firehose-tracer-test`**: Test helpers and the full integration test suite
+- **`firehose-tracer-test`**: Shared tracing-regression framework (capture, invariants, golden projections) plus the full integration test suite
+
+Both are published on crates.io at the same version:
+
+```toml
+[dependencies]
+firehose-tracer = "5.3"
+
+[dev-dependencies]
+firehose-tracer-test = "5.3"
+```
+
+`firehose-tracer-test` is meant as a `dev-dependency` of the chains embedding the tracer (Base,
+Optimism, Unichain, base-reth), so each of them stops re-implementing its own tracing-regression
+harness. See [AGENTS.md](AGENTS.md) for the release procedure.
 
 ## Repository
 

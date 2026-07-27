@@ -1,6 +1,14 @@
 [package]
 name = "firehose-tracer-test"
+version.workspace = true
 edition.workspace = true
+description = "Shared tracing-regression framework (invariants, golden projections, capture) for chains embedding firehose-tracer"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../README.md"
+keywords = ["ethereum", "evm", "firehose", "tracer", "testing"]
+categories = ["cryptography::cryptocurrencies", "development-tools::testing"]
 
 [dependencies]
 # Internal dependencies

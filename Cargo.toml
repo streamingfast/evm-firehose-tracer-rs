@@ -8,11 +8,13 @@ version = "5.3.0"
 edition = "2021"
 description = "Chain-agnostic EVM execution tracer producing Firehose protobuf blocks"
 license = "Apache-2.0"
+repository = "https://github.com/streamingfast/evm-firehose-tracer-rs"
+homepage = "https://github.com/streamingfast/evm-firehose-tracer-rs"
 
 [workspace.dependencies]
 # Internal workspace crates
 firehose-tracer = { version = "5.3.0", path = "firehose-tracer" }
-firehose-tracer-test = { path = "firehose-tracer-test" }
+firehose-tracer-test = { version = "5.3.0", path = "firehose-tracer-test" }
 
 # Alloy dependencies
 alloy-consensus = "2.0"
