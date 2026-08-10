@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+// Generation manifest, not a schema — it declares no messages.
+//
+// It exists so a single `buf generate` covers every BSR module the workspace needs. Listing the
+// modules as separate inputs does not work: the `prost-crate` plugin runs once per input and each
+// run overwrites the previous `pb.rs`, so only the last input's module tree survives. Importing
+// them all from one local module makes them a single image, and `--include-imports` generates for
+// everything it reaches:
+//
+//   buf generate --include-imports proto
+//
+// To add a module: add it to `deps` in `buf.yaml`, run `buf dep update` in this directory, and add
+// its import below. Any number of modules works.
+//
+// The package is an existing one rather than a package of its own on purpose: a package of its own
+// would show up as an empty module in the generated tree. Nothing is generated *for* this file, so
+// which existing package it names has no effect on the output.
+package sf.ethereum.type.v2;
+
+// The block schema, rendered by firehose-tracer.
+import "sf/ethereum/type/v2/type.proto";
+import "sf/ethereum/transform/v1/transforms.proto";
+import "sf/ethereum/substreams/v1/rpc.proto";
+
+// The transport schema, used by firehose-tracer-prestate to fetch a block back from a production
+// Firehose endpoint over `sf.firehose.v2.Fetch/Block`.
+import "sf/firehose/v2/firehose.proto";

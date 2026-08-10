@@ -76,7 +76,7 @@ pub struct CallToFilter {
 ///
 /// The structure that would will have access to after:
 ///
-/// ```notrust
+/// ```ignore
 /// Block {
 ///   int32 ver = 1;
 ///   bytes hash = 2;

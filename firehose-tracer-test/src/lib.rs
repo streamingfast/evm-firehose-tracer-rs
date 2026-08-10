@@ -12,6 +12,10 @@
 //! * [`BlockProjection`] plus [`Golden`] diff a readable, descriptor-driven JSON projection against
 //!   a checked-in file, with volatile fields removed by a [`VolatilePolicy`].
 //!
+//! [`ProductionReplay`] is the ready-made policy for the third case: a single transaction replayed
+//! out of a prestate fixture, compared against the same transaction as production Firehose recorded
+//! it. See `firehose-tracer-prestate` for the tool that builds both sides.
+//!
 //! Installing the process-wide tracer stays with each chain's reth binding; see
 //! [`FirehoseCapture`] for how the two meet.
 
@@ -25,6 +29,7 @@ pub mod descriptor;
 pub mod golden;
 pub mod invariants;
 pub mod projection;
+pub mod replay;
 
 // Re-export commonly used items for test convenience
 pub use eip7702::{recover_set_code_auth_authority, sign_set_code_auth};
@@ -41,3 +46,4 @@ pub use descriptor::descriptor_pool;
 pub use golden::{BlockDiff, Golden};
 pub use invariants::{BlockInvariants, InvariantConfig, Violation};
 pub use projection::{BlockProjection, SymbolTable, VolatilePolicy};
+pub use replay::ProductionReplay;

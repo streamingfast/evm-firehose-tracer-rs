@@ -1,0 +1,13 @@
+version: v2
+# The single input `buf generate` and `scripts/generate-protobuf.sh` run over. Add a `deps` entry
+# here and an import in `generation.proto` to pull another module's types into the generated tree.
+modules:
+  - path: .
+deps:
+  - buf.build/streamingfast/firehose-ethereum
+  - buf.build/streamingfast/firehose
+lint:
+  # `generation.proto` is generation config, not schema: it is deliberately outside the directory
+  # its package names and its imports are deliberately unused.
+  ignore:
+    - generation.proto

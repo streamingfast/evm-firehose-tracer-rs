@@ -100,20 +100,43 @@ Ordinals provide deterministic ordering of all events within a block:
 
 - **`firehose-tracer`**: Core chain-agnostic tracer implementation
 - **`firehose-tracer-test`**: Shared tracing-regression framework (capture, invariants, golden projections) plus the full integration test suite
+- **`firehose-tracer-prestate`**: Chain-agnostic generator turning a mined transaction into a replayable `prestate.json` fixture, plus the `reference` command that seeds a case's first golden straight from production Firehose
 
-Both are published on crates.io at the same version:
+All three are published on crates.io at the same version:
 
 ```toml
 [dependencies]
-firehose-tracer = "5.3"
+firehose-tracer = "5.4"
 
 [dev-dependencies]
-firehose-tracer-test = "5.3"
+firehose-tracer-test = "5.4"
+firehose-tracer-prestate = "5.4"
 ```
 
 `firehose-tracer-test` is meant as a `dev-dependency` of the chains embedding the tracer (Base,
 Optimism, Unichain, base-reth), so each of them stops re-implementing its own tracing-regression
 harness. See [AGENTS.md](AGENTS.md) for the release procedure.
+
+### Prestate fixtures
+
+`firehose-tracer-prestate` is the Rust port of `streamingfast/go-ethereum`'s `generate-prestate`.
+Point it at a transaction hash and an archive node and it writes a `prestate.json` — genesis, block
+context and the EIP-2718 transaction — that a chain's own runner replays through the tracer with no
+node, no Docker and no network.
+
+A chain supplies four things through the `PrestateChain` trait: its transaction envelope type, its
+genesis `config`, any state a node reads *outside* the EVM journal (the OP Stack's `L1Block`
+predeploy, which `debug_traceTransaction` never reports and whose absence silently produces a zero
+L1 fee), and its chain id. The middle two fail silently when they are wrong; the crate docs explain
+why and what to assert.
+
+The `reference` command fetches the same block back from production Firehose (over
+`sf.firehose.v2.Fetch/Block`, whose generated types live in `firehose_tracer::pb` next to the
+block types, at the `--firehose-endpoint` / `FIREHOSE_ENDPOINT` it is given) and
+writes the projected transaction as the case's *initial* golden, so the first run of the test is a
+direct comparison against production. After it passes, the golden is an ordinary `GOLDEN_UPDATE=1`
+golden and no test needs credentials. The projection both sides go through is
+`firehose_tracer_test::ProductionReplay`.
 
 ## Repository
 
