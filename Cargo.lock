@@ -1434,7 +1434,7 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "firehose-tracer"
-version = "5.4.0"
+version = "5.4.1"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -1455,7 +1455,7 @@ dependencies = [
 
 [[package]]
 name = "firehose-tracer-prestate"
-version = "5.4.0"
+version = "5.4.1"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -1479,7 +1479,7 @@ dependencies = [
 
 [[package]]
 name = "firehose-tracer-test"
-version = "5.4.0"
+version = "5.4.1"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
