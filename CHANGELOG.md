@@ -3,6 +3,28 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+* `firehose-tracer-prestate` — a new published crate holding the chain-agnostic replay-prestate generator, extracted from the Base fork so every EVM reth fork we maintain (base, op-reth, world-chain, reth, bnb, …) reuses one implementation instead of porting its own. It is the Rust port of `streamingfast/go-ethereum`'s `eth/tracers/internal/tracetest/firehose/generate-prestate`.
+  * `PrestateGenerator::generate(tx_hash)` turns a mined transaction into a self-contained `prestate.json` (`{ genesis, context, input }`) read from an archive RPC, replayable through the Firehose tracer with no node, no Docker and no network.
+  * `ProductionReference::fetch` reads the same block back from StreamingFast's production Firehose over `sf.firehose.v2.Fetch/Block` and writes the projected transaction as a case's *initial* golden, so the first run of that case's test is a direct comparison against production. A one-time validation per case: afterwards the golden is an ordinary `GOLDEN_UPDATE=1` golden and no test needs credentials. `FirehoseAuth` resolves the bearer token from `SF_JWT`, else exchanges `SF_API_KEY` at `https://auth.streamingfast.io/v1/auth/issue`. The endpoint is passed as `--firehose-endpoint` / `FIREHOSE_ENDPOINT`, since it is a property of a network rather than of a chain.
+  * `PrestateChain` is the seam a chain implements: its transaction envelope type (`Transaction`), its genesis `config` (`genesis_config`), the state a node reads *outside* the EVM journal and which `prestateTracer` therefore never reports (`seeded_accounts`), and its `chain_id`. The first two fail *silently* when wrong — a dropped fork timestamp replays a post-Isthmus transaction under pre-Canyon rules, and an unseeded OP Stack `L1Block` predeploy replays with a zero L1 fee — so the crate docs spell out both, including the round-trip hardfork assertion consumers should carry.
+  * `SeededAccount` state is read at the *traced* block rather than its parent (those slots are written by the L1-info deposit at index 0 of that same block) and never overrides what the tracer reported.
+  * `ArchiveClient` implements `ArchiveSource`, the trait the generator reads through, so the whole `generate` path is testable offline from recorded responses.
+  * `RpcTransaction<E>` supplies the chain-agnostic RPC fields (`blockHash`, `blockNumber`, `transactionIndex`) around a chain's envelope, so a consumer names its envelope type and needs no wrapper type of its own.
+  * With the default `cli` feature, `PrestateCommand` is a ready-made `clap` subcommand pair (`generate`, `reference`) a chain embeds in its own parser, adding only its network selection.
+  * The `sf.firehose.v2` transport types it fetches blocks with are generated rather than hand-declared, so the field numbers and the `SingleBlockRequest.reference` oneof come from the schema. They live in `firehose_tracer::pb::sf::firehose::v2`, alongside the block types.
+* `firehose_tracer_test::ProductionReplay` — the projection policy shared by a prestate replay and the production block its golden was seeded from. It drops only the block-wide *positional* fields a single-transaction replay cannot reproduce (`ordinal`, `begin_ordinal`, `end_ordinal`, `TransactionTrace.index`, `Log.block_index`, `cumulative_gas_used`) and keeps everything else, gas accounting and absolute balance/nonce/storage values included — which is what makes a production block usable as a case's initial golden. Also re-exported from `firehose-tracer-prestate`.
+
+### Changed
+
+* Protobuf generation now runs over the new local `proto` module (`buf generate --include-imports proto`) instead of a BSR module directly, so one `buf generate` produces one `pb.rs` covering both the block schema (`buf.build/streamingfast/firehose-ethereum`) and the transport schema (`buf.build/streamingfast/firehose`) — passing them as two inputs would have the second run overwrite the first's module tree. `proto/buf.lock` pins both, and `scripts/generate-protobuf.sh` now builds `descriptor.binpb` from that same module, so the generated types and the descriptor can no longer resolve to different schema versions. `firehose-tracer/src/pb` gained `sf.firehose.v2.rs` and `descriptor.binpb` grew accordingly. See `AGENTS.md`.
+* `firehose-tracer-prestate` needs `cmake` at build time (`rustls` → `aws-lc-rs` → `aws-lc-sys`); it does not need `libclang`. CI's `ubuntu-24.04` runner has `cmake` preinstalled. See `AGENTS.md`.
+* Publishing now covers three crates and must keep their order: `cargo publish -p firehose-tracer -p firehose-tracer-test -p firehose-tracer-prestate`.
+* The workspace version moved to `5.4.0` ahead of the release. `firehose-tracer-prestate` uses types added to `firehose-tracer` in this cycle, so leaving the workspace at the already-published `5.3.0` made CI's `cargo publish --dry-run` resolve `firehose-tracer` from crates.io — the old content — and fail. The pre-release script re-sets the version at release time as before.
+
 ## v5.3.0
 
 ### Added

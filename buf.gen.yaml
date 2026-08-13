@@ -1,12 +1,21 @@
-version: v1
+# Generates every protobuf type the workspace needs into firehose-tracer/src/pb.
+#
+# The input is the local `proto` module rather than a BSR module directly: it imports from each
+# module the crates need (see proto/sf/ethereum/type/v2/generation.proto), and `--include-imports`
+# generates for all of them at once. Passing several BSR modules as separate inputs would not work —
+# the prost-crate plugin runs once per input and each run overwrites the previous `pb.rs`, leaving
+# only the last input's module tree.
+#
+#   buf generate --include-imports proto
+version: v2
 plugins:
-- plugin: buf.build/community/neoeinstein-prost:v0.4.0
-  out: firehose-tracer/src/pb
-  opt:
-    - file_descriptor_set=false
+  - remote: buf.build/community/neoeinstein-prost:v0.4.0
+    out: firehose-tracer/src/pb
+    opt:
+      - file_descriptor_set=false
 
-- plugin: buf.build/community/neoeinstein-prost-crate:v0.4.1
-  out: firehose-tracer/src/pb
-  opt:
-    - no_features
-    - include_file=pb.rs
+  - remote: buf.build/community/neoeinstein-prost-crate:v0.4.1
+    out: firehose-tracer/src/pb
+    opt:
+      - no_features
+      - include_file=pb.rs

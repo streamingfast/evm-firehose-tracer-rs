@@ -8,3 +8,4 @@ release:
   # Needs to be ordered in publishing order
   - firehose-tracer
   - firehose-tracer-test
+  - firehose-tracer-prestate

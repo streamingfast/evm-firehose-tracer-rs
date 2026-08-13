@@ -24,7 +24,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run tests
-        run: cargo test -p firehose-tracer -p firehose-tracer-test
+        run: cargo test -p firehose-tracer -p firehose-tracer-test -p firehose-tracer-prestate
 
   package:
     runs-on: ubuntu-24.04
@@ -42,4 +42,4 @@ jobs:
       # Catches missing/incorrect publish metadata and files that would be left out of the
       # packaged crates (e.g. firehose-tracer-test's descriptor.binpb) before release time.
       - name: Verify crates are publishable
-        run: cargo publish --dry-run -p firehose-tracer -p firehose-tracer-test
+        run: cargo publish --dry-run -p firehose-tracer -p firehose-tracer-test -p firehose-tracer-prestate

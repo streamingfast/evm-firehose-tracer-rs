@@ -1,0 +1,52 @@
+[package]
+name = "firehose-tracer-prestate"
+version.workspace = true
+edition.workspace = true
+description = "Chain-agnostic generator for replayable Firehose prestate fixtures built from a mined transaction"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../README.md"
+keywords = ["ethereum", "evm", "firehose", "tracer", "testing"]
+categories = ["cryptography::cryptocurrencies", "development-tools::testing"]
+
+[features]
+default = ["cli"]
+# The generic `generate` / `reference` subcommands, so a chain's binary is a thin wrapper.
+cli = ["dep:clap"]
+
+[dependencies]
+# Internal dependencies
+firehose-tracer.workspace = true
+firehose-tracer-test.workspace = true
+
+# Alloy dependencies
+alloy-consensus.workspace = true
+alloy-eips.workspace = true
+alloy-genesis.workspace = true
+alloy-primitives.workspace = true
+alloy-rpc-client.workspace = true
+alloy-transport-http.workspace = true
+
+# gRPC dependencies, for reading a block back from a production Firehose endpoint
+prost.workspace = true
+tonic.workspace = true
+tonic-prost.workspace = true
+
+# Other dependencies
+clap = { workspace = true, optional = true }
+eyre.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+# `serde` is not needed by this crate itself — a chain brings its own envelope, already
+# deserialisable — but the tests stand in for one with `alloy_consensus::TxEnvelope`.
+alloy-consensus = { workspace = true, features = ["serde"] }
+tempfile = "3"
+
+[lib]
+name = "firehose_tracer_prestate"
+path = "src/lib.rs"
