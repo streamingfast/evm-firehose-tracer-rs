@@ -3,6 +3,12 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v5.4.1
+
+### Changed
+
+* Lower `alloy-rpc-client` and `alloy-transport-http` from `2.3` to `2.0` so reth 2.3 / Base 1.2 forks can stay on Alloy 2.0.5. Cargo was unifying the previous `2.3` floor to latest 2.x, which broke `reth-engine-local` (`EthPayloadAttributes` gained `target_gas_limit` in alloy-rpc-types-engine 2.3+).
+
 ## v5.4.0
 
 ### Added
