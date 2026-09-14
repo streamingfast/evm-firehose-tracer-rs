@@ -7,7 +7,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-* `firehose-tracer-prestate` builds against alloy-genesis 2.3 and later again. The synthetic genesis listed every `Genesis` field explicitly, so the `slot_number` field added in alloy-genesis 2.3 broke compilation for reth 2.5 / Base 1.3 forks. Fields it does not set now come from `Genesis::default()`, which compiles on alloy 2.0 as well; `slot_number` is left unset.
+* `firehose-tracer-prestate` builds against alloy-genesis 2.3 and later again. The synthetic genesis listed every `Genesis` field explicitly, so the `slot_number` field added in alloy-genesis 2.3 broke compilation for consumers on alloy 2.3+, such as Base 1.3's prestate tool. Fields it does not set now come from `Genesis::default()`, which compiles on alloy 2.0 as well; `slot_number` is left unset.
 
 ## v5.4.1
 
