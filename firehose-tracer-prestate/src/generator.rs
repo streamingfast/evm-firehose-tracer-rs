@@ -118,6 +118,8 @@ impl<C: PrestateChain, A: ArchiveSource> PrestateGenerator<C, A> {
     }
 
     /// The synthetic genesis: the parent header, the real fork schedule, and the traced alloc.
+    // The struct update is needless on alloy-genesis 2.0 but required from 2.3 on.
+    #[allow(clippy::needless_update)]
     fn build_genesis(
         &self,
         parent: &RpcBlockHeader,
@@ -140,6 +142,8 @@ impl<C: PrestateChain, A: ArchiveSource> PrestateGenerator<C, A> {
             // Deliberately omitted, as in the Go generator: the replay derives the parent hash
             // from the synthetic genesis itself, so carrying the real one would only be misleading.
             parent_hash: None,
+            // Fields added by later alloy-genesis releases (2.3 added `slot_number`) stay unset.
+            ..Default::default()
         })
     }
 
