@@ -4,10 +4,7 @@ version: v2
 modules:
   - path: .
 deps:
-  # Pinned to the feature/support-morphtx-type branch (streamingfast/firehose-ethereum#224) while it
-  # is pending Morph team approval. Switch back to the unqualified module ref, which tracks
-  # `develop`, once that PR merges.
-  - buf.build/streamingfast/firehose-ethereum:feature/support-morphtx-type
+  - buf.build/streamingfast/firehose-ethereum
   - buf.build/streamingfast/firehose
 lint:
   # `generation.proto` is generation config, not schema: it is deliberately outside the directory
