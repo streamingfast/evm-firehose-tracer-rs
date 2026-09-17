@@ -317,6 +317,14 @@ pub struct BlockHeader {
     /// be added in Amsterdam hard fork.
     #[prost(uint64, optional, tag = "26")]
     pub slot_number: ::core::option::Option<u64>,
+    /// MorphNextL1MsgIndex is the index in Morph's L1 message queue at which the next block must
+    /// start processing L1 messages. Since Morph's Jade upgrade, it is the queue index of the last L1
+    /// message included in this block plus one, or the parent's value if the block includes none.
+    /// Before Jade, the sequencer could skip queue indices, so the value can be higher than that.
+    ///
+    /// Morph specific, unset on all other chains.
+    #[prost(uint64, optional, tag = "27")]
+    pub morph_next_l1_msg_index: ::core::option::Option<u64>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -527,9 +535,20 @@ pub struct TransactionTrace {
     /// This is specified by <https://eips.ethereum.org/EIPS/eip-7702>
     ///
     /// This will is populated only if `TransactionTrace.Type == TRX_TYPE_SET_CODE` which is possible only
-    /// if Prague fork is active on the chain.
+    /// if Prague fork is active on the chain, or on Morph if `TransactionTrace.Type == TRX_TYPE_MORPH`
+    /// and \[MorphTxConfig.version\] is 2.
     #[prost(message, repeated, tag = "36")]
     pub set_code_authorizations: ::prost::alloc::vec::Vec<SetCodeAuthorization>,
+    /// MorphTxConfig holds the Morph specific fields carried by a MorphTx transaction.
+    ///
+    /// This will is populated only if `TransactionTrace.Type == TRX_TYPE_MORPH`.
+    #[prost(message, optional, tag = "37")]
+    pub morph_tx_config: ::core::option::Option<MorphTxConfig>,
+    /// MorphL1MessageConfig holds the Morph specific fields carried by an L1 message transaction.
+    ///
+    /// This will is populated only if `TransactionTrace.Type == TRX_TYPE_MORPH_L1_MESSAGE`.
+    #[prost(message, optional, tag = "38")]
+    pub morph_l1_message_config: ::core::option::Option<MorphL1MessageConfig>,
 }
 /// Nested message and enum types in `TransactionTrace`.
 pub mod transaction_trace {
@@ -572,6 +591,21 @@ pub mod transaction_trace {
         TrxTypeOptimismDeposit = 126,
         /// Polygon(bor)-specific
         TrxTypePolygonStateSync = 200,
+        // Morph-specific transactions
+        /// MorphTx (type byte 0x7f on chain), a transaction that can pay for its gas with a registered
+        /// ERC-20 token instead of the native token and that can carry an indexable reference and a memo.
+        /// Those extra fields are recorded in \[TransactionTrace.morph_tx_config\].
+        ///
+        /// Specified by <https://docs.morph.network/docs/about-morph/morphtx>
+        TrxTypeMorph = 300,
+        /// Morph's L1 message transaction (type byte 0x7e on chain), a transaction queued on the L1
+        /// chain and later included by the sequencer in an L2 block. It carries no signature, its
+        /// 'from' is the L1 sender and its queue index is recorded in
+        /// \[TransactionTrace.morph_l1_message_config\].
+        ///
+        /// It shares its type byte with Optimism's deposit transaction (TRX_TYPE_OPTIMISM_DEPOSIT) but
+        /// has different semantics, hence the distinct value here.
+        TrxTypeMorphL1Message = 301,
     }
     impl Type {
         /// String value of the enum field names used in the ProtoBuf definition.
@@ -594,6 +628,8 @@ pub mod transaction_trace {
                 Type::TrxTypeArbitrumLegacy => "TRX_TYPE_ARBITRUM_LEGACY",
                 Type::TrxTypeOptimismDeposit => "TRX_TYPE_OPTIMISM_DEPOSIT",
                 Type::TrxTypePolygonStateSync => "TRX_TYPE_POLYGON_STATE_SYNC",
+                Type::TrxTypeMorph => "TRX_TYPE_MORPH",
+                Type::TrxTypeMorphL1Message => "TRX_TYPE_MORPH_L1_MESSAGE",
             }
         }
         /// Creates an enum from field names used in the ProtoBuf definition.
@@ -613,10 +649,62 @@ pub mod transaction_trace {
                 "TRX_TYPE_ARBITRUM_LEGACY" => Some(Self::TrxTypeArbitrumLegacy),
                 "TRX_TYPE_OPTIMISM_DEPOSIT" => Some(Self::TrxTypeOptimismDeposit),
                 "TRX_TYPE_POLYGON_STATE_SYNC" => Some(Self::TrxTypePolygonStateSync),
+                "TRX_TYPE_MORPH" => Some(Self::TrxTypeMorph),
+                "TRX_TYPE_MORPH_L1_MESSAGE" => Some(Self::TrxTypeMorphL1Message),
                 _ => None,
             }
         }
     }
+}
+/// MorphTxConfig represents the extra fields of a Morph MorphTx transaction, a transaction type
+/// that enables paying the gas fees with a registered ERC-20 token instead of the native token.
+///
+/// Specified by <https://docs.morph.network/docs/about-morph/morphtx>
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MorphTxConfig {
+    /// Version of the MorphTx payload, 0 for the initial encoding, 1 for the encoding that added
+    /// the 'reference' and 'memo' fields as well as support for paying the fees with the native token,
+    /// and 2 for the encoding that adds an EIP-7702 authorization list, recorded in
+    /// \[TransactionTrace.set_code_authorizations\].
+    ///
+    /// The on chain type is a 'uint8'.
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    /// FeeTokenID is the identifier, in Morph's L2 token registry, of the ERC-20 token used to pay
+    /// for the gas of this transaction. A value of 0 means the native token is used to pay the fees,
+    /// which is possible only since version 1.
+    ///
+    /// The on chain type is a 'uint16'.
+    #[prost(uint32, tag = "2")]
+    pub fee_token_id: u32,
+    /// FeeLimit is the maximum amount of 'fee_token_id' token the sender authorizes to be spent on
+    /// the fees of this transaction, L2 gas plus the L1 data fee. A value of 0 means no explicit limit,
+    /// the sender's whole token balance is available. It must be 0 when 'fee_token_id' is 0.
+    #[prost(message, optional, tag = "3")]
+    pub fee_limit: ::core::option::Option<BigInt>,
+    /// Reference is an arbitrary 32 bytes value attached to the transaction and meant to be indexed
+    /// by consumers.
+    ///
+    /// Available since version 1 only and optional, will be empty when unset.
+    #[prost(bytes = "vec", tag = "4")]
+    pub reference: ::prost::alloc::vec::Vec<u8>,
+    /// Memo is an arbitrary value of at most 64 bytes attached to the transaction.
+    ///
+    /// Available since version 1 only and optional, will be empty when unset.
+    #[prost(bytes = "vec", tag = "5")]
+    pub memo: ::prost::alloc::vec::Vec<u8>,
+}
+/// MorphL1MessageConfig represents the extra fields of a Morph L1 message transaction, a transaction
+/// queued on the L1 chain and later included by the sequencer in an L2 block.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct MorphL1MessageConfig {
+    /// QueueIndex is the position of this message in Morph's L1 message queue. The chain requires
+    /// L1 messages to be included in strictly increasing queue index order, refer to
+    /// \[BlockHeader.morph_next_l1_msg_index\] to know at which index the next block resumes.
+    #[prost(uint64, tag = "1")]
+    pub queue_index: u64,
 }
 /// AccessTuple represents a list of storage keys for a given contract's address and is used
 /// for AccessList construction.
@@ -729,6 +817,40 @@ pub struct TransactionReceipt {
     /// if Cancun fork is active on the chain.
     #[prost(message, optional, tag = "6")]
     pub blob_gas_price: ::core::option::Option<BigInt>,
+    /// MorphReceiptConfig holds the Morph specific values that were resolved while executing the
+    /// transaction, mainly the L1 data fee and the oracle values used to charge the fee token.
+    ///
+    /// Morph specific, unset on all other chains.
+    #[prost(message, optional, tag = "7")]
+    pub morph_receipt_config: ::core::option::Option<MorphReceiptConfig>,
+}
+/// MorphReceiptConfig represents the Morph specific fields recorded on the receipt of a transaction.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MorphReceiptConfig {
+    /// L1Fee is the fee, in the native token, paid to cover the cost of posting this transaction's
+    /// data to the L1 chain. It is populated for every Morph transaction except L1 messages, which
+    /// are prepaid on L1. For a MorphTx paying with a fee token, it is included in the token debit.
+    #[prost(message, optional, tag = "1")]
+    pub l1_fee: ::core::option::Option<BigInt>,
+    /// FeeRate is the oracle rate used to convert the gas cost expressed in the native token into
+    /// units of the transaction's fee token.
+    ///
+    /// This will is populated only if `TransactionTrace.Type == TRX_TYPE_MORPH` and
+    /// \[MorphTxConfig.fee_token_id\] is not 0.
+    #[prost(message, optional, tag = "2")]
+    pub fee_rate: ::core::option::Option<BigInt>,
+    /// TokenScale is the scaling factor of the transaction's fee token. Together with 'fee_rate', a
+    /// native amount converts to `ceil(native_amount * token_scale / fee_rate)` token units. The fee is
+    /// debited upfront for the gas limit plus the L1 fee, and the unused part is refunded through a
+    /// separate conversion, which rounds down with a carried rounding credit once the upgrade that
+    /// activates MorphTx version 2 is live. The net amount charged is therefore not a single
+    /// conversion of the gas used.
+    ///
+    /// This will is populated only if `TransactionTrace.Type == TRX_TYPE_MORPH` and
+    /// \[MorphTxConfig.fee_token_id\] is not 0.
+    #[prost(message, optional, tag = "3")]
+    pub token_scale: ::core::option::Option<BigInt>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

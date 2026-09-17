@@ -1131,6 +1131,7 @@ impl Tracer {
             logs: Vec::new(),
             blob_gas_used: None,
             blob_gas_price: None,
+            morph_receipt_config: None,
         };
 
         // Add EIP-4844 blob fields for blob transactions (type 3)
