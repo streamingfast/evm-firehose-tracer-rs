@@ -3,6 +3,12 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+* Regenerated `sf.ethereum.type.v2` bindings to add the Morph-specific fields: `TransactionTrace.Type` gained `TRX_TYPE_MORPH` and `TRX_TYPE_MORPH_L1_MESSAGE`, plus `TransactionTrace.morph_tx_config` (`MorphTxConfig`), `TransactionTrace.morph_l1_message_config` (`MorphL1MessageConfig`), `TransactionReceipt.morph_receipt_config` (`MorphReceiptConfig`), and `BlockHeader.morph_next_l1_msg_index`. All fields are optional and unset on non-Morph chains; this is bindings only, the tracer does not populate them yet.
+
 ## v5.4.2
 
 ### Fixed
