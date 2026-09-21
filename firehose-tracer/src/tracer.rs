@@ -2129,6 +2129,15 @@ impl Tracer {
         self.block.is_some()
     }
 
+    /// Generic mutable access to the block currently being buffered, for patching fields
+    /// that are only known after the caller has done work `Tracer` isn't aware of (e.g.
+    /// post-execution header fields). Returns `None` if no block is currently buffered
+    /// (before `on_block_start` or after `on_block_end`).
+    pub fn block_mut(&mut self) -> Option<&mut Block> {
+        self.block.as_mut()
+    }
+
+    #[deprecated(note = "use `block_mut` instead")]
     pub fn set_block_hash(&mut self, hash: alloy_primitives::B256) {
         if let Some(block) = &mut self.block {
             block.hash = hash.0.to_vec();
@@ -2138,6 +2147,7 @@ impl Tracer {
         }
     }
 
+    #[deprecated(note = "use `block_mut` instead")]
     pub fn set_block_header_end_data(
         &mut self,
         state_root: alloy_primitives::B256,
