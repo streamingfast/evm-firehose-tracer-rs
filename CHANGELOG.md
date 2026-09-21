@@ -3,6 +3,16 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v5.4.4
+
+### Added
+
+* `Tracer::block_mut` — generic mutable access to the block currently being buffered, for patching fields only known after the caller has done work `Tracer` isn't aware of (e.g. `BlockHeader.block_access_list_rlp`, which reth only has post-execution). Returns `None` before `on_block_start` or after `on_block_end`.
+
+### Deprecated
+
+* `Tracer::set_block_hash` and `Tracer::set_block_header_end_data` in favor of `Tracer::block_mut`, which replaces the growing set of narrow single-field setters with one generic accessor. Both still work; they will be removed in a future major version.
+
 ## v5.4.3
 
 ### Added
