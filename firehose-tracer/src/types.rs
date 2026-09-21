@@ -77,6 +77,10 @@ pub struct BlockData {
 
     // EIP-7843: Amsterdam slot number
     pub slot_number: Option<u64>,
+
+    // EIP-7928: Amsterdam block access list
+    pub block_access_list_hash: Option<B256>, // Hash the block header commits to (None for pre-Amsterdam blocks)
+    pub block_access_list_rlp: Option<Vec<u8>>, // RLP-encoded full access list, experimental/measurement-only
 }
 
 impl BlockData {

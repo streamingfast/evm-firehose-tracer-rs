@@ -1941,6 +1941,9 @@ impl Tracer {
             }),
             // EIP-7843: Amsterdam slot number
             slot_number: block.slot_number,
+            // EIP-7928: Amsterdam block access list
+            block_access_list_hash: block.block_access_list_hash.map(|hash| hash.0.to_vec()),
+            block_access_list_rlp: block.block_access_list_rlp.clone(),
             ..Default::default()
         }
     }
