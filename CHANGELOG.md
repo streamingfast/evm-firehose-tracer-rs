@@ -8,6 +8,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 * Regenerated `sf.ethereum.type.v2` bindings to add the Morph-specific fields: `TransactionTrace.Type` gained `TRX_TYPE_MORPH` and `TRX_TYPE_MORPH_L1_MESSAGE`, plus `TransactionTrace.morph_tx_config` (`MorphTxConfig`), `TransactionTrace.morph_l1_message_config` (`MorphL1MessageConfig`), `TransactionReceipt.morph_receipt_config` (`MorphReceiptConfig`), and `BlockHeader.morph_next_l1_msg_index`. All fields are optional and unset on non-Morph chains; this is bindings only, the tracer does not populate them yet.
+* `BlockHeader.block_access_list_hash` and `BlockHeader.block_access_list_rlp` for EIP-7928 (Amsterdam block access lists): the former is the hash the block header commits to, the latter the RLP-encoded full access list, unset on pre-Amsterdam blocks. `block_access_list_rlp` is experimental/measurement-only and may be dropped later if too costly. The tracer now populates both from `BlockData`.
 
 ## v5.4.2
 

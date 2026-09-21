@@ -64,6 +64,8 @@ fn test_skipped_block_preserves_coinbase() {
         requests_hash: None,
         tx_dependency: None,
         slot_number: None,
+        block_access_list_hash: None,
+        block_access_list_rlp: None,
     };
 
     let block_event = BlockEvent {

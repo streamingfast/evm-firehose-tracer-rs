@@ -89,6 +89,8 @@ fn block_data_with_number(number: u64) -> BlockData {
         requests_hash: None,
         tx_dependency: None,
         slot_number: None,
+        block_access_list_hash: None,
+        block_access_list_rlp: None,
     }
 }
 

@@ -325,6 +325,19 @@ pub struct BlockHeader {
     /// Morph specific, unset on all other chains.
     #[prost(uint64, optional, tag = "27")]
     pub morph_next_l1_msg_index: ::core::option::Option<u64>,
+    /// BlockAccessListHash was added by EIP-7928 and is ignored in legacy headers, it is scheduled
+    /// to be added in Amsterdam hard fork. This is the field the block header itself commits to.
+    #[prost(bytes = "vec", optional, tag = "28")]
+    pub block_access_list_hash: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    /// BlockAccessList is the RLP-encoded EIP-7928 block access list for this block, added in the
+    /// Amsterdam hard fork. Unlike `block_access_list_hash`, the header does not commit to this
+    /// field directly.
+    ///
+    /// EXPERIMENTAL: this field is populated for measurement purposes only and must **not** be
+    /// depended on. It is not yet officially supported for consumption and may be dropped or
+    /// change shape without notice until StreamingFast declares it stable.
+    #[prost(bytes = "vec", optional, tag = "29")]
+    pub block_access_list_rlp: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -955,7 +968,23 @@ pub struct Call {
     pub executed_code: bool,
     #[prost(bool, tag = "16")]
     pub suicide: bool,
-    /// hex representation of the hash -> preimage
+    /// Keccak preimages produced by the KECCAK256 opcode during this call, as a map of the
+    /// hex representation of the hash -> hex representation of the preimage. Neither side
+    /// carries a `0x` prefix.
+    ///
+    /// The map exists so a consumer can walk a storage slot back to the expression that
+    /// produced it, and only preimages of 256 bytes or less are recorded. Solidity's slot
+    /// derivations are all small:
+    ///
+    /// - 32 bytes for a dynamic array, or for a `bytes`/`string` longer than 31 bytes
+    /// - 64 bytes for a mapping with a value-type key, one hash per level of nesting
+    /// - 32 bytes plus the key for a `mapping(string => V)` or `mapping(bytes => V)`
+    ///
+    /// 256 bytes covers all of those, with room for a 224-byte dynamic key. A preimage
+    /// larger than that comes from a contract hashing its own data rather than deriving a
+    /// slot, and is left out of the map entirely rather than truncated: a truncated
+    /// preimage does not hash back to its key, which is worse for a consumer than no entry.
+    ///
     /// Note: not populated by the Monad tracer, the Monad execution layer does not emit keccak preimage events
     #[prost(map = "string, string", tag = "20")]
     pub keccak_preimages:

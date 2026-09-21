@@ -72,6 +72,8 @@ pub fn test_block() -> BlockEvent {
         requests_hash: None,
         tx_dependency: None,
         slot_number: None,
+        block_access_list_hash: None,
+        block_access_list_rlp: None,
     })
 }
 
@@ -596,6 +598,8 @@ impl TracerTester {
             requests_hash: None,
             tx_dependency: None,
             slot_number: None,
+            block_access_list_hash: None,
+            block_access_list_rlp: None,
         });
 
         self.tracer.on_genesis_block(block_event, alloc);
@@ -1051,6 +1055,8 @@ impl TracerTester {
             requests_hash: None,
             tx_dependency: None,
             slot_number: None,
+            block_access_list_hash: None,
+            block_access_list_rlp: None,
         };
 
         let block_event = BlockEvent {
