@@ -865,6 +865,10 @@ impl Tracer {
                 {
                     panic!("failed to populate deferred state on tx end: {}", e);
                 }
+                // Re-order: the merge appends deferred changes after the call's own.
+                if self.config.chain_client.has_unordered_state_changes() {
+                    Self::order_unordered_state_changes(root_call);
+                }
             }
         }
 
@@ -1403,6 +1407,10 @@ impl Tracer {
 
             call.end_ordinal = self.block_ordinal.next();
 
+            if self.config.chain_client.has_unordered_state_changes() {
+                Self::order_unordered_state_changes(&mut call);
+            }
+
             // Append to transaction calls
             if let Some(trx) = &mut self.transaction {
                 trx.calls.push(call);
@@ -1546,6 +1554,19 @@ impl Tracer {
     }
 
     /// OnStorageChange is called when contract storage changes
+    /// Give a call's unordered state changes a stable order.
+    ///
+    /// Collections whose order is meaningful (logs, gas changes, EIP-7702 paired nonce/code)
+    /// are left alone.
+    fn order_unordered_state_changes(call: &mut crate::pb::sf::ethereum::r#type::v2::Call) {
+        sort_keeping_ordinals(
+            &mut call.storage_changes,
+            |c| c.ordinal,
+            |c, o| c.ordinal = o,
+            |a, b| a.address.cmp(&b.address).then_with(|| a.key.cmp(&b.key)),
+        );
+    }
+
     pub fn on_storage_change(
         &mut self,
         addr: Address,
@@ -2235,4 +2256,80 @@ pub(crate) fn is_live_block(block: &Block, live_threshold: std::time::Duration) 
         .as_secs();
 
     now_secs.saturating_sub(block_timestamp_secs) <= live_threshold.as_secs()
+}
+
+/// Sort `items` by `cmp`, redistributing their ordinals so the block's global sequence holds.
+fn sort_keeping_ordinals<T>(
+    items: &mut [T],
+    get_ordinal: impl Fn(&T) -> u64,
+    set_ordinal: impl Fn(&mut T, u64),
+    cmp: impl Fn(&T, &T) -> std::cmp::Ordering,
+) {
+    if items.len() < 2 {
+        return;
+    }
+    let mut ordinals: Vec<u64> = items.iter().map(&get_ordinal).collect();
+    ordinals.sort_unstable();
+    items.sort_by(|a, b| cmp(a, b));
+    for (item, ordinal) in items.iter_mut().zip(ordinals) {
+        set_ordinal(item, ordinal);
+    }
+}
+
+#[cfg(test)]
+mod sort_storage_changes_tests {
+    use super::Tracer;
+    use crate::pb::sf::ethereum::r#type::v2::{Call, StorageChange};
+
+    fn change(address: u8, key: u8, ordinal: u64) -> StorageChange {
+        StorageChange {
+            address: vec![address; 20],
+            key: vec![key; 32],
+            old_value: vec![0u8; 32],
+            new_value: vec![key; 32],
+            ordinal,
+        }
+    }
+
+    #[test]
+    fn sorts_by_address_then_key_and_keeps_ordinals_ascending() {
+        let mut call = Call {
+            storage_changes: vec![
+                change(0xBB, 0x02, 10),
+                change(0xAA, 0x02, 11),
+                change(0xBB, 0x01, 12),
+                change(0xAA, 0x01, 13),
+            ],
+            ..Default::default()
+        };
+
+        Tracer::order_unordered_state_changes(&mut call);
+
+        let order: Vec<(u8, u8)> = call
+            .storage_changes
+            .iter()
+            .map(|c| (c.address[0], c.key[0]))
+            .collect();
+        assert_eq!(
+            order,
+            vec![(0xAA, 0x01), (0xAA, 0x02), (0xBB, 0x01), (0xBB, 0x02)]
+        );
+
+        // Each change keeps its own value, and ordinals ascend with array position.
+        for c in &call.storage_changes {
+            assert_eq!(c.new_value[0], c.key[0], "value must follow its key");
+        }
+        let ordinals: Vec<u64> = call.storage_changes.iter().map(|c| c.ordinal).collect();
+        assert_eq!(ordinals, vec![10, 11, 12, 13]);
+    }
+
+    #[test]
+    fn leaves_fewer_than_two_changes_untouched() {
+        let mut call = Call {
+            storage_changes: vec![change(0xBB, 0x02, 7)],
+            ..Default::default()
+        };
+        Tracer::order_unordered_state_changes(&mut call);
+        assert_eq!(call.storage_changes[0].ordinal, 7);
+    }
 }
