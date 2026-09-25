@@ -89,6 +89,66 @@ fn test_multiple_storage_changes_in_call() {
 }
 
 #[test]
+fn test_reth_storage_change_arrival_order_is_preserved() {
+    // Reth reports storage changes in execution order, which is meaningful: the tracer must
+    // not reorder them. Keys are supplied out of ascending order so that any sorting is visible.
+    let key3 = hash32(3);
+    let key1 = hash32(1);
+    let key2 = hash32(2);
+
+    let mut tester = TracerTester::new_reth();
+    tester
+        .start_block_trx(test_legacy_trx())
+        .start_call(
+            alice_addr(),
+            bob_addr(),
+            alloy_primitives::U256::from(100),
+            21000,
+            vec![],
+        )
+        .storage_change(bob_addr(), key3, hash32(500), hash32(600))
+        .storage_change(bob_addr(), key1, hash32(100), hash32(200))
+        .storage_change(bob_addr(), key2, hash32(300), hash32(400))
+        .end_call(vec![], 21000)
+        .end_block_trx(Some(success_receipt(21000)), None, None)
+        .validate_with_category("onstoragechange", |block| {
+            let trx = &block.transaction_traces[0];
+            let call = &trx.calls[0];
+
+            assert_eq!(
+                3,
+                call.storage_changes.len(),
+                "Should have 3 storage changes"
+            );
+
+            let keys: Vec<&[u8]> = call
+                .storage_changes
+                .iter()
+                .map(|sc| sc.key.as_slice())
+                .collect();
+            assert_eq!(
+                vec![key3.as_slice(), key1.as_slice(), key2.as_slice()],
+                keys,
+                "Storage changes must stay in arrival order, not be sorted by key"
+            );
+
+            // Each change keeps its own values.
+            assert_eq!(
+                hash32(600).as_slice(),
+                call.storage_changes[0].new_value.as_slice()
+            );
+            assert_eq!(
+                hash32(200).as_slice(),
+                call.storage_changes[1].new_value.as_slice()
+            );
+            assert_eq!(
+                hash32(400).as_slice(),
+                call.storage_changes[2].new_value.as_slice()
+            );
+        });
+}
+
+#[test]
 fn test_multiple_calls_with_storage_changes() {
     // Multiple calls, each with storage changes
     let key1 = hash32(1);

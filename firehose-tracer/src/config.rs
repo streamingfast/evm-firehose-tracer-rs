@@ -222,6 +222,19 @@ pub enum ChainClient {
     Monad,
 }
 
+impl ChainClient {
+    /// Whether this client reports state changes in an order that carries no meaning.
+    ///
+    /// True for clients that walk a state map after the fact instead of reporting in
+    /// execution order; their order may differ between runs of the same block.
+    pub fn has_unordered_state_changes(&self) -> bool {
+        match self {
+            Self::Monad => true,
+            Self::Unknown | Self::Reth => false,
+        }
+    }
+}
+
 /// Controls when and how encoded blocks are written to stdout.
 #[derive(Debug, Clone)]
 pub enum EmissionMode {
@@ -300,6 +313,12 @@ impl Config {
     /// Create a new config
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Builder method to set the chain client providing tracing data
+    pub fn with_chain_client(mut self, client: ChainClient) -> Self {
+        self.chain_client = client;
+        self
     }
 
     /// Builder method to enable concurrent flushing
