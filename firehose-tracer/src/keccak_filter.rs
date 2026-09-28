@@ -30,6 +30,20 @@ const MAX_SLOT_OFFSET: U256 = U256::from_limbs([u64::MAX, 0, 0, 0]);
 
 type Hash = [u8; 32];
 
+/// Turns the filter off when set to `true`, `1` or `yes`, whatever the config says.
+pub(crate) const DISABLE_ENV: &str = "FIREHOSE_ETHEREUM_TRACER_DISABLE_KECCAK_FILTER";
+
+pub(crate) fn disabled_by_env() -> bool {
+    std::env::var(DISABLE_ENV).is_ok_and(|value| is_truthy(&value))
+}
+
+fn is_truthy(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "true" | "1" | "yes"
+    )
+}
+
 /// Keeps only the keccak preimages of `calls` that explain one of their storage change keys.
 /// `calls` are all the calls of one transaction or system call, and must run once all of
 /// their storage changes are attached.
@@ -162,6 +176,16 @@ mod tests {
 
     fn add(hash: Hash, offset: u64) -> Hash {
         (U256::from_be_bytes(hash) + U256::from(offset)).to_be_bytes()
+    }
+
+    #[test]
+    fn env_values_that_disable_the_filter() {
+        for value in ["true", "TRUE", " 1 ", "yes"] {
+            assert!(is_truthy(value), "{value:?} should disable");
+        }
+        for value in ["", "false", "0", "no"] {
+            assert!(!is_truthy(value), "{value:?} should not disable");
+        }
     }
 
     #[test]

@@ -164,7 +164,15 @@ impl Tracer {
 
     /// Creates a new Firehose tracer with a custom output writer.
     /// This is useful for testing where you want to capture output to a buffer.
-    pub fn new_with_writer(config: Config, output_writer: Box<dyn Write + Send>) -> Self {
+    pub fn new_with_writer(mut config: Config, output_writer: Box<dyn Write + Send>) -> Self {
+        if config.filter_keccak_preimages && keccak_filter::disabled_by_env() {
+            tracing::info!(
+                env = keccak_filter::DISABLE_ENV,
+                "keccak preimage filter disabled by environment"
+            );
+            config.filter_keccak_preimages = false;
+        }
+
         // Wrap the writer in an Arc<Mutex<...>> so it can be shared with the
         // background writer thread when running in Async or Auto mode.
         let shared_writer: Arc<Mutex<Box<dyn Write + Send>>> =
