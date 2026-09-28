@@ -309,9 +309,9 @@ pub struct Config {
     pub cursor_path: Option<PathBuf>,
 
     /// Keep only the `Call.keccak_preimages` entries that explain a storage change key of
-    /// the transaction (directly, at an array or struct offset, or through nested hashing),
-    /// dropping the rest before the block is encoded.
-    #[serde(default)]
+    /// the transaction or system call (directly, at an array or struct offset, or through
+    /// nested hashing), dropping the rest before the block is encoded. On by default.
+    #[serde(default = "default_filter_keccak_preimages")]
     pub filter_keccak_preimages: bool,
 }
 
@@ -406,7 +406,7 @@ impl Default for Config {
             ignore_genesis_block: false,
             emission_mode: EmissionMode::default(),
             cursor_path: None,
-            filter_keccak_preimages: false,
+            filter_keccak_preimages: default_filter_keccak_preimages(),
         }
     }
 }
@@ -422,6 +422,10 @@ fn is_timestamp_forked(fork: Option<u64>, timestamp: u64) -> bool {
 /// Default concurrent buffer size
 fn default_concurrent_buffer_size() -> usize {
     100
+}
+
+fn default_filter_keccak_preimages() -> bool {
+    true
 }
 
 #[cfg(test)]

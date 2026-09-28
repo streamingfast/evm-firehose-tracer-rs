@@ -876,7 +876,7 @@ impl Tracer {
         // Step 3.4: Drop the keccak preimages that explain no storage change. Every storage
         // change of the transaction is attached to its calls once deferred state is moved.
         if self.config.filter_keccak_preimages {
-            keccak_filter::retain_storage_slot_preimages(&mut trx);
+            keccak_filter::retain_storage_slot_preimages(&mut trx.calls);
         }
 
         // Step 3.5: Discard SetCode authorizations that don't have corresponding nonce changes
@@ -1753,6 +1753,9 @@ impl Tracer {
 
         // Move any calls created during system call to block's system calls list
         if let (Some(block), Some(trx)) = (&mut self.block, &mut self.transaction) {
+            if self.config.filter_keccak_preimages {
+                keccak_filter::retain_storage_slot_preimages(&mut trx.calls);
+            }
             block.system_calls.append(&mut trx.calls);
         }
 

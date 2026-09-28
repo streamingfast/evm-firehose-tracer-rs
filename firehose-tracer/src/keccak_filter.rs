@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 
 use alloy_primitives::U256;
 
-use crate::pb::sf::ethereum::r#type::v2::TransactionTrace;
+use crate::pb::sf::ethereum::r#type::v2::Call;
 
 /// Levels of nested hashing followed from a storage key, e.g. `mapping(a => mapping(b => T))`
 /// is one level.
@@ -30,11 +30,12 @@ const MAX_SLOT_OFFSET: U256 = U256::from_limbs([u64::MAX, 0, 0, 0]);
 
 type Hash = [u8; 32];
 
-/// Keeps only the keccak preimages of `trx` that explain one of its storage change keys.
-/// Must run once all of the transaction's storage changes are attached to its calls.
-pub(crate) fn retain_storage_slot_preimages(trx: &mut TransactionTrace) {
+/// Keeps only the keccak preimages of `calls` that explain one of their storage change keys.
+/// `calls` are all the calls of one transaction or system call, and must run once all of
+/// their storage changes are attached.
+pub(crate) fn retain_storage_slot_preimages(calls: &mut [Call]) {
     let mut preimages: HashMap<Hash, Vec<u8>> = HashMap::new();
-    for call in &trx.calls {
+    for call in calls.iter() {
         for (hash, preimage) in &call.keccak_preimages {
             let Some(hash) = decode_hash(hash) else {
                 continue;
@@ -56,7 +57,7 @@ pub(crate) fn retain_storage_slot_preimages(trx: &mut TransactionTrace) {
 
     let mut kept: HashSet<Hash> = HashSet::new();
     let mut frontier: Vec<Hash> = Vec::new();
-    for call in &trx.calls {
+    for call in calls.iter() {
         for change in &call.storage_changes {
             let Ok(key) = <Hash>::try_from(change.key.as_slice()) else {
                 continue;
@@ -85,7 +86,7 @@ pub(crate) fn retain_storage_slot_preimages(trx: &mut TransactionTrace) {
     }
 
     let kept_hex: HashSet<String> = kept.iter().map(hex::encode).collect();
-    for call in &mut trx.calls {
+    for call in calls.iter_mut() {
         call.keccak_preimages
             .retain(|hash, _| kept_hex.contains(hash));
     }
@@ -105,8 +106,8 @@ fn slot_base(sorted: &[Hash], key: &Hash) -> Option<Hash> {
 /// `string` or `bytes` key).
 fn inner_hash_candidates(preimage: &[u8]) -> impl Iterator<Item = Hash> + '_ {
     let words = preimage.chunks_exact(32);
-    let tail =
-        (preimage.len() > 32 && !preimage.len().is_multiple_of(32)).then(|| &preimage[preimage.len() - 32..]);
+    let tail = (preimage.len() > 32 && !preimage.len().is_multiple_of(32))
+        .then(|| &preimage[preimage.len() - 32..]);
     words
         .chain(tail)
         .map(|word| <Hash>::try_from(word).expect("32-byte slice"))
@@ -148,8 +149,8 @@ mod tests {
         w
     }
 
-    fn kept(trx: &TransactionTrace) -> HashSet<String> {
-        trx.calls
+    fn kept(calls: &[Call]) -> HashSet<String> {
+        calls
             .iter()
             .flat_map(|c| c.keccak_preimages.keys().cloned())
             .collect()
@@ -169,15 +170,12 @@ mod tests {
         let slot = record(&mut call, &[word(1), word(0)].concat());
         let unrelated = record(&mut call, &[word(9), word(9)].concat());
         store(&mut call, slot);
-        let mut trx = TransactionTrace {
-            calls: vec![call],
-            ..Default::default()
-        };
+        let mut calls = vec![call];
 
-        retain_storage_slot_preimages(&mut trx);
+        retain_storage_slot_preimages(&mut calls);
 
-        assert_eq!(kept(&trx), set(&[slot]));
-        assert!(!kept(&trx).contains(&hex::encode(unrelated)));
+        assert_eq!(kept(&calls), set(&[slot]));
+        assert!(!kept(&calls).contains(&hex::encode(unrelated)));
     }
 
     #[test]
@@ -185,14 +183,11 @@ mod tests {
         let mut call = Call::default();
         let base = record(&mut call, &word(3));
         store(&mut call, add(base, 7));
-        let mut trx = TransactionTrace {
-            calls: vec![call],
-            ..Default::default()
-        };
+        let mut calls = vec![call];
 
-        retain_storage_slot_preimages(&mut trx);
+        retain_storage_slot_preimages(&mut calls);
 
-        assert_eq!(kept(&trx), set(&[base]));
+        assert_eq!(kept(&calls), set(&[base]));
     }
 
     #[test]
@@ -201,14 +196,11 @@ mod tests {
         let base = record(&mut call, &word(3));
         let too_far = U256::from_be_bytes(base) + (U256::from(1u64) << 64usize);
         store(&mut call, too_far.to_be_bytes());
-        let mut trx = TransactionTrace {
-            calls: vec![call],
-            ..Default::default()
-        };
+        let mut calls = vec![call];
 
-        retain_storage_slot_preimages(&mut trx);
+        retain_storage_slot_preimages(&mut calls);
 
-        assert!(kept(&trx).is_empty());
+        assert!(kept(&calls).is_empty());
     }
 
     #[test]
@@ -222,14 +214,14 @@ mod tests {
         let string_slot = record(&mut call, &[b"abc".as_slice(), &string_parent].concat());
         store(&mut call, outer);
         store(&mut call, string_slot);
-        let mut trx = TransactionTrace {
-            calls: vec![call],
-            ..Default::default()
-        };
+        let mut calls = vec![call];
 
-        retain_storage_slot_preimages(&mut trx);
+        retain_storage_slot_preimages(&mut calls);
 
-        assert_eq!(kept(&trx), set(&[inner, outer, string_parent, string_slot]));
+        assert_eq!(
+            kept(&calls),
+            set(&[inner, outer, string_parent, string_slot])
+        );
     }
 
     #[test]
@@ -238,14 +230,11 @@ mod tests {
         let slot = record(&mut hashing, &[word(1), word(0)].concat());
         let mut writing = Call::default();
         store(&mut writing, slot);
-        let mut trx = TransactionTrace {
-            calls: vec![hashing, writing],
-            ..Default::default()
-        };
+        let mut calls = vec![hashing, writing];
 
-        retain_storage_slot_preimages(&mut trx);
+        retain_storage_slot_preimages(&mut calls);
 
-        assert_eq!(kept(&trx), set(&[slot]));
+        assert_eq!(kept(&calls), set(&[slot]));
     }
 
     #[test]
@@ -257,14 +246,11 @@ mod tests {
             chain.push(record(&mut call, &[word(i as u8 + 10), parent].concat()));
         }
         store(&mut call, *chain.last().unwrap());
-        let mut trx = TransactionTrace {
-            calls: vec![call],
-            ..Default::default()
-        };
+        let mut calls = vec![call];
 
-        retain_storage_slot_preimages(&mut trx);
+        retain_storage_slot_preimages(&mut calls);
 
         // The storage key's own entry is depth 0, then MAX_DEPTH levels below it.
-        assert_eq!(kept(&trx), set(&chain[1..]));
+        assert_eq!(kept(&calls), set(&chain[1..]));
     }
 }
