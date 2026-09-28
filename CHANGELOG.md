@@ -7,7 +7,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-* `Call.keccak_preimages` now keeps only the entries that explain a storage change key of the transaction or system call (directly, at an array or struct offset, or through up to 10 levels of nested hashing); the rest are dropped before the block is encoded. Turn it off with `FIREHOSE_ETHEREUM_TRACER_DISABLE_KECCAK_FILTER=true` or `Config.filter_keccak_preimages = false` (builder `with_keccak_preimage_filter(false)`).
+* `Call.keccak_preimages` now keeps only the entries that explain a storage change key of the transaction or system call (directly, at an array or struct offset, or through up to 16 levels of nested hashing); the rest are dropped before the block is encoded. Turn it off with `FIREHOSE_ETHEREUM_TRACER_DISABLE_KECCAK_FILTER=true` or `Config.filter_keccak_preimages = false` (builder `with_keccak_preimage_filter(false)`).
 
 ## v5.4.4
 

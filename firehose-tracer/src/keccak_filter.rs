@@ -6,8 +6,9 @@
 //!
 //! * a storage change key of the transaction is its hash, or its hash plus a small offset
 //!   (array elements and struct fields live at `keccak(p) + i`), or
-//! * its hash appears inside the preimage of a kept entry (nested mappings, and `string` or
-//!   `bytes` keys), following at most [`MAX_DEPTH`] such levels.
+//! * its hash, or its hash plus a small offset, appears inside the preimage of a kept entry
+//!   (nested mappings, a mapping inside a struct or array element, and `string` or `bytes`
+//!   keys), following at most [`MAX_DEPTH`] such levels.
 //!
 //! Everything else is dropped: hashes only used to read storage, signatures, CREATE2
 //! addresses and contract-level hashing. Those can make up tens of MB for a single
@@ -21,10 +22,10 @@ use crate::pb::sf::ethereum::r#type::v2::Call;
 
 /// Levels of nested hashing followed from a storage key, e.g. `mapping(a => mapping(b => T))`
 /// is one level.
-const MAX_DEPTH: usize = 10;
+const MAX_DEPTH: usize = 16;
 
-/// Largest distance between a storage key and the hash it is derived from, for arrays and
-/// struct fields. A random key lands this close to an unrelated hash with probability
+/// Largest distance between a slot and the hash it is derived from, for arrays and struct
+/// fields. A random key lands this close to an unrelated hash with probability
 /// about 2^-192 per pair.
 const MAX_SLOT_OFFSET: U256 = U256::from_limbs([u64::MAX, 0, 0, 0]);
 
@@ -90,9 +91,11 @@ pub(crate) fn retain_storage_slot_preimages(calls: &mut [Call]) {
         }
         let mut next = Vec::new();
         for hash in &frontier {
-            for inner in inner_hash_candidates(&preimages[hash]) {
-                if preimages.contains_key(&inner) && kept.insert(inner) {
-                    next.push(inner);
+            for word in inner_hash_candidates(&preimages[hash]) {
+                if let Some(inner) = slot_base(&sorted, &word) {
+                    if kept.insert(inner) {
+                        next.push(inner);
+                    }
                 }
             }
         }
@@ -107,7 +110,7 @@ pub(crate) fn retain_storage_slot_preimages(calls: &mut [Call]) {
 }
 
 /// Returns the largest hash at or below `key` when `key` is at most [`MAX_SLOT_OFFSET`]
-/// above it.
+/// above it, which covers an exact match.
 fn slot_base(sorted: &[Hash], key: &Hash) -> Option<Hash> {
     let idx = sorted.partition_point(|hash| hash <= key);
     let base = sorted[..idx].last()?;
@@ -246,6 +249,22 @@ mod tests {
             kept(&calls),
             set(&[inner, outer, string_parent, string_slot])
         );
+    }
+
+    #[test]
+    fn follows_mapping_inside_struct_in_mapping() {
+        // struct Pool { uint total; mapping(address => uint) shares; }
+        // mapping(uint => Pool) pools at slot 3: pools[id].shares[user] is at
+        // keccak(user . (keccak(id . 3) + 1)).
+        let mut call = Call::default();
+        let pool = record(&mut call, &[word(7), word(3)].concat());
+        let share = record(&mut call, &[word(0xEE), add(pool, 1)].concat());
+        store(&mut call, share);
+        let mut calls = vec![call];
+
+        retain_storage_slot_preimages(&mut calls);
+
+        assert_eq!(kept(&calls), set(&[pool, share]));
     }
 
     #[test]
