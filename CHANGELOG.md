@@ -3,6 +3,12 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+* `Config.filter_keccak_preimages` (builder `with_keccak_preimage_filter`), off by default: keeps only the `Call.keccak_preimages` entries that explain a storage change key of the transaction (directly, at an array or struct offset, or through up to 10 levels of nested hashing), and drops the rest before the block is encoded.
+
 ## v5.4.4
 
 ### Added

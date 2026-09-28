@@ -307,6 +307,12 @@ pub struct Config {
     /// unclean shutdowns.  Format: a single decimal integer followed by `\n`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor_path: Option<PathBuf>,
+
+    /// Keep only the `Call.keccak_preimages` entries that explain a storage change key of
+    /// the transaction (directly, at an array or struct offset, or through nested hashing),
+    /// dropping the rest before the block is encoded.
+    #[serde(default)]
+    pub filter_keccak_preimages: bool,
 }
 
 impl Config {
@@ -348,6 +354,12 @@ impl Config {
     /// Builder method to set the cursor file path
     pub fn with_cursor_path(mut self, path: PathBuf) -> Self {
         self.cursor_path = Some(path);
+        self
+    }
+
+    /// Builder method to keep only the keccak preimages that explain a storage change key
+    pub fn with_keccak_preimage_filter(mut self, enable: bool) -> Self {
+        self.filter_keccak_preimages = enable;
         self
     }
 
@@ -394,6 +406,7 @@ impl Default for Config {
             ignore_genesis_block: false,
             emission_mode: EmissionMode::default(),
             cursor_path: None,
+            filter_keccak_preimages: false,
         }
     }
 }
@@ -505,6 +518,7 @@ mod tests {
             ignore_genesis_block: false,
             emission_mode: EmissionMode::default(),
             cursor_path: None,
+            filter_keccak_preimages: true,
         };
 
         let json = serde_json::to_string_pretty(&config).unwrap();

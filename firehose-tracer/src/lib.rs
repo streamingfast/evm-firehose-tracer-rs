@@ -4,6 +4,7 @@ mod deferred_call_state;
 mod eip7702;
 pub mod emission;
 pub mod finality;
+mod keccak_filter;
 pub mod logging;
 pub mod mapper;
 pub mod open_callstack;

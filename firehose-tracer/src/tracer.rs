@@ -12,6 +12,7 @@ use super::{
     config::Config,
     deferred_call_state::DeferredCallState,
     finality::FinalityStatus,
+    keccak_filter,
     open_callstack::{OpenCall, OpenCallStack},
     ordinal::Ordinal,
 };
@@ -870,6 +871,12 @@ impl Tracer {
                     Self::order_unordered_state_changes(root_call);
                 }
             }
+        }
+
+        // Step 3.4: Drop the keccak preimages that explain no storage change. Every storage
+        // change of the transaction is attached to its calls once deferred state is moved.
+        if self.config.filter_keccak_preimages {
+            keccak_filter::retain_storage_slot_preimages(&mut trx);
         }
 
         // Step 3.5: Discard SetCode authorizations that don't have corresponding nonce changes
