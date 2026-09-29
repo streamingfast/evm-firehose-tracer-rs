@@ -7,7 +7,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-* `Call.keccak_preimages` now keeps only the entries that explain a storage change key of the transaction or system call (directly, at an array or struct offset, or through up to 16 levels of nested hashing); the rest are dropped before the block is encoded.
+* `Call.keccak_preimages` now keeps only the entries that explain a storage change key of the transaction or system call (directly, at an array or struct offset, or through up to 16 levels of nested hashing); the rest are dropped before the block is encoded. Preimages over 256 bytes are no longer recorded.
 
 ## v5.4.4
 

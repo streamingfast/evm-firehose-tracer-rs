@@ -20,8 +20,18 @@ use alloy_primitives::U256;
 
 use crate::pb::sf::ethereum::r#type::v2::Call;
 
+/// Largest preimage, in bytes, the tracer records. Storage slot derivations fit well within it:
+/// 32 bytes for arrays and long `bytes`/`string`, 64 for value-type mapping keys, key + 32 for
+/// `string`/`bytes` keys, up to a few words for keys built with `abi.encode`. Larger ones are
+/// contract-level hashing and are dropped, never truncated: a truncated preimage no longer
+/// hashes back to its key.
+pub(crate) const MAX_PREIMAGE_SIZE: usize = 256;
+
 /// Levels of nested hashing followed from a storage key, e.g. `mapping(a => mapping(b => T))`
-/// is one level.
+/// is one level. Nesting that comes from types stayed within 5 levels on the Polygon, BSC, Base
+/// and Robinhood blocks sampled; hash chains (a key derived from the previous hash, as in linked
+/// lists) went past 10. Each preimage is visited at most once whatever the limit, so a high
+/// limit costs nothing.
 const MAX_DEPTH: usize = 16;
 
 /// Largest distance between a slot and the hash it is derived from, for arrays and struct

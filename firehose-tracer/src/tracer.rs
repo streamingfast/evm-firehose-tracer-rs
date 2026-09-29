@@ -1717,6 +1717,10 @@ impl Tracer {
     pub fn on_keccak_preimage(&mut self, hash: B256, preimage: &[u8]) {
         self.ensure_in_block_and_in_trx_and_in_call();
 
+        if preimage.len() > keccak_filter::MAX_PREIMAGE_SIZE {
+            return;
+        }
+
         if let Some(call) = self.call_stack.peek_mut() {
             // Store the preimage as hex-encoded string
             call.keccak_preimages

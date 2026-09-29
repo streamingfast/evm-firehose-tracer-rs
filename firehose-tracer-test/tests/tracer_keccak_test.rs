@@ -256,9 +256,10 @@ fn test_keccak_empty_preimage() {
 }
 
 #[test]
-fn test_keccak_large_preimage() {
-    // Scenario: keccak256 of large data (e.g., contract bytecode, large calldata)
-    let mut preimage = vec![0u8; 1024]; // 1 KB of data
+fn test_keccak_preimage_over_256_bytes_not_recorded() {
+    // Scenario: keccak256 of large data (e.g., contract bytecode, large calldata). Even with a
+    // storage slot written under its hash, a preimage over 256 bytes is not recorded.
+    let mut preimage = vec![0u8; 1024];
     for (i, byte) in preimage.iter_mut().enumerate() {
         *byte = (i % 256) as u8;
     }
@@ -279,26 +280,53 @@ fn test_keccak_large_preimage() {
         .end_call(vec![], 95000)
         .end_block_trx(Some(success_receipt(100000)), None, None)
         .validate_with_category("keccakpreimages", |block| {
-            let trx = &block.transaction_traces[0];
-            let call = &trx.calls[0];
-
-            assert_eq!(
-                1,
-                call.keccak_preimages.len(),
-                "Should have 1 keccak preimage"
+            let call = &block.transaction_traces[0].calls[0];
+            assert!(
+                call.keccak_preimages.is_empty(),
+                "Preimage over 256 bytes should not be recorded"
             );
+        });
+}
 
-            let hash_hex = hex::encode(hash);
-            let preimage_hex = hex::encode(&preimage);
+#[test]
+fn test_keccak_preimage_size_limit_is_256_bytes() {
+    let at_limit = vec![7u8; 256];
+    let at_limit_hash = hash_bytes(&at_limit);
+    let over_limit = vec![7u8; 257];
+    let over_limit_hash = hash_bytes(&over_limit);
 
+    let mut tester = TracerTester::new();
+    tester
+        .start_block_trx(test_legacy_trx())
+        .start_call(
+            alice_addr(),
+            bob_addr(),
+            alloy_primitives::U256::ZERO,
+            100000,
+            vec![0x01],
+        )
+        .keccak(at_limit_hash, at_limit.clone())
+        .storage_change(
+            bob_addr(),
+            at_limit_hash,
+            B256::ZERO,
+            B256::with_last_byte(1),
+        )
+        .keccak(over_limit_hash, over_limit)
+        .storage_change(
+            bob_addr(),
+            over_limit_hash,
+            B256::ZERO,
+            B256::with_last_byte(1),
+        )
+        .end_call(vec![], 95000)
+        .end_block_trx(Some(success_receipt(100000)), None, None)
+        .validate_with_category("keccakpreimages", |block| {
+            let call = &block.transaction_traces[0].calls[0];
+            assert_eq!(1, call.keccak_preimages.len());
             assert_eq!(
-                &preimage_hex, &call.keccak_preimages[&hash_hex],
-                "Large preimage should match"
-            );
-            assert_eq!(
-                2048,
-                call.keccak_preimages[&hash_hex].len(),
-                "Hex-encoded preimage should be 2x original size"
+                hex::encode(&at_limit),
+                call.keccak_preimages[&hex::encode(at_limit_hash)]
             );
         });
 }
