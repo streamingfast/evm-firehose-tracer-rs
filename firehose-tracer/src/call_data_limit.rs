@@ -39,8 +39,6 @@ pub const MAX_BLOCK_ENCODED_LEN: usize = 1024 * 1024 * 1024;
 const SELECTOR_LEN: usize = 4;
 
 /// The part of a call input recorded once the limit is passed: its first 4 bytes (the selector).
-#[cold]
-#[inline(never)]
 pub(crate) fn four_bytes(input: &[u8]) -> &[u8] {
     &input[..input.len().min(SELECTOR_LEN)]
 }
