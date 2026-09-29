@@ -487,14 +487,6 @@ impl TracerTester {
         Self::new_full(ChainConfig::new(1), tracer_config)
     }
 
-    /// Creates a tester that keeps every keccak preimage, to test how they are recorded
-    pub fn new_without_keccak_filter() -> Self {
-        Self::new_full(
-            ChainConfig::new(1),
-            Config::new().with_keccak_preimage_filter(false),
-        )
-    }
-
     /// Creates a tester with a specific chain config
     pub fn new_with_config(chain_config: ChainConfig) -> Self {
         Self::new_full(chain_config, Config::new())

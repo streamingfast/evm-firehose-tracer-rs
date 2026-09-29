@@ -3,6 +3,9 @@ use firehose_tracer_test::{
     alice_addr, bob_addr, charlie_addr, success_receipt, test_legacy_trx, TracerTester,
 };
 
+// The recording tests below write a storage slot under each hash: the tracer keeps only the
+// preimages that explain a storage change, and these tests check how preimages are recorded.
+
 /// Computes keccak256 hash of the given data
 fn hash_bytes(data: &[u8]) -> B256 {
     use alloy_primitives::keccak256;
@@ -16,7 +19,7 @@ fn test_single_keccak_preimage() {
     let preimage = b"hello".to_vec();
     let hash = hash_bytes(&preimage);
 
-    let mut tester = TracerTester::new_without_keccak_filter();
+    let mut tester = TracerTester::new();
     tester
         .start_block_trx(test_legacy_trx())
         .start_call(
@@ -27,6 +30,7 @@ fn test_single_keccak_preimage() {
             vec![0x01],
         )
         .keccak(hash, preimage.clone())
+        .storage_change(bob_addr(), hash, B256::ZERO, B256::with_last_byte(1))
         .end_call(vec![], 95000)
         .end_block_trx(Some(success_receipt(100000)), None, None)
         .validate_with_category("keccakpreimages", |block| {
@@ -69,7 +73,7 @@ fn test_multiple_keccak_preimages_same_call() {
     let preimage3 = b"event_signature".to_vec();
     let hash3 = hash_bytes(&preimage3);
 
-    let mut tester = TracerTester::new_without_keccak_filter();
+    let mut tester = TracerTester::new();
     tester
         .start_block_trx(test_legacy_trx())
         .start_call(
@@ -80,8 +84,11 @@ fn test_multiple_keccak_preimages_same_call() {
             vec![0x01],
         )
         .keccak(hash1, preimage1.clone())
+        .storage_change(bob_addr(), hash1, B256::ZERO, B256::with_last_byte(1))
         .keccak(hash2, preimage2.clone())
+        .storage_change(bob_addr(), hash2, B256::ZERO, B256::with_last_byte(1))
         .keccak(hash3, preimage3.clone())
+        .storage_change(bob_addr(), hash3, B256::ZERO, B256::with_last_byte(1))
         .end_call(vec![], 95000)
         .end_block_trx(Some(success_receipt(100000)), None, None)
         .validate_with_category("keccakpreimages", |block| {
@@ -123,7 +130,7 @@ fn test_keccak_preimages_across_nested_calls() {
     let preimage_child = b"child_data".to_vec();
     let hash_child = hash_bytes(&preimage_child);
 
-    let mut tester = TracerTester::new_without_keccak_filter();
+    let mut tester = TracerTester::new();
     tester
         .start_block_trx(test_legacy_trx())
         .start_call(
@@ -134,6 +141,7 @@ fn test_keccak_preimages_across_nested_calls() {
             vec![0x01],
         )
         .keccak(hash_parent, preimage_parent.clone())
+        .storage_change(bob_addr(), hash_parent, B256::ZERO, B256::with_last_byte(1))
         .start_call(
             bob_addr(),
             charlie_addr(),
@@ -142,6 +150,7 @@ fn test_keccak_preimages_across_nested_calls() {
             vec![0x02],
         )
         .keccak(hash_child, preimage_child.clone())
+        .storage_change(bob_addr(), hash_child, B256::ZERO, B256::with_last_byte(1))
         .end_call(vec![], 45000)
         .end_call(vec![], 95000)
         .end_block_trx(Some(success_receipt(100000)), None, None)
@@ -173,7 +182,7 @@ fn test_duplicate_keccak_preimage_ignored() {
     let preimage = b"repeated_data".to_vec();
     let hash = hash_bytes(&preimage);
 
-    let mut tester = TracerTester::new_without_keccak_filter();
+    let mut tester = TracerTester::new();
     tester
         .start_block_trx(test_legacy_trx())
         .start_call(
@@ -184,6 +193,7 @@ fn test_duplicate_keccak_preimage_ignored() {
             vec![0x01],
         )
         .keccak(hash, preimage.clone())
+        .storage_change(bob_addr(), hash, B256::ZERO, B256::with_last_byte(1))
         .keccak(hash, preimage.clone()) // Duplicate
         .keccak(hash, preimage.clone()) // Duplicate
         .end_call(vec![], 95000)
@@ -212,7 +222,7 @@ fn test_keccak_empty_preimage() {
     let preimage = vec![];
     let hash = hash_bytes(&preimage);
 
-    let mut tester = TracerTester::new_without_keccak_filter();
+    let mut tester = TracerTester::new();
     tester
         .start_block_trx(test_legacy_trx())
         .start_call(
@@ -223,6 +233,7 @@ fn test_keccak_empty_preimage() {
             vec![0x01],
         )
         .keccak(hash, preimage.clone())
+        .storage_change(bob_addr(), hash, B256::ZERO, B256::with_last_byte(1))
         .end_call(vec![], 95000)
         .end_block_trx(Some(success_receipt(100000)), None, None)
         .validate_with_category("keccakpreimages", |block| {
@@ -253,7 +264,7 @@ fn test_keccak_large_preimage() {
     }
     let hash = hash_bytes(&preimage);
 
-    let mut tester = TracerTester::new_without_keccak_filter();
+    let mut tester = TracerTester::new();
     tester
         .start_block_trx(test_legacy_trx())
         .start_call(
@@ -264,6 +275,7 @@ fn test_keccak_large_preimage() {
             vec![0x01],
         )
         .keccak(hash, preimage.clone())
+        .storage_change(bob_addr(), hash, B256::ZERO, B256::with_last_byte(1))
         .end_call(vec![], 95000)
         .end_block_trx(Some(success_receipt(100000)), None, None)
         .validate_with_category("keccakpreimages", |block| {
@@ -309,7 +321,7 @@ fn test_keccak_storage_slot_mapping() {
     let empty_hash = B256::ZERO;
     let storage_value = hash_bytes(&[0x01]);
 
-    let mut tester = TracerTester::new_without_keccak_filter();
+    let mut tester = TracerTester::new();
     tester
         .start_block_trx(test_legacy_trx())
         .start_call(

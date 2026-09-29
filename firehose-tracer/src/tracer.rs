@@ -164,15 +164,7 @@ impl Tracer {
 
     /// Creates a new Firehose tracer with a custom output writer.
     /// This is useful for testing where you want to capture output to a buffer.
-    pub fn new_with_writer(mut config: Config, output_writer: Box<dyn Write + Send>) -> Self {
-        if config.filter_keccak_preimages && keccak_filter::disabled_by_env() {
-            tracing::info!(
-                env = keccak_filter::DISABLE_ENV,
-                "keccak preimage filter disabled by environment"
-            );
-            config.filter_keccak_preimages = false;
-        }
-
+    pub fn new_with_writer(config: Config, output_writer: Box<dyn Write + Send>) -> Self {
         // Wrap the writer in an Arc<Mutex<...>> so it can be shared with the
         // background writer thread when running in Async or Auto mode.
         let shared_writer: Arc<Mutex<Box<dyn Write + Send>>> =
@@ -883,9 +875,7 @@ impl Tracer {
 
         // Step 3.4: Drop the keccak preimages that explain no storage change. Every storage
         // change of the transaction is attached to its calls once deferred state is moved.
-        if self.config.filter_keccak_preimages {
-            keccak_filter::retain_storage_slot_preimages(&mut trx.calls);
-        }
+        keccak_filter::retain_storage_slot_preimages(&mut trx.calls);
 
         // Step 3.5: Discard SetCode authorizations that don't have corresponding nonce changes
         // (matching native tracer's discardUncommittedSetCodeAuthorization)
@@ -1761,9 +1751,7 @@ impl Tracer {
 
         // Move any calls created during system call to block's system calls list
         if let (Some(block), Some(trx)) = (&mut self.block, &mut self.transaction) {
-            if self.config.filter_keccak_preimages {
-                keccak_filter::retain_storage_slot_preimages(&mut trx.calls);
-            }
+            keccak_filter::retain_storage_slot_preimages(&mut trx.calls);
             block.system_calls.append(&mut trx.calls);
         }
 
