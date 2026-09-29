@@ -3,7 +3,14 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v5.5.0
+
+### Added
+
+* Limits on the call input and return data a block records, so a block stays under the ~2 GiB Firehose message limit (`call_data_limit`):
+  * When the internal calls that started before a call in the same transaction have passed more than 50 MiB of input, the call records only its 4-byte selector and sets `Call.input_truncated`. When the internal calls that ended before it have returned more than 25 MiB, it records no return data and sets `Call.return_data_truncated`. The root call is never truncated.
+  * When a block would still encode to more than 1 GiB, both limits are halved and applied again to every transaction and system call until it fits.
+  * Regenerated `sf.ethereum.type.v2` bindings for the two new `Call` fields, from streamingfast/firehose-ethereum `develop` (BSR commit `0f16be88cb264a45a541cb4a7cb71390`, pinned in `proto/buf.yaml` until a firehose-ethereum release has them).
 
 ### Changed
 

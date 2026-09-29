@@ -20,7 +20,7 @@ impl CallStack {
 
     /// Adds a new call to the stack and assigns Index, Depth, and ParentIndex.
     /// This matches the native Firehose tracer behavior.
-    pub fn push(&mut self, call: &mut Call) {
+    pub fn push(&mut self, mut call: Call) {
         // Increment index first, so first call gets index 1
         self.index += 1;
         call.index = self.index;
@@ -34,7 +34,7 @@ impl CallStack {
             call.parent_index = parent.index;
         }
 
-        self.stack.push(call.clone());
+        self.stack.push(call);
     }
 
     /// Removes and returns the top call from the stack.

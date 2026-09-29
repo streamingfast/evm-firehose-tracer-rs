@@ -32,7 +32,7 @@ pub fn print_to_firehose<W: Write>(
 /// flash block index plus 1000 when this is the final iteration for the block.
 pub fn print_block_to_firehose<W: Write>(
     writer: &mut W,
-    block: Block,
+    mut block: Block,
     lib_num: u64,
     printed_flash_block_index: u64,
 ) {
@@ -64,8 +64,14 @@ pub fn print_block_to_firehose<W: Write>(
             (previous_number, "0".to_string(), 0)
         };
 
-    // Marshal the protobuf block to bytes
-    let marshalled = block.encode_to_vec();
+    // Marshal the protobuf block to bytes. `fit_block` already computed the encoded length, which
+    // is what `encode_to_vec` would compute again before encoding.
+    let encoded_len = crate::call_data_limit::fit_block(
+        &mut block,
+        crate::call_data_limit::MAX_BLOCK_ENCODED_LEN,
+    );
+    let mut marshalled = Vec::with_capacity(encoded_len);
+    block.encode_raw(&mut marshalled);
 
     // Encode the marshalled protobuf to base64
     let encoded = B64_SIMD.encode_to_string(&marshalled);
