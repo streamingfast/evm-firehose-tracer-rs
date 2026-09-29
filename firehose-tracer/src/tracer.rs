@@ -1363,7 +1363,7 @@ impl Tracer {
             }
         }
 
-        self.call_stack.push(&mut call);
+        self.call_stack.push(call);
     }
 
     /// The recorded part of an internal call input once the transaction's internal calls have
