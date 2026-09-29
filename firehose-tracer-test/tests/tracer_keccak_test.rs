@@ -3,6 +3,9 @@ use firehose_tracer_test::{
     alice_addr, bob_addr, charlie_addr, success_receipt, test_legacy_trx, TracerTester,
 };
 
+// The recording tests below write a storage slot under each hash: the tracer keeps only the
+// preimages that explain a storage change, and these tests check how preimages are recorded.
+
 /// Computes keccak256 hash of the given data
 fn hash_bytes(data: &[u8]) -> B256 {
     use alloy_primitives::keccak256;
@@ -27,6 +30,7 @@ fn test_single_keccak_preimage() {
             vec![0x01],
         )
         .keccak(hash, preimage.clone())
+        .storage_change(bob_addr(), hash, B256::ZERO, B256::with_last_byte(1))
         .end_call(vec![], 95000)
         .end_block_trx(Some(success_receipt(100000)), None, None)
         .validate_with_category("keccakpreimages", |block| {
@@ -80,8 +84,11 @@ fn test_multiple_keccak_preimages_same_call() {
             vec![0x01],
         )
         .keccak(hash1, preimage1.clone())
+        .storage_change(bob_addr(), hash1, B256::ZERO, B256::with_last_byte(1))
         .keccak(hash2, preimage2.clone())
+        .storage_change(bob_addr(), hash2, B256::ZERO, B256::with_last_byte(1))
         .keccak(hash3, preimage3.clone())
+        .storage_change(bob_addr(), hash3, B256::ZERO, B256::with_last_byte(1))
         .end_call(vec![], 95000)
         .end_block_trx(Some(success_receipt(100000)), None, None)
         .validate_with_category("keccakpreimages", |block| {
@@ -134,6 +141,7 @@ fn test_keccak_preimages_across_nested_calls() {
             vec![0x01],
         )
         .keccak(hash_parent, preimage_parent.clone())
+        .storage_change(bob_addr(), hash_parent, B256::ZERO, B256::with_last_byte(1))
         .start_call(
             bob_addr(),
             charlie_addr(),
@@ -142,6 +150,7 @@ fn test_keccak_preimages_across_nested_calls() {
             vec![0x02],
         )
         .keccak(hash_child, preimage_child.clone())
+        .storage_change(bob_addr(), hash_child, B256::ZERO, B256::with_last_byte(1))
         .end_call(vec![], 45000)
         .end_call(vec![], 95000)
         .end_block_trx(Some(success_receipt(100000)), None, None)
@@ -184,6 +193,7 @@ fn test_duplicate_keccak_preimage_ignored() {
             vec![0x01],
         )
         .keccak(hash, preimage.clone())
+        .storage_change(bob_addr(), hash, B256::ZERO, B256::with_last_byte(1))
         .keccak(hash, preimage.clone()) // Duplicate
         .keccak(hash, preimage.clone()) // Duplicate
         .end_call(vec![], 95000)
@@ -223,6 +233,7 @@ fn test_keccak_empty_preimage() {
             vec![0x01],
         )
         .keccak(hash, preimage.clone())
+        .storage_change(bob_addr(), hash, B256::ZERO, B256::with_last_byte(1))
         .end_call(vec![], 95000)
         .end_block_trx(Some(success_receipt(100000)), None, None)
         .validate_with_category("keccakpreimages", |block| {
@@ -245,9 +256,10 @@ fn test_keccak_empty_preimage() {
 }
 
 #[test]
-fn test_keccak_large_preimage() {
-    // Scenario: keccak256 of large data (e.g., contract bytecode, large calldata)
-    let mut preimage = vec![0u8; 1024]; // 1 KB of data
+fn test_keccak_preimage_over_256_bytes_not_recorded() {
+    // Scenario: keccak256 of large data (e.g., contract bytecode, large calldata). Even with a
+    // storage slot written under its hash, a preimage over 256 bytes is not recorded.
+    let mut preimage = vec![0u8; 1024];
     for (i, byte) in preimage.iter_mut().enumerate() {
         *byte = (i % 256) as u8;
     }
@@ -264,29 +276,57 @@ fn test_keccak_large_preimage() {
             vec![0x01],
         )
         .keccak(hash, preimage.clone())
+        .storage_change(bob_addr(), hash, B256::ZERO, B256::with_last_byte(1))
         .end_call(vec![], 95000)
         .end_block_trx(Some(success_receipt(100000)), None, None)
         .validate_with_category("keccakpreimages", |block| {
-            let trx = &block.transaction_traces[0];
-            let call = &trx.calls[0];
-
-            assert_eq!(
-                1,
-                call.keccak_preimages.len(),
-                "Should have 1 keccak preimage"
+            let call = &block.transaction_traces[0].calls[0];
+            assert!(
+                call.keccak_preimages.is_empty(),
+                "Preimage over 256 bytes should not be recorded"
             );
+        });
+}
 
-            let hash_hex = hex::encode(hash);
-            let preimage_hex = hex::encode(&preimage);
+#[test]
+fn test_keccak_preimage_size_limit_is_256_bytes() {
+    let at_limit = vec![7u8; 256];
+    let at_limit_hash = hash_bytes(&at_limit);
+    let over_limit = vec![7u8; 257];
+    let over_limit_hash = hash_bytes(&over_limit);
 
+    let mut tester = TracerTester::new();
+    tester
+        .start_block_trx(test_legacy_trx())
+        .start_call(
+            alice_addr(),
+            bob_addr(),
+            alloy_primitives::U256::ZERO,
+            100000,
+            vec![0x01],
+        )
+        .keccak(at_limit_hash, at_limit.clone())
+        .storage_change(
+            bob_addr(),
+            at_limit_hash,
+            B256::ZERO,
+            B256::with_last_byte(1),
+        )
+        .keccak(over_limit_hash, over_limit)
+        .storage_change(
+            bob_addr(),
+            over_limit_hash,
+            B256::ZERO,
+            B256::with_last_byte(1),
+        )
+        .end_call(vec![], 95000)
+        .end_block_trx(Some(success_receipt(100000)), None, None)
+        .validate_with_category("keccakpreimages", |block| {
+            let call = &block.transaction_traces[0].calls[0];
+            assert_eq!(1, call.keccak_preimages.len());
             assert_eq!(
-                &preimage_hex, &call.keccak_preimages[&hash_hex],
-                "Large preimage should match"
-            );
-            assert_eq!(
-                2048,
-                call.keccak_preimages[&hash_hex].len(),
-                "Hex-encoded preimage should be 2x original size"
+                hex::encode(&at_limit),
+                call.keccak_preimages[&hex::encode(at_limit_hash)]
             );
         });
 }
@@ -349,5 +389,69 @@ fn test_keccak_storage_slot_mapping() {
                 call.storage_changes[0].key.as_slice(),
                 "Storage key should match keccak hash"
             );
+        });
+}
+
+#[test]
+fn test_keccak_filter_keeps_only_storage_slot_preimages() {
+    // mapping(uint => T) at slot 0: the entry for key 1 lives at keccak(1 . 0)
+    let slot_preimage = [B256::with_last_byte(1).0, B256::ZERO.0].concat();
+    let slot = hash_bytes(&slot_preimage);
+    let unrelated = b"signature".to_vec();
+    let unrelated_hash = hash_bytes(&unrelated);
+
+    let mut tester = TracerTester::new();
+    tester
+        .start_block_trx(test_legacy_trx())
+        .start_call(
+            alice_addr(),
+            bob_addr(),
+            alloy_primitives::U256::ZERO,
+            100000,
+            vec![0x01],
+        )
+        .keccak(slot, slot_preimage.clone())
+        .keccak(unrelated_hash, unrelated)
+        .storage_change(bob_addr(), slot, B256::ZERO, B256::with_last_byte(7))
+        .end_call(vec![], 95000)
+        .end_block_trx(Some(success_receipt(100000)), None, None)
+        .validate_with_category("keccakpreimages", |block| {
+            let call = &block.transaction_traces[0].calls[0];
+            assert_eq!(1, call.keccak_preimages.len());
+            assert_eq!(
+                hex::encode(&slot_preimage),
+                call.keccak_preimages[&hex::encode(slot)]
+            );
+        });
+}
+
+#[test]
+fn test_keccak_filter_applies_to_system_calls() {
+    let slot_preimage = [B256::with_last_byte(2).0, B256::ZERO.0].concat();
+    let slot = hash_bytes(&slot_preimage);
+    let unrelated = b"unrelated".to_vec();
+    let unrelated_hash = hash_bytes(&unrelated);
+
+    let mut tester = TracerTester::new();
+    tester
+        .start_block()
+        .start_system_call()
+        .start_call(
+            alice_addr(),
+            bob_addr(),
+            alloy_primitives::U256::ZERO,
+            30_000_000,
+            vec![],
+        )
+        .keccak(slot, slot_preimage.clone())
+        .keccak(unrelated_hash, unrelated)
+        .storage_change(bob_addr(), slot, B256::ZERO, B256::with_last_byte(1))
+        .end_call(vec![], 50_000)
+        .end_system_call()
+        .end_block(None)
+        .validate_with_category("keccakpreimages", |block| {
+            let call = &block.system_calls[0];
+            assert_eq!(1, call.keccak_preimages.len());
+            assert!(call.keccak_preimages.contains_key(&hex::encode(slot)));
         });
 }

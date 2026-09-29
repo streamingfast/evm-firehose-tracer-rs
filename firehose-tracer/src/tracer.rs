@@ -12,14 +12,13 @@ use super::{
     config::Config,
     deferred_call_state::DeferredCallState,
     finality::FinalityStatus,
+    keccak_filter,
     open_callstack::{OpenCall, OpenCallStack},
     ordinal::Ordinal,
 };
 use crate::config::EmissionMode;
-use crate::emission::{
-    background_writer_loop, read_cursor_file, update_cursor_file, RawBlock,
-};
 pub use crate::emission::ShutdownHandle;
+use crate::emission::{background_writer_loop, read_cursor_file, update_cursor_file, RawBlock};
 use crate::pb::sf::ethereum::r#type::v2::{Block, Call, TransactionTrace, Withdrawal};
 use crate::types::{BlockEvent, FlashBlockData, ReceiptData, StateReader, TxEvent};
 use crate::{
@@ -98,6 +97,9 @@ pub struct Tracer {
     transaction: Option<TransactionTrace>,
     transaction_log_index: u32,
     transaction_state_reader: Option<Box<dyn StateReader + Send>>,
+    // KECCAK256 preimages of the current transaction or system call, kept as raw bytes until it
+    // ends; keccak_filter then hex-encodes the ones that explain a storage change into the calls.
+    transaction_keccak_preimages: Vec<keccak_filter::RecordedPreimage>,
     in_system_call: bool,
 
     // Flash block state
@@ -166,13 +168,14 @@ impl Tracer {
     pub fn new_with_writer(config: Config, output_writer: Box<dyn Write + Send>) -> Self {
         // Wrap the writer in an Arc<Mutex<...>> so it can be shared with the
         // background writer thread when running in Async or Auto mode.
-        let shared_writer: Arc<Mutex<Box<dyn Write + Send>>> =
-            Arc::new(Mutex::new(output_writer));
+        let shared_writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(output_writer));
 
         // Spawn a background writer thread when mode is Async or Auto.
         let (async_sender, async_writer_thread) = match &config.emission_mode {
             EmissionMode::Async { channel_capacity }
-            | EmissionMode::Auto { channel_capacity, .. } => {
+            | EmissionMode::Auto {
+                channel_capacity, ..
+            } => {
                 let capacity = *channel_capacity;
                 let (tx, rx) = sync_channel::<RawBlock>(capacity);
                 let cursor_path = config.cursor_path.clone();
@@ -209,6 +212,7 @@ impl Tracer {
             transaction_log_index: 0,
             transaction_state_reader: None,
             in_system_call: false,
+            transaction_keccak_preimages: Vec::new(),
 
             // Flash block state
             flash_block_index: None,
@@ -257,6 +261,7 @@ impl Tracer {
         self.transaction_log_index = 0;
         self.transaction_state_reader = None;
         self.in_system_call = false;
+        self.transaction_keccak_preimages.clear();
 
         self.call_stack.reset();
         self.open_calls.reset();
@@ -648,10 +653,7 @@ impl Tracer {
         // ShutdownHandle is the sole event that signals EOF to the writer thread.
         let sender = self.async_sender.take()?;
         let thread = self.async_writer_thread.take();
-        Some(ShutdownHandle {
-            sender,
-            thread,
-        })
+        Some(ShutdownHandle { sender, thread })
     }
 
     /// Drain the background writer thread (blocking until it exits).
@@ -871,6 +873,13 @@ impl Tracer {
                 }
             }
         }
+
+        // Step 3.4: Drop the keccak preimages that explain no storage change. Every storage
+        // change of the transaction is attached to its calls once deferred state is moved.
+        keccak_filter::attach_storage_slot_preimages(
+            &mut trx.calls,
+            std::mem::take(&mut self.transaction_keccak_preimages),
+        );
 
         // Step 3.5: Discard SetCode authorizations that don't have corresponding nonce changes
         // (matching native tracer's discardUncommittedSetCodeAuthorization)
@@ -1296,7 +1305,8 @@ impl Tracer {
             }
 
             // For root CREATE/CREATE2, patch the transaction's "to" with the deployed address if it hasn't been set yet
-            let is_create = call.call_type == crate::pb::sf::ethereum::r#type::v2::CallType::Create as i32;
+            let is_create =
+                call.call_type == crate::pb::sf::ethereum::r#type::v2::CallType::Create as i32;
             if is_create {
                 if let Some(trx) = self.transaction.as_mut() {
                     if trx.to.is_empty() {
@@ -1712,10 +1722,13 @@ impl Tracer {
     pub fn on_keccak_preimage(&mut self, hash: B256, preimage: &[u8]) {
         self.ensure_in_block_and_in_trx_and_in_call();
 
-        if let Some(call) = self.call_stack.peek_mut() {
-            // Store the preimage as hex-encoded string
-            call.keccak_preimages
-                .insert(hex::encode(hash.0), hex::encode(preimage));
+        if preimage.len() > keccak_filter::MAX_PREIMAGE_SIZE {
+            return;
+        }
+
+        if let Some(call) = self.call_stack.peek() {
+            self.transaction_keccak_preimages
+                .push((call.index, hash, preimage.to_vec()));
 
             firehose_trace!(
                 "keccak preimage (hash={:?} preimage_len={})",
@@ -1746,6 +1759,10 @@ impl Tracer {
 
         // Move any calls created during system call to block's system calls list
         if let (Some(block), Some(trx)) = (&mut self.block, &mut self.transaction) {
+            keccak_filter::attach_storage_slot_preimages(
+                &mut trx.calls,
+                std::mem::take(&mut self.transaction_keccak_preimages),
+            );
             block.system_calls.append(&mut trx.calls);
         }
 
@@ -2051,7 +2068,9 @@ impl Tracer {
 
     fn ensure_blockchain_init(&self) {
         if self.chain_config.is_none() {
-            self.panic_invalid_state("the OnBlockchainInit hook should have been called at this point");
+            self.panic_invalid_state(
+                "the OnBlockchainInit hook should have been called at this point",
+            );
         }
     }
 
@@ -2110,7 +2129,9 @@ impl Tracer {
 
     fn ensure_in_block_and_in_trx_and_in_call(&self) {
         if self.transaction.is_none() || self.block.is_none() {
-            self.panic_invalid_state("caller expected to be in block and in transaction but we were not");
+            self.panic_invalid_state(
+                "caller expected to be in block and in transaction but we were not",
+            );
         }
         if !self.call_stack.has_active_call() {
             self.panic_invalid_state("caller expected to be in call state but we were not");
@@ -2185,7 +2206,6 @@ impl Tracer {
             }
         }
     }
-
 }
 
 impl Drop for Tracer {
