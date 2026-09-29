@@ -17,10 +17,8 @@ use super::{
     ordinal::Ordinal,
 };
 use crate::config::EmissionMode;
-use crate::emission::{
-    background_writer_loop, read_cursor_file, update_cursor_file, RawBlock,
-};
 pub use crate::emission::ShutdownHandle;
+use crate::emission::{background_writer_loop, read_cursor_file, update_cursor_file, RawBlock};
 use crate::pb::sf::ethereum::r#type::v2::{Block, Call, TransactionTrace, Withdrawal};
 use crate::types::{BlockEvent, FlashBlockData, ReceiptData, StateReader, TxEvent};
 use crate::{
@@ -99,10 +97,10 @@ pub struct Tracer {
     transaction: Option<TransactionTrace>,
     transaction_log_index: u32,
     transaction_state_reader: Option<Box<dyn StateReader + Send>>,
-    in_system_call: bool,
     // KECCAK256 preimages of the current transaction or system call, kept as raw bytes until it
     // ends; keccak_filter then hex-encodes the ones that explain a storage change into the calls.
     transaction_keccak_preimages: Vec<keccak_filter::RecordedPreimage>,
+    in_system_call: bool,
 
     // Flash block state
     // flashBlockIndex is None when not in a flash block, or Some(idx) when processing
@@ -170,13 +168,14 @@ impl Tracer {
     pub fn new_with_writer(config: Config, output_writer: Box<dyn Write + Send>) -> Self {
         // Wrap the writer in an Arc<Mutex<...>> so it can be shared with the
         // background writer thread when running in Async or Auto mode.
-        let shared_writer: Arc<Mutex<Box<dyn Write + Send>>> =
-            Arc::new(Mutex::new(output_writer));
+        let shared_writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(output_writer));
 
         // Spawn a background writer thread when mode is Async or Auto.
         let (async_sender, async_writer_thread) = match &config.emission_mode {
             EmissionMode::Async { channel_capacity }
-            | EmissionMode::Auto { channel_capacity, .. } => {
+            | EmissionMode::Auto {
+                channel_capacity, ..
+            } => {
                 let capacity = *channel_capacity;
                 let (tx, rx) = sync_channel::<RawBlock>(capacity);
                 let cursor_path = config.cursor_path.clone();
@@ -654,10 +653,7 @@ impl Tracer {
         // ShutdownHandle is the sole event that signals EOF to the writer thread.
         let sender = self.async_sender.take()?;
         let thread = self.async_writer_thread.take();
-        Some(ShutdownHandle {
-            sender,
-            thread,
-        })
+        Some(ShutdownHandle { sender, thread })
     }
 
     /// Drain the background writer thread (blocking until it exits).
@@ -1309,7 +1305,8 @@ impl Tracer {
             }
 
             // For root CREATE/CREATE2, patch the transaction's "to" with the deployed address if it hasn't been set yet
-            let is_create = call.call_type == crate::pb::sf::ethereum::r#type::v2::CallType::Create as i32;
+            let is_create =
+                call.call_type == crate::pb::sf::ethereum::r#type::v2::CallType::Create as i32;
             if is_create {
                 if let Some(trx) = self.transaction.as_mut() {
                     if trx.to.is_empty() {
@@ -2071,7 +2068,9 @@ impl Tracer {
 
     fn ensure_blockchain_init(&self) {
         if self.chain_config.is_none() {
-            self.panic_invalid_state("the OnBlockchainInit hook should have been called at this point");
+            self.panic_invalid_state(
+                "the OnBlockchainInit hook should have been called at this point",
+            );
         }
     }
 
@@ -2130,7 +2129,9 @@ impl Tracer {
 
     fn ensure_in_block_and_in_trx_and_in_call(&self) {
         if self.transaction.is_none() || self.block.is_none() {
-            self.panic_invalid_state("caller expected to be in block and in transaction but we were not");
+            self.panic_invalid_state(
+                "caller expected to be in block and in transaction but we were not",
+            );
         }
         if !self.call_stack.has_active_call() {
             self.panic_invalid_state("caller expected to be in call state but we were not");
@@ -2205,7 +2206,6 @@ impl Tracer {
             }
         }
     }
-
 }
 
 impl Drop for Tracer {
