@@ -1391,7 +1391,7 @@ impl Tracer {
                 "internal calls passed more input than the per-transaction limit, recording only the selector of later call inputs"
             );
         }
-        call_data_limit::selector(input)
+        call_data_limit::four_bytes(input)
     }
 
     /// The recorded part of an internal call's return data once the transaction's earlier internal
