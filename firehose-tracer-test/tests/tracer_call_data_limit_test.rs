@@ -52,8 +52,10 @@ fn test_internal_calls_past_the_transaction_limits_are_truncated() {
 
         let internal = &trx.calls[1..];
         assert_eq!(internal.len(), calls);
-        let full_inputs = MAX_CALL_INPUT_BYTES_PER_TX / MIB;
-        let full_return_data = MAX_RETURN_DATA_BYTES_PER_TX / MIB;
+        // Call `i` has `i` MiB before it, so the first call cut is the one after the call that
+        // reaches the limit.
+        let full_inputs = MAX_CALL_INPUT_BYTES_PER_TX / MIB + 1;
+        let full_return_data = MAX_RETURN_DATA_BYTES_PER_TX / MIB + 1;
         for (i, call) in internal.iter().enumerate() {
             if i < full_inputs {
                 assert_eq!(call.input.len(), MIB, "call {i}");

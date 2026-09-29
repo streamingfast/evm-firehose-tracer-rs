@@ -292,7 +292,7 @@ pub struct BlockHeader {
     /// header. This is metadata only that was used by the internal Polygon parallel execution engine.
     ///
     /// This field was available in a few versions on Polygon Mainnet and Polygon Mumbai chains. It was actually
-    /// removed and is not populated anymore. It's now embedded in the `extraData` field, refer to Polygon source
+    /// removed and is not populated anymore. It's now embedded in the `extra_data` field, refer to Polygon source
     /// code to determine how to extract it if you need it.
     ///
     /// Only available in DetailLevel: EXTENDED
@@ -329,7 +329,7 @@ pub struct BlockHeader {
     /// to be added in Amsterdam hard fork. This is the field the block header itself commits to.
     #[prost(bytes = "vec", optional, tag = "28")]
     pub block_access_list_hash: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
-    /// BlockAccessList is the RLP-encoded EIP-7928 block access list for this block, added in the
+    /// BlockAccessListRlp is the RLP-encoded EIP-7928 block access list for this block, added in the
     /// Amsterdam hard fork. Unlike `block_access_list_hash`, the header does not commit to this
     /// field directly.
     ///
@@ -393,13 +393,13 @@ pub struct TransactionTrace {
     #[prost(uint64, tag = "2")]
     pub nonce: u64,
     /// GasPrice represents the effective price that has been paid for each gas unit of this transaction. Over time, the
-    /// Ethereum rules changes regarding GasPrice field here. Before London fork, the GasPrice was always set to the
-    /// fixed gas price. After London fork, this value has different meaning depending on the transaction type (see `Type` field).
+    /// Ethereum rules changes regarding `gas_price` field here. Before London fork, the `gas_price` was always set to the
+    /// fixed gas price. After London fork, this value has different meaning depending on the transaction type (see `type` field).
     ///
-    /// In cases where `TransactionTrace.Type == TRX_TYPE_LEGACY || TRX_TYPE_ACCESS_LIST`, then GasPrice has the same meaning
+    /// In cases where `TransactionTrace.Type == TRX_TYPE_LEGACY || TRX_TYPE_ACCESS_LIST`, then `gas_price` has the same meaning
     /// as before the London fork.
     ///
-    /// In cases where `TransactionTrace.Type == TRX_TYPE_DYNAMIC_FEE`, then GasPrice is the effective gas price paid
+    /// In cases where `TransactionTrace.Type == TRX_TYPE_DYNAMIC_FEE`, then `gas_price` is the effective gas price paid
     /// for the transaction which is equals to `BlockHeader.BaseFeePerGas + TransactionTrace.`
     #[prost(message, optional, tag = "3")]
     pub gas_price: ::core::option::Option<BigInt>,
@@ -720,7 +720,7 @@ pub struct MorphL1MessageConfig {
     pub queue_index: u64,
 }
 /// AccessTuple represents a list of storage keys for a given contract's address and is used
-/// for AccessList construction.
+/// for `access_list` construction.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AccessTuple {
@@ -894,7 +894,7 @@ pub struct Log {
     /// that emitted them has not been reverted by the chain and when in this
     /// position, the `blockIndex` is always populated correctly.
     ///
-    /// In the case of `calls` case, for `call` where `stateReverted == true`,
+    /// In the case of `calls` case, for `call` where `state_reverted == true`,
     /// the `blockIndex` value will always be 0.
     #[prost(uint32, tag = "6")]
     pub block_index: u32,
@@ -943,8 +943,25 @@ pub struct Call {
     pub gas_limit: u64,
     #[prost(uint64, tag = "9")]
     pub gas_consumed: u64,
+    /// ReturnData is the raw return data of the call.
+    ///
+    /// If the return data of the calls that ended before it in the same transaction adds up to more than
+    /// 25 MiB, this call's return data is left empty. When a block would otherwise exceed 1 GiB, this
+    /// budget is halved until the block fits. `return_data_truncated` is set to true whenever
+    /// return data was left out. The root call is never truncated.
     #[prost(bytes = "vec", tag = "13")]
     pub return_data: ::prost::alloc::vec::Vec<u8>,
+    /// ReturnDataTruncated is true when the call returned data but `return_data` was left
+    /// empty to stay within the transaction's return data budget, see `return_data`.
+    #[prost(bool, tag = "36")]
+    pub return_data_truncated: bool,
+    /// Input is the raw input data of the call.
+    ///
+    /// If the input of the calls that started before it in the same transaction adds up to more than
+    /// 50 MiB, this call's input is cut to its first 4 bytes (the method selector). When a block would
+    /// otherwise exceed 1 GiB, this budget is halved until the block fits. `input_truncated` is
+    /// set to true whenever input was cut. The root call is never truncated.
+    ///
     /// Known Issues
     /// - Version 3:
     ///     When call is `CREATE` or `CREATE2`, this field is not populated. A couple of suggestions:
@@ -954,6 +971,10 @@ pub struct Call {
     ///     Fixed in `Version 4`, see <https://docs.substreams.dev/reference-material/chains-and-endpoints/ethereum-data-model> for information about block versions.
     #[prost(bytes = "vec", tag = "14")]
     pub input: ::prost::alloc::vec::Vec<u8>,
+    /// InputTruncated is true when `input` was cut to its first 4 bytes to stay within the
+    /// transaction's input budget, see `input`. An input of 4 bytes or less is never flagged.
+    #[prost(bool, tag = "35")]
+    pub input_truncated: bool,
     /// Indicates whether the call executed code.
     ///
     /// Known Issues
@@ -968,22 +989,20 @@ pub struct Call {
     pub executed_code: bool,
     #[prost(bool, tag = "16")]
     pub suicide: bool,
-    /// Keccak preimages produced by the KECCAK256 opcode during this call, as a map of the
-    /// hex representation of the hash -> hex representation of the preimage. Neither side
-    /// carries a `0x` prefix.
+    /// KeccakPreimages maps the hash of each KECCAK256 computed in this call (hex, no 0x) to
+    /// the bytes that were hashed (hex, no 0x). Only preimages that explain a storage slot
+    /// written by the same transaction (or system call) are kept:
     ///
-    /// The map exists so a consumer can walk a storage slot back to the expression that
-    /// produced it, and only preimages of 256 bytes or less are recorded. Solidity's slot
-    /// derivations are all small:
+    /// - the hash is a storage change key, or a storage change key is the hash plus less
+    ///    than 2^64 (struct fields and array elements live at `keccak(p) + i`);
+    /// - or the hash, or the hash plus such an offset, appears in another kept preimage as
+    ///    a 32-byte-aligned word or as its last 32 bytes (nested mappings, a mapping inside
+    ///    a struct or array element, `string`/`bytes` keys), following at most 16 levels.
     ///
-    /// - 32 bytes for a dynamic array, or for a `bytes`/`string` longer than 31 bytes
-    /// - 64 bytes for a mapping with a value-type key, one hash per level of nesting
-    /// - 32 bytes plus the key for a `mapping(string => V)` or `mapping(bytes => V)`
-    ///
-    /// 256 bytes covers all of those, with room for a 224-byte dynamic key. A preimage
-    /// larger than that comes from a contract hashing its own data rather than deriving a
-    /// slot, and is left out of the map entirely rather than truncated: a truncated
-    /// preimage does not hash back to its key, which is worse for a consumer than no entry.
+    /// Preimages longer than 256 bytes, and hashes that never lead to a written storage slot
+    /// (hashes used only to read storage, signatures, CREATE2 addresses, Merkle proofs), are
+    /// not included. An entry stays on the call that computed the hash, which may differ
+    /// from the call that wrote the storage slot.
     ///
     /// Note: not populated by the Monad tracer, the Monad execution layer does not emit keccak preimage events
     #[prost(map = "string, string", tag = "20")]
@@ -1008,7 +1027,7 @@ pub struct Call {
     /// - Version 3:
     ///     Some gas changes are not correctly tracked:
     ///       1. Gas refunded due to data returned to the chain (occurs at the end of a transaction, before buyback).
-    ///       2. Initial gas allocation (0 -> GasLimit) at the start of a call.
+    ///       2. Initial gas allocation (0 -> `gas_limit`) at the start of a call.
     ///       3. Final gas deduction (LeftOver -> 0) at the end of a call (if applicable).
     ///     Fixed in `Version 4`, see <https://docs.substreams.dev/reference-material/chains-and-endpoints/ethereum-data-model> for information about block versions.
     #[prost(message, repeated, tag = "28")]
@@ -1076,36 +1095,17 @@ pub struct Call {
     ///     1. The block's global ordinal when the call finished executing, refer to
     ///      \[Block\] documentation for further information about ordinals and total ordering.
     ///     2. The root call of the GENESIS block is always `0`. To fix it, you can set it as follows:
-    ///      `rx.Calls\[0\].EndOrdinal = max.Uint64`.
+    ///      `trx.Calls\[0\].EndOrdinal = max.Uint64`.
     ///
     ///     Fixed in `Version 4`, see <https://docs.substreams.dev/reference-material/chains-and-endpoints/ethereum-data-model> for information about block versions.
     #[prost(uint64, tag = "32")]
     pub end_ordinal: u64,
     /// Known Issues
     /// - Version 4:
-    ///     AccountCreations are NOT SUPPORTED anymore. DO NOT rely on them.
+    ///     `account_creations` are NOT SUPPORTED anymore. DO NOT rely on them.
     #[deprecated]
     #[prost(message, repeated, tag = "33")]
     pub account_creations: ::prost::alloc::vec::Vec<AccountCreation>,
-    // The identifier 34 is taken by 'address_delegates_to' field above.
-    /// True when `input` holds only the first 4 bytes (the method selector) of the call's input
-    /// rather than all of it. The tracer keeps at most 50 MiB of input across the internal calls of
-    /// one transaction, counted in call order: once the calls so far exceed that, the input of every
-    /// later call is cut to 4 bytes. It uses a lower budget, halved until the block fits, when a
-    /// block would otherwise exceed 1 GiB. The root call is never truncated, its input is also in
-    /// `TransactionTrace.input`. Execution is not affected, only what the trace records.
-    ///
-    /// Set only when bytes were left out, so an input of 4 bytes or less is never flagged.
-    #[prost(bool, tag = "35")]
-    pub input_truncated: bool,
-    /// True when `return_data` was left empty even though the call returned data. The tracer keeps
-    /// at most 25 MiB of return data across the internal calls of one transaction, counted in the
-    /// order calls end: once the calls so far exceed that, the return data of every later call is
-    /// left out. It uses a lower budget, halved until the block fits, when a block would otherwise
-    /// exceed 1 GiB. The root call is never truncated, its return data is also in
-    /// `TransactionTrace.return_data`.
-    #[prost(bool, tag = "36")]
-    pub return_data_truncated: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1195,7 +1195,7 @@ pub mod balance_change {
         /// See: <https://github.com/ethereum/go-ethereum/blob/v1.16.4/core/genesis.go#L180>
         GenesisBalance = 6,
         /// REASON_GAS_BUY is spent to purchase gas for executing a transaction.
-        /// The transaction sender's balance is decreased by gasLimit * gasPrice at transaction start.
+        /// The transaction sender's balance is decreased by `gas_limit * gas_price` at transaction start.
         /// Note: This balance change persists even for failed transactions (see Block documentation).
         /// See: <https://github.com/ethereum/go-ethereum/blob/v1.16.4/core/state_transition.go#L306>
         GasBuy = 7,
@@ -1474,7 +1474,7 @@ pub mod gas_change {
         /// See: <https://github.com/ethereum/go-ethereum/blob/v1.16.4/core/vm/operations_acl.go#L268>
         /// See: <https://github.com/ethereum/go-ethereum/blob/v1.16.4/core/vm/operations_acl.go#L283>
         StateColdAccess = 20,
-        /// REASON_TX_INITIAL_BALANCE is the initial gas balance for the transaction equal to the gasLimit.
+        /// REASON_TX_INITIAL_BALANCE is the initial gas balance for the transaction equal to the `gas_limit`.
         /// There is only one such gas change per transaction, representing the initial gas allocation.
         /// See: <https://github.com/ethereum/go-ethereum/blob/v1.16.4/core/state_transition.go#L300>
         TxInitialBalance = 21,
@@ -1487,7 +1487,7 @@ pub mod gas_change {
         /// left at the end of execution, no such event will be emitted. There is at most one per transaction.
         /// See: <https://github.com/ethereum/go-ethereum/blob/v1.16.4/core/state_transition.go#L661>
         TxLeftOverReturned = 23,
-        /// REASON_CALL_INITIAL_BALANCE is the initial gas balance for a call equal to the gasLimit of the call.
+        /// REASON_CALL_INITIAL_BALANCE is the initial gas balance for a call equal to the `gas_limit` of the call.
         /// There is only one such gas change per call.
         /// See: <https://github.com/ethereum/go-ethereum/blob/v1.16.4/core/vm/evm.go#L662>
         CallInitialBalance = 24,

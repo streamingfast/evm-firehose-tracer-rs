@@ -4,11 +4,12 @@
 //! than its gas usage suggests, and can push it past the ~2 GiB Firehose message limit. Two
 //! limits keep blocks under it:
 //!
-//! - **Per transaction, while tracing.** Once the internal calls of a transaction have passed more
-//!   than [`MAX_CALL_INPUT_BYTES_PER_TX`] of input, counted in the order calls start, every later
-//!   internal call records only its 4-byte selector and sets `Call.input_truncated`. Return data
-//!   works the same way with [`MAX_RETURN_DATA_BYTES_PER_TX`], counted in the order calls end, and
-//!   is left out entirely (`Call.return_data_truncated`).
+//! - **Per transaction, while tracing.** When the internal calls that started before a call have
+//!   passed more than [`MAX_CALL_INPUT_BYTES_PER_TX`] of input in total, the call records only its
+//!   4-byte selector and sets `Call.input_truncated`. Return data works the same way with
+//!   [`MAX_RETURN_DATA_BYTES_PER_TX`], counting the internal calls that ended before, and is left
+//!   out entirely (`Call.return_data_truncated`). The call that passes a limit is still recorded
+//!   in full.
 //! - **Per block, before encoding.** When the block would encode to more than
 //!   [`MAX_BLOCK_ENCODED_LEN`], [`fit_block`] halves both per-transaction limits and applies them
 //!   again to every transaction and system call, until the block fits.
@@ -49,8 +50,9 @@ pub(crate) fn selector(input: &[u8]) -> &[u8] {
 ///
 /// Each round halves the per-transaction input and return data limits, starting from
 /// [`MAX_CALL_INPUT_BYTES_PER_TX`] and [`MAX_RETURN_DATA_BYTES_PER_TX`], and applies them to every
-/// transaction and system call. When both limits reach 0 and the block still does not fit, it is
-/// returned as is: what is left is not call input or return data.
+/// transaction and system call. When both limits reach 0, only the first internal call of each
+/// transaction keeps its input and return data; if the block still does not fit, it is returned
+/// as is.
 pub fn fit_block(block: &mut Block, max_len: usize) -> usize {
     let len = block.encoded_len();
     if len <= max_len {
@@ -98,7 +100,7 @@ fn shrink_block(block: &mut Block, max_len: usize, original_len: usize) -> usize
             block = block.number,
             original_len,
             len,
-            "block still over {max_len} bytes encoded with every internal call input and return data truncated"
+            "block still over {max_len} bytes encoded with the call input and return data limits at 0"
         );
     }
     len
@@ -124,11 +126,11 @@ fn truncate_calls(
         if call.depth == 0 {
             continue;
         }
-        total += call.input.len();
         if total > input_limit && call.input.len() > SELECTOR_LEN {
             call.input.truncate(SELECTOR_LEN);
             call.input_truncated = true;
         }
+        total += call.input.len();
     }
 
     order.sort_unstable_by_key(|&i| calls[i].end_ordinal);
@@ -138,11 +140,11 @@ fn truncate_calls(
         if call.depth == 0 {
             continue;
         }
-        total += call.return_data.len();
         if total > return_data_limit && !call.return_data.is_empty() {
             call.return_data = Vec::new();
             call.return_data_truncated = true;
         }
+        total += call.return_data.len();
     }
 }
 
@@ -199,12 +201,15 @@ mod tests {
             vec![
                 // Root call: never truncated.
                 (64, 64, false, false),
-                // 6 input bytes so far, 3 return data bytes so far.
+                // Nothing before it.
                 (6, 3, false, false),
-                // 12 > 10: cut to the selector. 6 > 5: left out.
-                (4, 0, true, true),
-                // Nothing left out of a 2-byte input or an empty return data.
+                // 6 input bytes and 3 return data bytes before it: under both limits, recorded
+                // in full even though it takes both totals over.
+                (6, 3, false, false),
+                // 12 > 10 and 6 > 5 before it, but nothing to leave out of a 2-byte input or an
+                // empty return data.
                 (2, 0, false, false),
+                // 14 > 10: cut to the selector. 6 > 5: left out.
                 (4, 0, true, true),
             ]
         );
@@ -218,7 +223,7 @@ mod tests {
         calls[2].begin_ordinal = 2;
         calls[2].end_ordinal = 3;
         calls[2].depth = 2;
-        truncate_calls(&mut calls, 10, 10, &mut Vec::new());
+        truncate_calls(&mut calls, 7, 7, &mut Vec::new());
         assert_eq!(calls[1].input.len(), 8);
         assert_eq!(calls[2].input.len(), 4);
         assert_eq!(calls[2].return_data.len(), 8);
@@ -292,11 +297,16 @@ mod tests {
 
     #[test]
     fn fit_block_stops_when_nothing_is_left_to_truncate() {
-        let mut block = block(1, &[(1024, 1024); 2]);
+        let mut block = block(1, &[(1024, 1024); 3]);
         let len = fit_block(&mut block, 1);
         assert_eq!(len, block.encoded_len());
         let trx = &block.transaction_traces[0];
-        assert!(trx.calls[1..]
+        // Nothing comes before the first internal call, so even a limit of 0 keeps it.
+        assert_eq!(
+            (trx.calls[1].input.len(), trx.calls[1].return_data.len()),
+            (1024, 1024)
+        );
+        assert!(trx.calls[2..]
             .iter()
             .all(|c| c.input.len() == 4 && c.return_data.is_empty()));
     }

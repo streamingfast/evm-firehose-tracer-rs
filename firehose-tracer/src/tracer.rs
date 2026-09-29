@@ -105,6 +105,9 @@ pub struct Tracer {
     // call so far, counted in full even once call_data_limit truncates what is recorded.
     transaction_call_input_bytes: usize,
     transaction_return_data_bytes: usize,
+    // Whether the current transaction or system call already logged its first truncation.
+    transaction_call_input_truncation_logged: bool,
+    transaction_return_data_truncation_logged: bool,
     in_system_call: bool,
 
     // Flash block state
@@ -220,6 +223,8 @@ impl Tracer {
             transaction_keccak_preimages: Vec::new(),
             transaction_call_input_bytes: 0,
             transaction_return_data_bytes: 0,
+            transaction_call_input_truncation_logged: false,
+            transaction_return_data_truncation_logged: false,
 
             // Flash block state
             flash_block_index: None,
@@ -271,6 +276,8 @@ impl Tracer {
         self.transaction_keccak_preimages.clear();
         self.transaction_call_input_bytes = 0;
         self.transaction_return_data_bytes = 0;
+        self.transaction_call_input_truncation_logged = false;
+        self.transaction_return_data_truncation_logged = false;
 
         self.call_stack.reset();
         self.open_calls.reset();
@@ -1295,12 +1302,15 @@ impl Tracer {
         // Internal calls past the transaction's input limit record only their selector, see
         // call_data_limit. The root call is never truncated.
         let recorded_input = if self.call_stack.has_active_call() {
-            self.transaction_call_input_bytes += input.len();
-            if self.transaction_call_input_bytes > call_data_limit::MAX_CALL_INPUT_BYTES_PER_TX {
+            let recorded = if self.transaction_call_input_bytes
+                > call_data_limit::MAX_CALL_INPUT_BYTES_PER_TX
+            {
                 self.truncated_call_input(input)
             } else {
                 input
-            }
+            };
+            self.transaction_call_input_bytes += input.len();
+            recorded
         } else {
             input
         };
@@ -1366,15 +1376,14 @@ impl Tracer {
         self.call_stack.push(call);
     }
 
-    /// The recorded part of an internal call input once the transaction's internal calls have
-    /// passed more than [`call_data_limit::MAX_CALL_INPUT_BYTES_PER_TX`] of input. Logs when this
-    /// call is the one that passed it.
+    /// The recorded part of an internal call input once the transaction's earlier internal calls
+    /// have passed more than [`call_data_limit::MAX_CALL_INPUT_BYTES_PER_TX`] of input. Logs the
+    /// first time per transaction.
     #[cold]
     #[inline(never)]
-    fn truncated_call_input<'i>(&self, input: &'i [u8]) -> &'i [u8] {
-        if self.transaction_call_input_bytes - input.len()
-            <= call_data_limit::MAX_CALL_INPUT_BYTES_PER_TX
-        {
+    fn truncated_call_input<'i>(&mut self, input: &'i [u8]) -> &'i [u8] {
+        if !self.transaction_call_input_truncation_logged {
+            self.transaction_call_input_truncation_logged = true;
             tracing::warn!(
                 block = self.block.as_ref().map_or(0, |b| b.number),
                 transaction = %self.current_transaction_hash(),
@@ -1385,15 +1394,14 @@ impl Tracer {
         call_data_limit::selector(input)
     }
 
-    /// The recorded part of an internal call's return data once the transaction's internal calls
-    /// have returned more than [`call_data_limit::MAX_RETURN_DATA_BYTES_PER_TX`]: nothing. Logs
-    /// when this call is the one that passed it.
+    /// The recorded part of an internal call's return data once the transaction's earlier internal
+    /// calls have returned more than [`call_data_limit::MAX_RETURN_DATA_BYTES_PER_TX`]: nothing.
+    /// Logs the first time per transaction.
     #[cold]
     #[inline(never)]
-    fn truncated_return_data<'o>(&self, output: &'o [u8]) -> &'o [u8] {
-        if self.transaction_return_data_bytes - output.len()
-            <= call_data_limit::MAX_RETURN_DATA_BYTES_PER_TX
-        {
+    fn truncated_return_data<'o>(&mut self, output: &'o [u8]) -> &'o [u8] {
+        if !self.transaction_return_data_truncation_logged {
+            self.transaction_return_data_truncation_logged = true;
             tracing::warn!(
                 block = self.block.as_ref().map_or(0, |b| b.number),
                 transaction = %self.current_transaction_hash(),
@@ -1461,14 +1469,15 @@ impl Tracer {
                 // Internal calls past the transaction's return data limit record none, see
                 // call_data_limit. The root call is never truncated.
                 let recorded_output = if call.depth > 0 {
-                    self.transaction_return_data_bytes += output.len();
-                    if self.transaction_return_data_bytes
+                    let recorded = if self.transaction_return_data_bytes
                         > call_data_limit::MAX_RETURN_DATA_BYTES_PER_TX
                     {
                         self.truncated_return_data(output)
                     } else {
                         output
-                    }
+                    };
+                    self.transaction_return_data_bytes += output.len();
+                    recorded
                 } else {
                     output
                 };
