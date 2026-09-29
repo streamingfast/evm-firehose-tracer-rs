@@ -5,6 +5,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Added
+
+* Limits on the call input and return data a block records, so a block stays under the ~2 GiB Firehose message limit (`call_data_limit`):
+  * Once the internal calls of a transaction have passed more than 50 MiB of input, every later internal call records only its 4-byte selector and sets `Call.input_truncated`. Once they have returned more than 25 MiB, every later internal call records no return data and sets `Call.return_data_truncated`. The root call is never truncated.
+  * When a block would still encode to more than 1 GiB, both limits are halved and applied again to every transaction and system call until it fits.
+  * Regenerated `sf.ethereum.type.v2` bindings for the two new `Call` fields, from streamingfast/firehose-ethereum#236 (BSR label `feature/call-data-truncation`, to move back to `main` once it merges).
+
 ### Changed
 
 * `Call.keccak_preimages` now keeps only the entries that explain a storage change key of the transaction or system call (directly, at an array or struct offset, or through up to 16 levels of nested hashing); the rest are dropped before the block is encoded. Preimages over 256 bytes are no longer recorded.

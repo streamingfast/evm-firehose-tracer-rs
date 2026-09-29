@@ -7,6 +7,7 @@ use std::thread::JoinHandle;
 use alloy_primitives::{Address, B256, U256};
 
 use super::{
+    call_data_limit,
     callstack::CallStack,
     config,
     config::Config,
@@ -100,6 +101,10 @@ pub struct Tracer {
     // KECCAK256 preimages of the current transaction or system call, kept as raw bytes until it
     // ends; keccak_filter then hex-encodes the ones that explain a storage change into the calls.
     transaction_keccak_preimages: Vec<keccak_filter::RecordedPreimage>,
+    // Input and return data passed to the internal calls of the current transaction or system
+    // call so far, counted in full even once call_data_limit truncates what is recorded.
+    transaction_call_input_bytes: usize,
+    transaction_return_data_bytes: usize,
     in_system_call: bool,
 
     // Flash block state
@@ -213,6 +218,8 @@ impl Tracer {
             transaction_state_reader: None,
             in_system_call: false,
             transaction_keccak_preimages: Vec::new(),
+            transaction_call_input_bytes: 0,
+            transaction_return_data_bytes: 0,
 
             // Flash block state
             flash_block_index: None,
@@ -262,6 +269,8 @@ impl Tracer {
         self.transaction_state_reader = None;
         self.in_system_call = false;
         self.transaction_keccak_preimages.clear();
+        self.transaction_call_input_bytes = 0;
+        self.transaction_return_data_bytes = 0;
 
         self.call_stack.reset();
         self.open_calls.reset();
@@ -1283,6 +1292,19 @@ impl Tracer {
             return;
         }
 
+        // Internal calls past the transaction's input limit record only their selector, see
+        // call_data_limit. The root call is never truncated.
+        let recorded_input = if self.call_stack.has_active_call() {
+            self.transaction_call_input_bytes += input.len();
+            if self.transaction_call_input_bytes > call_data_limit::MAX_CALL_INPUT_BYTES_PER_TX {
+                self.truncated_call_input(input)
+            } else {
+                input
+            }
+        } else {
+            input
+        };
+
         // Create call (will be pushed to stack)
         let mut call = Call {
             begin_ordinal: self.block_ordinal.next(),
@@ -1291,7 +1313,8 @@ impl Tracer {
             address: to.0.to_vec(),
             value: utils::u256_to_protobuf(value),
             gas_limit: gas,
-            input: input.to_vec(),
+            input: recorded_input.to_vec(),
+            input_truncated: recorded_input.len() < input.len(),
             ..Default::default()
         };
 
@@ -1343,6 +1366,51 @@ impl Tracer {
         self.call_stack.push(&mut call);
     }
 
+    /// The recorded part of an internal call input once the transaction's internal calls have
+    /// passed more than [`call_data_limit::MAX_CALL_INPUT_BYTES_PER_TX`] of input. Logs when this
+    /// call is the one that passed it.
+    #[cold]
+    #[inline(never)]
+    fn truncated_call_input<'i>(&self, input: &'i [u8]) -> &'i [u8] {
+        if self.transaction_call_input_bytes - input.len()
+            <= call_data_limit::MAX_CALL_INPUT_BYTES_PER_TX
+        {
+            tracing::warn!(
+                block = self.block.as_ref().map_or(0, |b| b.number),
+                transaction = %self.current_transaction_hash(),
+                limit = call_data_limit::MAX_CALL_INPUT_BYTES_PER_TX,
+                "internal calls passed more input than the per-transaction limit, recording only the selector of later call inputs"
+            );
+        }
+        call_data_limit::selector(input)
+    }
+
+    /// The recorded part of an internal call's return data once the transaction's internal calls
+    /// have returned more than [`call_data_limit::MAX_RETURN_DATA_BYTES_PER_TX`]: nothing. Logs
+    /// when this call is the one that passed it.
+    #[cold]
+    #[inline(never)]
+    fn truncated_return_data<'o>(&self, output: &'o [u8]) -> &'o [u8] {
+        if self.transaction_return_data_bytes - output.len()
+            <= call_data_limit::MAX_RETURN_DATA_BYTES_PER_TX
+        {
+            tracing::warn!(
+                block = self.block.as_ref().map_or(0, |b| b.number),
+                transaction = %self.current_transaction_hash(),
+                limit = call_data_limit::MAX_RETURN_DATA_BYTES_PER_TX,
+                "internal calls returned more data than the per-transaction limit, leaving out the return data of later calls"
+            );
+        }
+        &output[..0]
+    }
+
+    /// Hex hash of the transaction being traced, empty for a system call.
+    fn current_transaction_hash(&self) -> String {
+        self.transaction
+            .as_ref()
+            .map_or_else(String::new, |trx| hex::encode(&trx.hash))
+    }
+
     /// parse_delegation tries to parse a delegation designator from bytecode
     /// EIP-7702: Delegation format is 0xef0100 + 20-byte address (23 bytes total)
     fn parse_delegation(code: &[u8]) -> Option<Address> {
@@ -1390,7 +1458,22 @@ impl Tracer {
             // For CREATE calls, don't set return data (matching Golang tracer line ~1437)
             // CREATE calls receive the contract code as output but it's NOT stored in ReturnData
             if call.call_type != crate::pb::sf::ethereum::r#type::v2::CallType::Create as i32 {
-                call.return_data = output.to_vec();
+                // Internal calls past the transaction's return data limit record none, see
+                // call_data_limit. The root call is never truncated.
+                let recorded_output = if call.depth > 0 {
+                    self.transaction_return_data_bytes += output.len();
+                    if self.transaction_return_data_bytes
+                        > call_data_limit::MAX_RETURN_DATA_BYTES_PER_TX
+                    {
+                        self.truncated_return_data(output)
+                    } else {
+                        output
+                    }
+                } else {
+                    output
+                };
+                call.return_data = recorded_output.to_vec();
+                call.return_data_truncated = recorded_output.len() < output.len();
             }
 
             // Handle errors

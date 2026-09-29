@@ -1087,6 +1087,25 @@ pub struct Call {
     #[deprecated]
     #[prost(message, repeated, tag = "33")]
     pub account_creations: ::prost::alloc::vec::Vec<AccountCreation>,
+    // The identifier 34 is taken by 'address_delegates_to' field above.
+    /// True when `input` holds only the first 4 bytes (the method selector) of the call's input
+    /// rather than all of it. The tracer keeps at most 50 MiB of input across the internal calls of
+    /// one transaction, counted in call order: once the calls so far exceed that, the input of every
+    /// later call is cut to 4 bytes. It uses a lower budget, halved until the block fits, when a
+    /// block would otherwise exceed 1 GiB. The root call is never truncated, its input is also in
+    /// `TransactionTrace.input`. Execution is not affected, only what the trace records.
+    ///
+    /// Set only when bytes were left out, so an input of 4 bytes or less is never flagged.
+    #[prost(bool, tag = "35")]
+    pub input_truncated: bool,
+    /// True when `return_data` was left empty even though the call returned data. The tracer keeps
+    /// at most 25 MiB of return data across the internal calls of one transaction, counted in the
+    /// order calls end: once the calls so far exceed that, the return data of every later call is
+    /// left out. It uses a lower budget, halved until the block fits, when a block would otherwise
+    /// exceed 1 GiB. The root call is never truncated, its return data is also in
+    /// `TransactionTrace.return_data`.
+    #[prost(bool, tag = "36")]
+    pub return_data_truncated: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
