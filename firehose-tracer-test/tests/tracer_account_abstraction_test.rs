@@ -5,8 +5,8 @@ use alloy_primitives::{Address, Bytes, B256, U256};
 use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
 use firehose_tracer::types::LogData;
 use firehose_tracer_test::{
-    alice_addr, failed_receipt, failed_receipt_with_logs, success_receipt, test_aa_trx,
-    BlockInvariants, TracerTester,
+    alice_addr, failed_receipt, failed_receipt_with_logs, success_receipt,
+    test_account_abstraction_trx, BlockInvariants, TracerTester,
 };
 
 #[derive(Debug)]
@@ -29,9 +29,9 @@ fn nonce_manager() -> Address {
 }
 
 fn call_indexes(trx: &pbeth::TransactionTrace) -> Vec<Vec<u32>> {
-    trx.aa_trx_input
+    trx.account_abstraction_trx_input
         .as_ref()
-        .expect("aa_trx_input is set")
+        .expect("account_abstraction_trx_input is set")
         .phases
         .iter()
         .map(|phase| phase.calls.iter().map(|call| call.call_index).collect())
@@ -56,7 +56,11 @@ fn failed_phase_reverts_its_calls_and_keeps_committed_ones() {
     );
     let mut tester = TracerTester::new();
     tester
-        .start_block_trx(test_aa_trx(vec![vec![a], vec![b, c, d], vec![e]]))
+        .start_block_trx(test_account_abstraction_trx(vec![
+            vec![a],
+            vec![b, c, d],
+            vec![e],
+        ]))
         .balance_change(
             alice_addr(),
             U256::from(1_000_000),
@@ -100,13 +104,16 @@ fn failed_phase_reverts_its_calls_and_keeps_committed_ones() {
             BlockInvariants::assert(block).expect("block invariants hold");
             let trx = &block.transaction_traces[0];
 
-            assert_eq!(pbeth::transaction_trace::Type::TrxTypeAa as i32, trx.r#type);
+            assert_eq!(
+                pbeth::transaction_trace::Type::TrxTypeAccountAbstraction as i32,
+                trx.r#type
+            );
             assert_eq!(pbeth::TransactionTraceStatus::Failed as i32, trx.status);
             assert_eq!(
                 Some(1),
                 trx.receipt
                     .as_ref()
-                    .and_then(|r| r.aa_trx_output.as_ref())
+                    .and_then(|r| r.account_abstraction_trx_output.as_ref())
                     .map(|o| o.committed_phases)
             );
 
@@ -151,7 +158,7 @@ fn committed_phases_link_every_call() {
     let (a, b) = (target(0xa1), target(0xb1));
     let mut tester = TracerTester::new();
     tester
-        .start_block_trx(test_aa_trx(vec![vec![a], vec![b]]))
+        .start_block_trx(test_account_abstraction_trx(vec![vec![a], vec![b]]))
         .start_call(alice_addr(), alice_addr(), U256::ZERO, 100_000, vec![0x79])
         .start_call(alice_addr(), a, U256::ZERO, 90_000, vec![])
         .end_call(vec![], 1_000)
@@ -176,7 +183,7 @@ fn phase_refused_before_its_first_call_has_no_executed_call() {
     let (a, b) = (target(0xa1), target(0xb1));
     let mut tester = TracerTester::new();
     tester
-        .start_block_trx(test_aa_trx(vec![vec![a], vec![b]]))
+        .start_block_trx(test_account_abstraction_trx(vec![vec![a], vec![b]]))
         .start_call(alice_addr(), alice_addr(), U256::ZERO, 100_000, vec![0x79])
         .start_call(alice_addr(), a, U256::ZERO, 90_000, vec![])
         .end_call(vec![], 1_000)
@@ -193,11 +200,11 @@ fn phase_refused_before_its_first_call_has_no_executed_call() {
 }
 
 #[test]
-#[should_panic(expected = "set_aa_trx_output must be called before on_tx_end")]
+#[should_panic(expected = "set_account_abstraction_trx_output must be called before on_tx_end")]
 fn missing_receipt_output_panics() {
     let mut tester = TracerTester::new();
     tester
-        .start_block_trx(test_aa_trx(vec![vec![target(0xa1)]]))
+        .start_block_trx(test_account_abstraction_trx(vec![vec![target(0xa1)]]))
         .start_call(alice_addr(), alice_addr(), U256::ZERO, 100_000, vec![0x79])
         .start_call(alice_addr(), target(0xa1), U256::ZERO, 90_000, vec![])
         .end_call(vec![], 1_000)
@@ -210,7 +217,10 @@ fn missing_receipt_output_panics() {
 fn committed_phase_without_its_calls_panics() {
     let mut tester = TracerTester::new();
     tester
-        .start_block_trx(test_aa_trx(vec![vec![target(0xa1)], vec![target(0xb1)]]))
+        .start_block_trx(test_account_abstraction_trx(vec![
+            vec![target(0xa1)],
+            vec![target(0xb1)],
+        ]))
         .start_call(alice_addr(), alice_addr(), U256::ZERO, 100_000, vec![0x79])
         .start_call(alice_addr(), target(0xa1), U256::ZERO, 90_000, vec![])
         .end_call(vec![], 1_000)

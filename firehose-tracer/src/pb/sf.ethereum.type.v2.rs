@@ -506,10 +506,10 @@ pub struct TransactionTrace {
     /// `REASON_REWARD_TRANSACTION_FEE` and for nonce change, still on the root call, you pick the nonce change which the
     /// smallest ordinal (if more than one).
     ///
-    /// An account abstraction transaction (`TRX_TYPE_AA`) is the exception: it is `FAILED` when one of its phases
-    /// reverted, but the phases that committed before it keep their state and logs, and its root call is never
-    /// reverted. Whatever its status, you iterate over the `calls` array and record the state changes for each call for
-    /// which `state_reverted == false`. See \[AaTrxInput\] for how its calls are laid out.
+    /// An account abstraction transaction (`TRX_TYPE_ACCOUNT_ABSTRACTION`) is the exception: it is `FAILED` when one
+    /// of its phases reverted, but the phases that committed before it keep their state and logs, and its root call is
+    /// never reverted. Whatever its status, you iterate over the `calls` array and record the state changes for each
+    /// call for which `state_reverted == false`. See \[AccountAbstractionTrxInput\] for how its calls are laid out.
     #[prost(enumeration = "TransactionTraceStatus", tag = "30")]
     pub status: i32,
     #[prost(message, optional, tag = "31")]
@@ -567,12 +567,12 @@ pub struct TransactionTrace {
     /// This will is populated only if `TransactionTrace.Type == TRX_TYPE_MORPH_L1_MESSAGE`.
     #[prost(message, optional, tag = "38")]
     pub morph_l1_message_trx_input: ::core::option::Option<MorphL1MessageTrxInput>,
-    /// AaTrxInput holds the fields carried by an account abstraction transaction that have no
-    /// equivalent among the common transaction fields.
+    /// AccountAbstractionTrxInput holds the fields carried by an account abstraction transaction that
+    /// have no equivalent among the common transaction fields.
     ///
-    /// This is populated only if `TransactionTrace.Type == TRX_TYPE_AA`.
+    /// This is populated only if `TransactionTrace.Type == TRX_TYPE_ACCOUNT_ABSTRACTION`.
     #[prost(message, optional, tag = "39")]
-    pub aa_trx_input: ::core::option::Option<AaTrxInput>,
+    pub account_abstraction_trx_input: ::core::option::Option<AccountAbstractionTrxInput>,
 }
 /// Nested message and enum types in `TransactionTrace`.
 pub mod transaction_trace {
@@ -603,6 +603,14 @@ pub mod transaction_trace {
         ///
         /// Activated in Prague (EIP-7702)
         TrxTypeSetCode = 4,
+        /// Account abstraction transaction (type byte 0x79 on chain), carrying batched calls grouped
+        /// in phases, gas sponsorship by a payer, two-dimensional nonces and in-band EIP-7702 style
+        /// delegation. Those extra fields are recorded in
+        /// \[TransactionTrace.account_abstraction_trx_input\].
+        ///
+        /// Specified by the AA Transaction Type proposal (split out of EIP-8130), drafted as EIP-8430
+        /// in <https://github.com/ethereum/EIPs/pull/12385.> Activated on Base by the Everest upgrade.
+        TrxTypeAccountAbstraction = 121,
         /// Arbitrum-specific transactions
         TrxTypeArbitrumDeposit = 100,
         TrxTypeArbitrumUnsigned = 101,
@@ -611,13 +619,6 @@ pub mod transaction_trace {
         TrxTypeArbitrumSubmitRetryable = 105,
         TrxTypeArbitrumInternal = 106,
         TrxTypeArbitrumLegacy = 120,
-        /// Account abstraction transaction (type byte 0x79 on chain), carrying batched calls grouped
-        /// in phases, gas sponsorship by a payer, two-dimensional nonces and in-band EIP-7702 style
-        /// delegation. Those extra fields are recorded in \[TransactionTrace.aa_trx_input\].
-        ///
-        /// Specified by the AA Transaction Type proposal (split out of EIP-8130), drafted as EIP-8430
-        /// in <https://github.com/ethereum/EIPs/pull/12385.> Activated on Base by the Everest upgrade.
-        TrxTypeAa = 121,
         /// OPTIMISM-specific transactions
         TrxTypeOptimismDeposit = 126,
         /// Polygon(bor)-specific
@@ -650,6 +651,7 @@ pub mod transaction_trace {
                 Type::TrxTypeDynamicFee => "TRX_TYPE_DYNAMIC_FEE",
                 Type::TrxTypeBlob => "TRX_TYPE_BLOB",
                 Type::TrxTypeSetCode => "TRX_TYPE_SET_CODE",
+                Type::TrxTypeAccountAbstraction => "TRX_TYPE_ACCOUNT_ABSTRACTION",
                 Type::TrxTypeArbitrumDeposit => "TRX_TYPE_ARBITRUM_DEPOSIT",
                 Type::TrxTypeArbitrumUnsigned => "TRX_TYPE_ARBITRUM_UNSIGNED",
                 Type::TrxTypeArbitrumContract => "TRX_TYPE_ARBITRUM_CONTRACT",
@@ -657,7 +659,6 @@ pub mod transaction_trace {
                 Type::TrxTypeArbitrumSubmitRetryable => "TRX_TYPE_ARBITRUM_SUBMIT_RETRYABLE",
                 Type::TrxTypeArbitrumInternal => "TRX_TYPE_ARBITRUM_INTERNAL",
                 Type::TrxTypeArbitrumLegacy => "TRX_TYPE_ARBITRUM_LEGACY",
-                Type::TrxTypeAa => "TRX_TYPE_AA",
                 Type::TrxTypeOptimismDeposit => "TRX_TYPE_OPTIMISM_DEPOSIT",
                 Type::TrxTypePolygonStateSync => "TRX_TYPE_POLYGON_STATE_SYNC",
                 Type::TrxTypeMorph => "TRX_TYPE_MORPH",
@@ -672,6 +673,7 @@ pub mod transaction_trace {
                 "TRX_TYPE_DYNAMIC_FEE" => Some(Self::TrxTypeDynamicFee),
                 "TRX_TYPE_BLOB" => Some(Self::TrxTypeBlob),
                 "TRX_TYPE_SET_CODE" => Some(Self::TrxTypeSetCode),
+                "TRX_TYPE_ACCOUNT_ABSTRACTION" => Some(Self::TrxTypeAccountAbstraction),
                 "TRX_TYPE_ARBITRUM_DEPOSIT" => Some(Self::TrxTypeArbitrumDeposit),
                 "TRX_TYPE_ARBITRUM_UNSIGNED" => Some(Self::TrxTypeArbitrumUnsigned),
                 "TRX_TYPE_ARBITRUM_CONTRACT" => Some(Self::TrxTypeArbitrumContract),
@@ -679,7 +681,6 @@ pub mod transaction_trace {
                 "TRX_TYPE_ARBITRUM_SUBMIT_RETRYABLE" => Some(Self::TrxTypeArbitrumSubmitRetryable),
                 "TRX_TYPE_ARBITRUM_INTERNAL" => Some(Self::TrxTypeArbitrumInternal),
                 "TRX_TYPE_ARBITRUM_LEGACY" => Some(Self::TrxTypeArbitrumLegacy),
-                "TRX_TYPE_AA" => Some(Self::TrxTypeAa),
                 "TRX_TYPE_OPTIMISM_DEPOSIT" => Some(Self::TrxTypeOptimismDeposit),
                 "TRX_TYPE_POLYGON_STATE_SYNC" => Some(Self::TrxTypePolygonStateSync),
                 "TRX_TYPE_MORPH" => Some(Self::TrxTypeMorph),
@@ -689,15 +690,15 @@ pub mod transaction_trace {
         }
     }
 }
-/// AaTrxInput represents the extra fields of an account abstraction transaction
-/// (`TRX_TYPE_AA`).
+/// AccountAbstractionTrxInput represents the extra fields of an account abstraction transaction
+/// (`TRX_TYPE_ACCOUNT_ABSTRACTION`).
 ///
 /// The common transaction fields hold the values that keep their meaning: `from` is the resolved
-/// sender, `nonce` is the sequence number within \[AaTrxInput.nonce_key\], `v`, `r` and `s` hold the
-/// sender's signature when the sender signs with its secp256k1 key (the only authentication
-/// without Keystore accounts, EIP-8130), `gas_price` is the effective gas price and `gas_used`
-/// includes the payer's authentication gas. `to`, `value` and `input` are empty: the calls are carried in the
-/// call phases.
+/// sender, `nonce` is the sequence number within \[AccountAbstractionTrxInput.nonce_key\], `v`, `r`
+/// and `s` hold the sender's signature when the sender signs with its secp256k1 key (the only
+/// authentication without Keystore accounts, EIP-8130), `gas_price` is the effective gas price and
+/// `gas_used` includes the payer's authentication gas. `to`, `value` and `input` are empty: the
+/// calls are carried in the phases.
 ///
 /// Calls are laid out as follows:
 ///
@@ -711,14 +712,15 @@ pub mod transaction_trace {
 /// Phases run in order, and the calls of a phase take effect all together or not at all. When a
 /// call reverts, its whole phase is reverted, including the calls of the phase that succeeded
 /// before it, and the following phases are skipped. Phases that committed before it keep their
-/// state. \[AaTrxOutput.committed_phases\] counts the phases that committed, and
-/// \[AaTrxInput.phases\] links each signed call to the child of the root call that executed it.
+/// state. \[AccountAbstractionTrxOutput.committed_phases\] counts the phases that committed, and
+/// \[AccountAbstractionTrxInput.phases\] links each signed call to the child of the root call that
+/// executed it.
 ///
 /// Specified by the AA Transaction Type proposal (split out of EIP-8130), drafted as EIP-8430
 /// in <https://github.com/ethereum/EIPs/pull/12385.>
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct AaTrxInput {
+pub struct AccountAbstractionTrxInput {
     /// NonceKey selects the nonce channel of the transaction: 0 for the account nonce shared with the
     /// other transaction types, 2^256-1 for the nonce-free mode, and any other value for a parallel
     /// channel held by the nonce manager. The sequence number within the channel is in
@@ -747,67 +749,58 @@ pub struct AaTrxInput {
     /// AccountChanges are the changes applied to the sender's account before the calls run, in
     /// order. Their state changes are recorded on the root call.
     #[prost(message, repeated, tag = "6")]
-    pub account_changes: ::prost::alloc::vec::Vec<aa_trx_input::AccountChange>,
+    pub account_changes: ::prost::alloc::vec::Vec<AccountAbstractionAccountChange>,
     /// Phases are the calls of the transaction as signed, grouped in phases, in order. Every signed
     /// call is listed, including the ones that never executed.
     #[prost(message, repeated, tag = "7")]
-    pub phases: ::prost::alloc::vec::Vec<aa_trx_input::Phase>,
+    pub phases: ::prost::alloc::vec::Vec<AccountAbstractionPhase>,
 }
-/// Nested message and enum types in `AaTrxInput`.
-pub mod aa_trx_input {
-    /// Phase represents one entry of \[AaTrxInput.phases\].
+/// AccountAbstractionPhase represents one entry of \[AccountAbstractionTrxInput.phases\].
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AccountAbstractionPhase {
+    /// Calls are the calls of this phase as signed, in order.
+    #[prost(message, repeated, tag = "1")]
+    pub calls: ::prost::alloc::vec::Vec<AccountAbstractionPhaseCall>,
+}
+/// AccountAbstractionPhaseCall represents one signed call of an \[AccountAbstractionPhase\].
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AccountAbstractionPhaseCall {
+    /// To is the account called.
+    #[prost(bytes = "vec", tag = "1")]
+    pub to: ::prost::alloc::vec::Vec<u8>,
+    /// Value is the amount of native token sent by the sender to `to` with the call.
+    #[prost(message, optional, tag = "2")]
+    pub value: ::core::option::Option<BigInt>,
+    /// Data is the input of the call.
+    #[prost(bytes = "vec", tag = "3")]
+    pub data: ::prost::alloc::vec::Vec<u8>,
+    /// CallIndex is the \[Call.index\] of the child of the root call that executed this signed call.
+    /// Call indexes start at 1, so 0 never names a call: it means the call never executed. That is
+    /// the case of the calls after the one that reverted in the same phase, the calls of the phases
+    /// skipped after it, and a call the protocol refused to dispatch.
+    #[prost(uint32, tag = "4")]
+    pub call_index: u32,
+}
+/// AccountAbstractionAccountChange represents one entry of
+/// \[AccountAbstractionTrxInput.account_changes\].
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AccountAbstractionAccountChange {
+    #[prost(oneof = "account_abstraction_account_change::Change", tags = "1")]
+    pub change: ::core::option::Option<account_abstraction_account_change::Change>,
+}
+/// Nested message and enum types in `AccountAbstractionAccountChange`.
+pub mod account_abstraction_account_change {
     #[allow(clippy::derive_partial_eq_without_eq)]
-    #[derive(Clone, PartialEq, ::prost::Message)]
-    pub struct Phase {
-        /// Calls are the calls of this phase as signed, in order.
-        #[prost(message, repeated, tag = "1")]
-        pub calls: ::prost::alloc::vec::Vec<PhaseCall>,
-    }
-    /// PhaseCall represents one signed call of a phase.
-    #[allow(clippy::derive_partial_eq_without_eq)]
-    #[derive(Clone, PartialEq, ::prost::Message)]
-    pub struct PhaseCall {
-        /// To is the account called.
-        #[prost(bytes = "vec", tag = "1")]
-        pub to: ::prost::alloc::vec::Vec<u8>,
-        /// Value is the amount of native token sent by the sender to `to` with the call.
-        #[prost(message, optional, tag = "2")]
-        pub value: ::core::option::Option<super::BigInt>,
-        /// Data is the input of the call.
-        #[prost(bytes = "vec", tag = "3")]
-        pub data: ::prost::alloc::vec::Vec<u8>,
-        /// CallIndex is the \[Call.index\] of the child of the root call that executed this signed call.
-        /// It is 0 when the call never executed: the calls after the one that reverted in the same
-        /// phase, the calls of the phases skipped after it, and a call the protocol refused to
-        /// dispatch.
-        #[prost(uint32, tag = "4")]
-        pub call_index: u32,
-    }
-    /// AccountChange represents one entry of \[AaTrxInput.account_changes\].
-    #[allow(clippy::derive_partial_eq_without_eq)]
-    #[derive(Clone, PartialEq, ::prost::Message)]
-    pub struct AccountChange {
-        #[prost(oneof = "account_change::Change", tags = "1")]
-        pub change: ::core::option::Option<account_change::Change>,
-    }
-    /// Nested message and enum types in `AccountChange`.
-    pub mod account_change {
-        #[allow(clippy::derive_partial_eq_without_eq)]
-        #[derive(Clone, PartialEq, ::prost::Oneof)]
-        pub enum Change {
-            /// Delegation sets or clears the EIP-7702 style delegation of the sender (entry type 0x01).
-            #[prost(message, tag = "1")]
-            Delegation(super::Delegation),
-        }
-    }
-    /// Delegation represents an account change delegating the sender's code to another account.
-    #[allow(clippy::derive_partial_eq_without_eq)]
-    #[derive(Clone, PartialEq, ::prost::Message)]
-    pub struct Delegation {
-        /// Target is the account the sender delegates to. The sender's code becomes
-        /// `0xef0100 || target`. Empty when the transaction clears the delegation.
-        #[prost(bytes = "vec", tag = "1")]
-        pub target: ::prost::alloc::vec::Vec<u8>,
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Change {
+        /// DelegationTarget sets or clears the EIP-7702 style delegation of the sender (entry type
+        /// 0x01). The sender's code becomes `0xef0100 || delegation_target`, or is cleared when it is
+        /// empty.
+        #[prost(bytes, tag = "1")]
+        DelegationTarget(::prost::alloc::vec::Vec<u8>),
     }
 }
 /// MorphTrxInput represents the extra fields of a Morph MorphTx transaction, a transaction type
@@ -977,20 +970,21 @@ pub struct TransactionReceipt {
     /// Morph specific, unset on all other chains.
     #[prost(message, optional, tag = "7")]
     pub morph_trx_output: ::core::option::Option<MorphTrxOutput>,
-    /// AaTrxOutput holds the values recorded on the receipt of an account abstraction transaction.
+    /// AccountAbstractionTrxOutput holds the values recorded on the receipt of an account abstraction
+    /// transaction.
     ///
-    /// This is populated only if `TransactionTrace.Type == TRX_TYPE_AA`.
+    /// This is populated only if `TransactionTrace.Type == TRX_TYPE_ACCOUNT_ABSTRACTION`.
     #[prost(message, optional, tag = "8")]
-    pub aa_trx_output: ::core::option::Option<AaTrxOutput>,
+    pub account_abstraction_trx_output: ::core::option::Option<AccountAbstractionTrxOutput>,
 }
-/// AaTrxOutput represents the extra fields recorded on the receipt of an account abstraction
-/// transaction (`TRX_TYPE_AA`).
+/// AccountAbstractionTrxOutput represents the extra fields recorded on the receipt of an account
+/// abstraction transaction (`TRX_TYPE_ACCOUNT_ABSTRACTION`).
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
-pub struct AaTrxOutput {
+pub struct AccountAbstractionTrxOutput {
     /// CommittedPhases is the number of phases that committed. When it is lower than the number of
-    /// phases in \[AaTrxInput.phases\], phase `committed_phases` (zero-based) reverted and the phases
-    /// after it were skipped.
+    /// phases in \[AccountAbstractionTrxInput.phases\], phase `committed_phases` (zero-based) reverted
+    /// and the phases after it were skipped.
     #[prost(uint64, tag = "1")]
     pub committed_phases: u64,
 }

@@ -403,7 +403,7 @@ impl BlockInvariants {
             return;
         };
 
-        if trace.r#type == transaction_trace::Type::TrxTypeAa as i32 {
+        if trace.r#type == transaction_trace::Type::TrxTypeAccountAbstraction as i32 {
             if root.status_failed || root.status_reverted || root.state_reverted {
                 out.push(Violation {
                     path: path.to_owned(),

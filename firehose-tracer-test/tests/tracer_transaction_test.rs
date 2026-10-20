@@ -321,7 +321,7 @@ fn test_zero_effective_gas_price_emitted_as_nil() {
             blob_gas_fee_cap: None,
             blob_hashes: vec![],
             set_code_authorizations: vec![],
-            aa_trx_input: None,
+            account_abstraction_trx_input: None,
         }
     }
 

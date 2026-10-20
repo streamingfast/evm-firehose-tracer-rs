@@ -99,7 +99,7 @@ pub fn test_legacy_trx() -> TxEvent {
         blob_gas_fee_cap: None,
         blob_hashes: vec![],
         set_code_authorizations: vec![],
-        aa_trx_input: None,
+        account_abstraction_trx_input: None,
     }
 }
 
@@ -134,17 +134,17 @@ pub fn test_access_list_trx() -> TxEvent {
         blob_gas_fee_cap: None,
         blob_hashes: vec![],
         set_code_authorizations: vec![],
-        aa_trx_input: None,
+        account_abstraction_trx_input: None,
     }
 }
 
 /// Provides an account abstraction (type 0x79) test transaction from alice, paid by alice, whose
 /// phases call the given accounts in order with no value and no data.
-pub fn test_aa_trx(phases: Vec<Vec<Address>>) -> TxEvent {
-    use pbeth::aa_trx_input::{Phase, PhaseCall};
+pub fn test_account_abstraction_trx(phases: Vec<Vec<Address>>) -> TxEvent {
+    use pbeth::{AccountAbstractionPhase, AccountAbstractionPhaseCall};
 
     TxEvent {
-        tx_type: firehose_tracer::types::TxType::Aa,
+        tx_type: firehose_tracer::types::TxType::AccountAbstraction,
         hash: B256::from([
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0x79,
@@ -166,15 +166,15 @@ pub fn test_aa_trx(phases: Vec<Vec<Address>>) -> TxEvent {
         blob_gas_fee_cap: None,
         blob_hashes: vec![],
         set_code_authorizations: vec![],
-        aa_trx_input: Some(pbeth::AaTrxInput {
+        account_abstraction_trx_input: Some(pbeth::AccountAbstractionTrxInput {
             nonce_key: None,
             payer: alice_addr().to_vec(),
             phases: phases
                 .into_iter()
-                .map(|calls| Phase {
+                .map(|calls| AccountAbstractionPhase {
                     calls: calls
                         .into_iter()
-                        .map(|to| PhaseCall {
+                        .map(|to| AccountAbstractionPhaseCall {
                             to: to.to_vec(),
                             ..Default::default()
                         })
@@ -217,7 +217,7 @@ pub fn test_dynamic_fee_trx() -> TxEvent {
         blob_gas_fee_cap: None,
         blob_hashes: vec![],
         set_code_authorizations: vec![],
-        aa_trx_input: None,
+        account_abstraction_trx_input: None,
     }
 }
 
@@ -249,7 +249,7 @@ pub fn test_blob_trx() -> TxEvent {
             0, 0, 0,
         ])],
         set_code_authorizations: vec![],
-        aa_trx_input: None,
+        account_abstraction_trx_input: None,
     }
 }
 
@@ -309,7 +309,7 @@ pub fn test_set_code_trx() -> TxEvent {
             r,
             s,
         }],
-        aa_trx_input: None,
+        account_abstraction_trx_input: None,
     }
 }
 
@@ -339,7 +339,7 @@ pub fn test_set_code_trx_with_auth(
         blob_gas_fee_cap: None,
         blob_hashes: vec![],
         set_code_authorizations: authorizations,
-        aa_trx_input: None,
+        account_abstraction_trx_input: None,
     }
 }
 
@@ -812,7 +812,9 @@ impl TracerTester {
     /// the integration does before `on_tx_end`.
     pub fn aa_committed_phases(&mut self, committed_phases: u64) -> &mut Self {
         self.tracer
-            .set_aa_trx_output(pbeth::AaTrxOutput { committed_phases });
+            .set_account_abstraction_trx_output(pbeth::AccountAbstractionTrxOutput {
+                committed_phases,
+            });
         self
     }
 
