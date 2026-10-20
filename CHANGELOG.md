@@ -13,7 +13,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   * When the transaction completes, each signed call's `AccountAbstractionCallInput.call_index` is set to the child of the root call that executed it, and the calls of the phase that failed, with everything below them, are marked `state_reverted`, including the ones that succeeded before the phase was rolled back. The root call is never failed, and the transaction status follows the receipt.
   * The test invariants accept a failed account abstraction transaction whose root call did not fail.
 * Regenerated `sf.ethereum.type.v2` bindings from streamingfast/firehose-ethereum#262, which also renames `morph_receipt_config` to `morph_trx_output` (and `MorphTxConfig` / `MorphL1MessageConfig` to `MorphTrxInput` / `MorphL1MessageTrxInput`).
-* Regenerated the bindings with the Keystore account changes of EIP-8130 (`create` and `config_change` in `AccountAbstractionAccountChange`) and `AccountAbstractionTrxInput.sender_auth`, from streamingfast/firehose-ethereum#264. The integration fills them.
+* Regenerated the bindings with the Keystore account changes of EIP-8130 (`create` and `config_change` in `AccountAbstractionAccountChange`) and `AccountAbstractionTrxInput.sender_auth`, from streamingfast/firehose-ethereum#264 (BSR commit `33eaa324c4fc46a68cf9593d289278fe`, pinned in `proto/buf.yaml`). The integration fills them.
 
 ### Changed
 
