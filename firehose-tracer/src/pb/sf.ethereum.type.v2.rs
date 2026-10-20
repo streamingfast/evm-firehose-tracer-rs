@@ -695,10 +695,10 @@ pub mod transaction_trace {
 ///
 /// The common transaction fields hold the values that keep their meaning: `from` is the resolved
 /// sender, `nonce` is the sequence number within \[AccountAbstractionTrxInput.nonce_key\], `v`, `r`
-/// and `s` hold the sender's signature when the sender signs with its secp256k1 key (the only
-/// authentication without Keystore accounts, EIP-8130), `gas_price` is the effective gas price and
-/// `gas_used` includes the payer's authentication gas. `to`, `value` and `input` are empty: the
-/// calls are carried in the phases.
+/// and `s` hold the sender's signature when the sender signs with its secp256k1 key (otherwise see
+/// \[AccountAbstractionTrxInput.sender_auth\]), `gas_price` is the effective gas price and `gas_used`
+/// includes the payer's authentication gas. `to`, `value` and `input` are empty: the calls are
+/// carried in the phases.
 ///
 /// Calls are laid out as follows:
 ///
@@ -754,6 +754,11 @@ pub struct AccountAbstractionTrxInput {
     /// signed call is listed, including the ones that never executed.
     #[prost(message, repeated, tag = "7")]
     pub call_phases: ::prost::alloc::vec::Vec<AccountAbstractionCallPhase>,
+    /// SenderAuth is the sender's authentication as signed, `authenticator (20) || data`, when the
+    /// sender does not sign with its secp256k1 key: a Keystore actor (EIP-8130) using the P-256,
+    /// WebAuthn or delegate authenticator. Empty when `v`, `r` and `s` hold the sender's signature.
+    #[prost(bytes = "vec", tag = "8")]
+    pub sender_auth: ::prost::alloc::vec::Vec<u8>,
 }
 /// AccountAbstractionCallPhase represents one entry of \[AccountAbstractionTrxInput.call_phases\].
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -784,11 +789,12 @@ pub struct AccountAbstractionCallInput {
     pub call_index: u32,
 }
 /// AccountAbstractionAccountChange represents one entry of
-/// \[AccountAbstractionTrxInput.account_changes\].
+/// \[AccountAbstractionTrxInput.account_changes\]. Each field number is the on chain entry type
+/// byte.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AccountAbstractionAccountChange {
-    #[prost(oneof = "account_abstraction_account_change::Change", tags = "1")]
+    #[prost(oneof = "account_abstraction_account_change::Change", tags = "1, 2, 3")]
     pub change: ::core::option::Option<account_abstraction_account_change::Change>,
 }
 /// Nested message and enum types in `AccountAbstractionAccountChange`.
@@ -801,6 +807,154 @@ pub mod account_abstraction_account_change {
         /// empty.
         #[prost(bytes, tag = "1")]
         DelegationTarget(::prost::alloc::vec::Vec<u8>),
+        /// Create creates the sender's account in the Keystore (entry type 0x02, EIP-8130). It is the
+        /// first entry when present.
+        #[prost(message, tag = "2")]
+        Create(super::AccountAbstractionAccountCreate),
+        /// ConfigChange applies a signed batch of Keystore changes to the sender's account (entry type
+        /// 0x03, EIP-8130).
+        #[prost(message, tag = "3")]
+        ConfigChange(super::AccountAbstractionConfigChange),
+    }
+}
+/// AccountAbstractionAccountCreate represents a Keystore create entry: the sender is the account
+/// derived from `user_salt`, `code` and `initial_actors`. The code is placed at the sender
+/// without running and the initial actors are registered, both recorded on the root call.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AccountAbstractionAccountCreate {
+    /// UserSalt is the salt chosen by the user for the address derivation. The on chain type is a
+    /// 'bytes32'.
+    #[prost(bytes = "vec", tag = "1")]
+    pub user_salt: ::prost::alloc::vec::Vec<u8>,
+    /// Code is the runtime bytecode placed at the account address.
+    #[prost(bytes = "vec", tag = "2")]
+    pub code: ::prost::alloc::vec::Vec<u8>,
+    /// InitialActors are the actors authorized on the new account, in ascending `actor_id` order.
+    #[prost(message, repeated, tag = "3")]
+    pub initial_actors: ::prost::alloc::vec::Vec<AccountAbstractionInitialActor>,
+}
+/// AccountAbstractionInitialActor represents one actor registered by an
+/// \[AccountAbstractionAccountCreate\].
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AccountAbstractionInitialActor {
+    /// ActorId identifies the actor's key, as derived by its authenticator. The on chain type is a
+    /// 'bytes32'.
+    #[prost(bytes = "vec", tag = "1")]
+    pub actor_id: ::prost::alloc::vec::Vec<u8>,
+    /// Authenticator is the authenticator contract of the actor (`0x...01` for secp256k1).
+    #[prost(bytes = "vec", tag = "2")]
+    pub authenticator: ::prost::alloc::vec::Vec<u8>,
+    /// Scope is the actor's scope bit field, 0 for an unrestricted admin. The on chain type is a
+    /// 'uint16'.
+    #[prost(uint32, tag = "3")]
+    pub scope: u32,
+    /// PolicyData is empty, or the 20 bytes manager address followed by the 32 bytes policy
+    /// commitment.
+    #[prost(bytes = "vec", tag = "4")]
+    pub policy_data: ::prost::alloc::vec::Vec<u8>,
+}
+/// AccountAbstractionConfigChange represents a Keystore config change entry, one signed batch of
+/// changes applied to the sender's account atomically. The resulting Keystore writes and logs are
+/// recorded on the root call.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AccountAbstractionConfigChange {
+    /// Channel is the replay domain the batch is bound to.
+    #[prost(enumeration = "account_abstraction_config_change::Channel", tag = "1")]
+    pub channel: i32,
+    /// Sequence is the channel sequence the batch consumes: `local_epoch (high 32 bits) ||
+    /// local_sequence (low 32 bits)` on the local channel, a plain counter on the multichain one.
+    #[prost(uint64, tag = "2")]
+    pub sequence: u64,
+    /// Changes are the changes of the batch, in order.
+    #[prost(message, repeated, tag = "3")]
+    pub changes: ::prost::alloc::vec::Vec<AccountAbstractionKeystoreChange>,
+    /// Auth is the admin signature over the batch digest, `authenticator (20) || data`.
+    #[prost(bytes = "vec", tag = "4")]
+    pub auth: ::prost::alloc::vec::Vec<u8>,
+}
+/// Nested message and enum types in `AccountAbstractionConfigChange`.
+pub mod account_abstraction_config_change {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+    #[repr(i32)]
+    pub enum Channel {
+        /// Local binds the batch to the chain it is applied on.
+        Local = 0,
+        /// Multichain binds the batch to chain id 0, valid on any chain.
+        Multichain = 1,
+    }
+    impl Channel {
+        /// String value of the enum field names used in the ProtoBuf definition.
+        ///
+        /// The values are not transformed in any way and thus are considered stable
+        /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+        pub fn as_str_name(&self) -> &'static str {
+            match self {
+                Channel::Local => "CHANNEL_LOCAL",
+                Channel::Multichain => "CHANNEL_MULTICHAIN",
+            }
+        }
+        /// Creates an enum from field names used in the ProtoBuf definition.
+        pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+            match value {
+                "CHANNEL_LOCAL" => Some(Self::Local),
+                "CHANNEL_MULTICHAIN" => Some(Self::Multichain),
+                _ => None,
+            }
+        }
+    }
+}
+/// AccountAbstractionKeystoreChange represents one change of an \[AccountAbstractionConfigChange\].
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AccountAbstractionKeystoreChange {
+    #[prost(enumeration = "account_abstraction_keystore_change::Type", tag = "1")]
+    pub r#type: i32,
+    /// Payload is the ABI encoded argument of the change: `(bytes32 actorId, ActorConfig config,
+    /// bytes policyData)` to authorize an actor, `(bytes32 actorId)` to revoke one, `(uint16
+    /// unlockDelay)` to lock the account, and empty otherwise.
+    #[prost(bytes = "vec", tag = "2")]
+    pub payload: ::prost::alloc::vec::Vec<u8>,
+}
+/// Nested message and enum types in `AccountAbstractionKeystoreChange`.
+pub mod account_abstraction_keystore_change {
+    /// Type values are the on chain change type bytes.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+    #[repr(i32)]
+    pub enum Type {
+        AuthorizeActor = 0,
+        RevokeActor = 1,
+        IncrementLocalEpoch = 2,
+        Lock = 3,
+        Unlock = 4,
+    }
+    impl Type {
+        /// String value of the enum field names used in the ProtoBuf definition.
+        ///
+        /// The values are not transformed in any way and thus are considered stable
+        /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+        pub fn as_str_name(&self) -> &'static str {
+            match self {
+                Type::AuthorizeActor => "TYPE_AUTHORIZE_ACTOR",
+                Type::RevokeActor => "TYPE_REVOKE_ACTOR",
+                Type::IncrementLocalEpoch => "TYPE_INCREMENT_LOCAL_EPOCH",
+                Type::Lock => "TYPE_LOCK",
+                Type::Unlock => "TYPE_UNLOCK",
+            }
+        }
+        /// Creates an enum from field names used in the ProtoBuf definition.
+        pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+            match value {
+                "TYPE_AUTHORIZE_ACTOR" => Some(Self::AuthorizeActor),
+                "TYPE_REVOKE_ACTOR" => Some(Self::RevokeActor),
+                "TYPE_INCREMENT_LOCAL_EPOCH" => Some(Self::IncrementLocalEpoch),
+                "TYPE_LOCK" => Some(Self::Lock),
+                "TYPE_UNLOCK" => Some(Self::Unlock),
+                _ => None,
+            }
+        }
     }
 }
 /// MorphTrxInput represents the extra fields of a Morph MorphTx transaction, a transaction type
