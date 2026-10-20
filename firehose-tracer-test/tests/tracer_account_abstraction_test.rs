@@ -32,7 +32,7 @@ fn call_indexes(trx: &pbeth::TransactionTrace) -> Vec<Vec<u32>> {
     trx.account_abstraction_trx_input
         .as_ref()
         .expect("account_abstraction_trx_input is set")
-        .phases
+        .call_phases
         .iter()
         .map(|phase| phase.calls.iter().map(|call| call.call_index).collect())
         .collect()
@@ -86,7 +86,7 @@ fn failed_phase_reverts_its_calls_and_keeps_committed_ones() {
             U256::from(990_000),
             pbeth::balance_change::Reason::GasRefund,
         )
-        .aa_committed_phases(1)
+        .account_abstraction_committed_phases(1)
         .end_block_trx(
             Some(failed_receipt_with_logs(
                 30_000,
@@ -165,7 +165,7 @@ fn committed_phases_link_every_call() {
         .start_call(alice_addr(), b, U256::ZERO, 80_000, vec![])
         .end_call(vec![], 1_000)
         .end_call(vec![], 30_000)
-        .aa_committed_phases(2)
+        .account_abstraction_committed_phases(2)
         .end_block_trx(Some(success_receipt(30_000)), None, None)
         .validate(|block| {
             let trx = &block.transaction_traces[0];
@@ -188,7 +188,7 @@ fn phase_refused_before_its_first_call_has_no_executed_call() {
         .start_call(alice_addr(), a, U256::ZERO, 90_000, vec![])
         .end_call(vec![], 1_000)
         .end_call_failed(vec![], 30_000, &Reverted, true)
-        .aa_committed_phases(1)
+        .account_abstraction_committed_phases(1)
         .end_block_trx(Some(failed_receipt(30_000)), None, None)
         .validate(|block| {
             let trx = &block.transaction_traces[0];
@@ -225,6 +225,6 @@ fn committed_phase_without_its_calls_panics() {
         .start_call(alice_addr(), target(0xa1), U256::ZERO, 90_000, vec![])
         .end_call(vec![], 1_000)
         .end_call(vec![], 30_000)
-        .aa_committed_phases(2)
+        .account_abstraction_committed_phases(2)
         .end_block_trx(Some(success_receipt(30_000)), None, None);
 }

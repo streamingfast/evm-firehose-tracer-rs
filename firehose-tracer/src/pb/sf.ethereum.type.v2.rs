@@ -713,8 +713,8 @@ pub mod transaction_trace {
 /// call reverts, its whole phase is reverted, including the calls of the phase that succeeded
 /// before it, and the following phases are skipped. Phases that committed before it keep their
 /// state. \[AccountAbstractionTrxOutput.committed_phases\] counts the phases that committed, and
-/// \[AccountAbstractionTrxInput.phases\] links each signed call to the child of the root call that
-/// executed it.
+/// \[AccountAbstractionTrxInput.call_phases\] links each signed call to the child of the root call
+/// that executed it.
 ///
 /// Specified by the AA Transaction Type proposal (split out of EIP-8130), drafted as EIP-8430
 /// in <https://github.com/ethereum/EIPs/pull/12385.>
@@ -750,23 +750,23 @@ pub struct AccountAbstractionTrxInput {
     /// order. Their state changes are recorded on the root call.
     #[prost(message, repeated, tag = "6")]
     pub account_changes: ::prost::alloc::vec::Vec<AccountAbstractionAccountChange>,
-    /// Phases are the calls of the transaction as signed, grouped in phases, in order. Every signed
-    /// call is listed, including the ones that never executed.
+    /// CallPhases are the calls of the transaction as signed, grouped in phases, in order. Every
+    /// signed call is listed, including the ones that never executed.
     #[prost(message, repeated, tag = "7")]
-    pub phases: ::prost::alloc::vec::Vec<AccountAbstractionPhase>,
+    pub call_phases: ::prost::alloc::vec::Vec<AccountAbstractionCallPhase>,
 }
-/// AccountAbstractionPhase represents one entry of \[AccountAbstractionTrxInput.phases\].
+/// AccountAbstractionCallPhase represents one entry of \[AccountAbstractionTrxInput.call_phases\].
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct AccountAbstractionPhase {
+pub struct AccountAbstractionCallPhase {
     /// Calls are the calls of this phase as signed, in order.
     #[prost(message, repeated, tag = "1")]
-    pub calls: ::prost::alloc::vec::Vec<AccountAbstractionPhaseCall>,
+    pub calls: ::prost::alloc::vec::Vec<AccountAbstractionCallInput>,
 }
-/// AccountAbstractionPhaseCall represents one signed call of an \[AccountAbstractionPhase\].
+/// AccountAbstractionCallInput represents one signed call of an \[AccountAbstractionCallPhase\].
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct AccountAbstractionPhaseCall {
+pub struct AccountAbstractionCallInput {
     /// To is the account called.
     #[prost(bytes = "vec", tag = "1")]
     pub to: ::prost::alloc::vec::Vec<u8>,
@@ -983,8 +983,8 @@ pub struct TransactionReceipt {
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct AccountAbstractionTrxOutput {
     /// CommittedPhases is the number of phases that committed. When it is lower than the number of
-    /// phases in \[AccountAbstractionTrxInput.phases\], phase `committed_phases` (zero-based) reverted
-    /// and the phases after it were skipped.
+    /// phases in \[AccountAbstractionTrxInput.call_phases\], phase `committed_phases` (zero-based)
+    /// reverted and the phases after it were skipped.
     #[prost(uint64, tag = "1")]
     pub committed_phases: u64,
 }

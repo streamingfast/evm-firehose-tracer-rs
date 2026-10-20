@@ -141,7 +141,7 @@ pub fn test_access_list_trx() -> TxEvent {
 /// Provides an account abstraction (type 0x79) test transaction from alice, paid by alice, whose
 /// phases call the given accounts in order with no value and no data.
 pub fn test_account_abstraction_trx(phases: Vec<Vec<Address>>) -> TxEvent {
-    use pbeth::{AccountAbstractionPhase, AccountAbstractionPhaseCall};
+    use pbeth::{AccountAbstractionCallInput, AccountAbstractionCallPhase};
 
     TxEvent {
         tx_type: firehose_tracer::types::TxType::AccountAbstraction,
@@ -169,12 +169,12 @@ pub fn test_account_abstraction_trx(phases: Vec<Vec<Address>>) -> TxEvent {
         account_abstraction_trx_input: Some(pbeth::AccountAbstractionTrxInput {
             nonce_key: None,
             payer: alice_addr().to_vec(),
-            phases: phases
+            call_phases: phases
                 .into_iter()
-                .map(|calls| AccountAbstractionPhase {
+                .map(|calls| AccountAbstractionCallPhase {
                     calls: calls
                         .into_iter()
-                        .map(|to| AccountAbstractionPhaseCall {
+                        .map(|to| AccountAbstractionCallInput {
                             to: to.to_vec(),
                             ..Default::default()
                         })
@@ -810,7 +810,7 @@ impl TracerTester {
 
     /// Records the committed phase count of the current account abstraction transaction, as
     /// the integration does before `on_tx_end`.
-    pub fn aa_committed_phases(&mut self, committed_phases: u64) -> &mut Self {
+    pub fn account_abstraction_committed_phases(&mut self, committed_phases: u64) -> &mut Self {
         self.tracer
             .set_account_abstraction_trx_output(pbeth::AccountAbstractionTrxOutput {
                 committed_phases,

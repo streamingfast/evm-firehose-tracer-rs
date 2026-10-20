@@ -200,7 +200,7 @@ pub struct TxEvent {
     pub set_code_authorizations: Vec<SetCodeAuthorization>,
 
     // Account abstraction transaction fields (type 0x79), with every
-    // `AccountAbstractionPhaseCall.call_index` left at 0: the tracer links each signed call to the
+    // `AccountAbstractionCallInput.call_index` left at 0: the tracer links each signed call to the
     // call that executed it when the transaction ends.
     pub account_abstraction_trx_input: Option<AccountAbstractionTrxInput>,
 }

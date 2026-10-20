@@ -887,7 +887,8 @@ impl Tracer {
         // An account abstraction transaction can fail in one phase and keep the state of the
         // phases that committed before it, so its root call is never failed (see
         // `link_account_abstraction_phase_calls`).
-        let is_aa = trx.r#type == transaction_trace::Type::TrxTypeAccountAbstraction as i32;
+        let is_account_abstraction =
+            trx.r#type == transaction_trace::Type::TrxTypeAccountAbstraction as i32;
 
         // Step 2: Get root call for later operations
         let root_call_reverted = trx
@@ -938,7 +939,7 @@ impl Tracer {
                 .saturating_add(self.flashblock_tx_index_offset);
             trx.gas_used = receipt.gas_used;
             let mut trx_receipt = self.new_receipt_from_data(receipt, trx.r#type);
-            if is_aa {
+            if is_account_abstraction {
                 trx_receipt.account_abstraction_trx_output =
                     self.transaction_account_abstraction_trx_output.clone();
             }
@@ -959,7 +960,7 @@ impl Tracer {
         // failed (e.g., out-of-gas). In Geth, `OnExit` receives the EVM-level error
         // directly, but revm determines failure at the executor level. When the receipt
         // says failure but the root call wasn't marked as failed, reconcile here.
-        if self.config.chain_client == config::ChainClient::Reth && !is_aa {
+        if self.config.chain_client == config::ChainClient::Reth && !is_account_abstraction {
             if let Some(receipt) = receipt {
                 if receipt.status != 1 {
                     if let Some(root_call) = trx.calls.first_mut() {
@@ -973,7 +974,7 @@ impl Tracer {
         }
 
         // Step 5: Check if root call reverted (overrides receipt status)
-        if root_call_reverted && !self.block_rules.is_optimism && !is_aa {
+        if root_call_reverted && !self.block_rules.is_optimism && !is_account_abstraction {
             trx.status =
                 crate::pb::sf::ethereum::r#type::v2::TransactionTraceStatus::Reverted as i32;
         }
@@ -984,7 +985,7 @@ impl Tracer {
         }
 
         // Step 7: Populate StateReverted for all calls
-        if is_aa {
+        if is_account_abstraction {
             if let Some(root_call) = trx.calls.first_mut() {
                 root_call.status_failed = false;
                 root_call.status_reverted = false;
@@ -992,7 +993,7 @@ impl Tracer {
             }
         }
         Self::populate_state_reverted(&mut trx);
-        if is_aa {
+        if is_account_abstraction {
             self.link_account_abstraction_phase_calls(&mut trx);
         }
 
@@ -1097,7 +1098,7 @@ impl Tracer {
     }
 
     /// Links each signed call of an account abstraction transaction to the call that executed it
-    /// (`AccountAbstractionPhaseCall.call_index`) and reverts the calls of the phase that failed.
+    /// (`AccountAbstractionCallInput.call_index`) and reverts the calls of the phase that failed.
     ///
     /// The executed calls are the children of the root call, in index order. Every call of a
     /// committed phase executed. The phase that failed, phase `committed_phases`, executed its
@@ -1132,16 +1133,16 @@ impl Tracer {
                 "account abstraction transaction has no account_abstraction_trx_input",
             );
         };
-        if committed_phases > input.phases.len() as u64 {
+        if committed_phases > input.call_phases.len() as u64 {
             self.panic_invalid_state(format!(
                 "account abstraction transaction committed {} phases out of {}",
                 committed_phases,
-                input.phases.len()
+                input.call_phases.len()
             ));
         }
 
         let mut reverted = std::collections::HashSet::new();
-        for (phase_index, phase) in input.phases.iter_mut().enumerate() {
+        for (phase_index, phase) in input.call_phases.iter_mut().enumerate() {
             let phase_index = phase_index as u64;
             if phase_index > committed_phases {
                 break;
