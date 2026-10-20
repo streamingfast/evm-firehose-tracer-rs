@@ -10,6 +10,8 @@ use std::fmt::Display;
 use alloy_primitives::{Address, Bloom, Bytes, TxHash, B256, U256};
 use num_enum::TryFromPrimitive;
 
+use crate::pb::sf::ethereum::r#type::v2::AaTrxInput;
+
 /// BlockEvent contains the data needed for OnBlockStart
 #[derive(Debug, Clone, Default)]
 pub struct BlockEvent {
@@ -196,6 +198,11 @@ pub struct TxEvent {
 
     // EIP-7702 set code authorization list (type 4)
     pub set_code_authorizations: Vec<SetCodeAuthorization>,
+
+    // Account abstraction transaction fields (type 0x79), with every `PhaseCall.call_index` left
+    // at 0: the tracer links each signed call to the call that executed it when the transaction
+    // ends.
+    pub aa_trx_input: Option<AaTrxInput>,
 }
 
 /// TxType represents Ethereum transaction types (EIP-2718 envelope types).
@@ -209,6 +216,7 @@ pub enum TxType {
     DynamicFee = 2,        // EIP-1559 dynamic fee transaction
     Blob = 3,              // EIP-4844 blob transaction
     SetCode = 4,           // EIP-7702 set code transaction
+    Aa = 121,              // Account abstraction transaction (EIP-8130 / EIP-8430 draft)
     OptimismDeposit = 126, // Optimism-specific transaction
 }
 
@@ -226,6 +234,7 @@ impl Display for TxType {
             TxType::DynamicFee => "TrxDynamicFee",
             TxType::Blob => "TrxBlob",
             TxType::SetCode => "TrxSetCode",
+            TxType::Aa => "TrxAa",
             TxType::OptimismDeposit => "TrxOptimismDeposit",
         };
         write!(f, "{}", type_str)
@@ -415,6 +424,7 @@ impl TxEvent {
             blob_gas_fee_cap: None,
             blob_hashes: Vec::new(),
             set_code_authorizations: Vec::new(),
+            aa_trx_input: None,
         }
     }
 

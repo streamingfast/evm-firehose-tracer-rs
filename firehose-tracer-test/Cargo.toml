@@ -149,6 +149,10 @@ name = "tracer_setcode_test"
 path = "tests/tracer_setcode_test.rs"
 
 [[test]]
+name = "tracer_aa_test"
+path = "tests/tracer_aa_test.rs"
+
+[[test]]
 name = "tracer_delegation_test"
 path = "tests/tracer_delegation_test.rs"
 

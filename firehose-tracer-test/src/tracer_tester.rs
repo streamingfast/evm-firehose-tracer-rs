@@ -99,6 +99,7 @@ pub fn test_legacy_trx() -> TxEvent {
         blob_gas_fee_cap: None,
         blob_hashes: vec![],
         set_code_authorizations: vec![],
+        aa_trx_input: None,
     }
 }
 
@@ -133,6 +134,55 @@ pub fn test_access_list_trx() -> TxEvent {
         blob_gas_fee_cap: None,
         blob_hashes: vec![],
         set_code_authorizations: vec![],
+        aa_trx_input: None,
+    }
+}
+
+/// Provides an account abstraction (type 0x79) test transaction from alice, paid by alice, whose
+/// phases call the given accounts in order with no value and no data.
+pub fn test_aa_trx(phases: Vec<Vec<Address>>) -> TxEvent {
+    use pbeth::aa_trx_input::{Phase, PhaseCall};
+
+    TxEvent {
+        tx_type: firehose_tracer::types::TxType::Aa,
+        hash: B256::from([
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0x79,
+        ]),
+        from: alice_addr(),
+        to: None,
+        input: Bytes::new(),
+        value: U256::ZERO,
+        gas: 100_000,
+        gas_price: big_int(10),
+        nonce: 0,
+        index: 0,
+        v: None,
+        r: B256::ZERO,
+        s: B256::ZERO,
+        max_fee_per_gas: Some(big_int(20)),
+        max_priority_fee_per_gas: Some(big_int(2)),
+        access_list: vec![],
+        blob_gas_fee_cap: None,
+        blob_hashes: vec![],
+        set_code_authorizations: vec![],
+        aa_trx_input: Some(pbeth::AaTrxInput {
+            nonce_key: None,
+            payer: alice_addr().to_vec(),
+            phases: phases
+                .into_iter()
+                .map(|calls| Phase {
+                    calls: calls
+                        .into_iter()
+                        .map(|to| PhaseCall {
+                            to: to.to_vec(),
+                            ..Default::default()
+                        })
+                        .collect(),
+                })
+                .collect(),
+            ..Default::default()
+        }),
     }
 }
 
@@ -167,6 +217,7 @@ pub fn test_dynamic_fee_trx() -> TxEvent {
         blob_gas_fee_cap: None,
         blob_hashes: vec![],
         set_code_authorizations: vec![],
+        aa_trx_input: None,
     }
 }
 
@@ -198,6 +249,7 @@ pub fn test_blob_trx() -> TxEvent {
             0, 0, 0,
         ])],
         set_code_authorizations: vec![],
+        aa_trx_input: None,
     }
 }
 
@@ -257,6 +309,7 @@ pub fn test_set_code_trx() -> TxEvent {
             r,
             s,
         }],
+        aa_trx_input: None,
     }
 }
 
@@ -286,6 +339,7 @@ pub fn test_set_code_trx_with_auth(
         blob_gas_fee_cap: None,
         blob_hashes: vec![],
         set_code_authorizations: authorizations,
+        aa_trx_input: None,
     }
 }
 
@@ -751,6 +805,14 @@ impl TracerTester {
         self.tracer
             .on_call_enter(self.depth, typ as u8, from, to, &input, gas, value);
         self.depth += 1;
+        self
+    }
+
+    /// Records the committed phase count of the current account abstraction transaction, as
+    /// the integration does before `on_tx_end`.
+    pub fn aa_committed_phases(&mut self, committed_phases: u64) -> &mut Self {
+        self.tracer
+            .set_aa_trx_output(pbeth::AaTrxOutput { committed_phases });
         self
     }
 

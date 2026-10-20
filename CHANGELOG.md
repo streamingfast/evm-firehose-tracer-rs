@@ -3,6 +3,21 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v5.7.0
+
+### Added
+
+* Account abstraction transactions (type `0x79`, EIP-8130 / EIP-8430 draft), traced as `TRX_TYPE_AA`:
+  * `TxType::Aa` and `TxEvent.aa_trx_input`, copied to `TransactionTrace.aa_trx_input`.
+  * `Tracer::set_aa_trx_output`, which records the transaction's `committed_phases` on its receipt. The integration must call it before `on_tx_end`.
+  * When the transaction completes, each signed call's `PhaseCall.call_index` is set to the child of the root call that executed it, and the calls of the phase that failed, with everything below them, are marked `state_reverted`, including the ones that succeeded before the phase was rolled back. The root call is never failed, and the transaction status follows the receipt.
+  * The test invariants accept a failed account abstraction transaction whose root call did not fail.
+* Regenerated `sf.ethereum.type.v2` bindings from streamingfast/firehose-ethereum#262, which also renames `morph_receipt_config` to `morph_trx_output` (and `MorphTxConfig` / `MorphL1MessageConfig` to `MorphTrxInput` / `MorphL1MessageTrxInput`).
+
+### Changed
+
+* The transaction type mapping is exhaustive: a `TxType` without a block model value no longer compiles, instead of being recorded as `TRX_TYPE_LEGACY`.
+
 ## v5.6.0
 
 ### Added

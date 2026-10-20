@@ -505,6 +505,11 @@ pub struct TransactionTrace {
     /// balance changes you process those where `reason` is either `REASON_GAS_BUY`, `REASON_GAS_REFUND` or
     /// `REASON_REWARD_TRANSACTION_FEE` and for nonce change, still on the root call, you pick the nonce change which the
     /// smallest ordinal (if more than one).
+    ///
+    /// An account abstraction transaction (`TRX_TYPE_AA`) is the exception: it is `FAILED` when one of its phases
+    /// reverted, but the phases that committed before it keep their state and logs, and its root call is never
+    /// reverted. Whatever its status, you iterate over the `calls` array and record the state changes for each call for
+    /// which `state_reverted == false`. See \[AaTrxInput\] for how its calls are laid out.
     #[prost(enumeration = "TransactionTraceStatus", tag = "30")]
     pub status: i32,
     #[prost(message, optional, tag = "31")]
@@ -549,19 +554,25 @@ pub struct TransactionTrace {
     ///
     /// This will is populated only if `TransactionTrace.Type == TRX_TYPE_SET_CODE` which is possible only
     /// if Prague fork is active on the chain, or on Morph if `TransactionTrace.Type == TRX_TYPE_MORPH`
-    /// and \[MorphTxConfig.version\] is 2.
+    /// and \[MorphTrxInput.version\] is 2.
     #[prost(message, repeated, tag = "36")]
     pub set_code_authorizations: ::prost::alloc::vec::Vec<SetCodeAuthorization>,
-    /// MorphTxConfig holds the Morph specific fields carried by a MorphTx transaction.
+    /// MorphTrxInput holds the Morph specific fields carried by a MorphTx transaction.
     ///
     /// This will is populated only if `TransactionTrace.Type == TRX_TYPE_MORPH`.
     #[prost(message, optional, tag = "37")]
-    pub morph_tx_config: ::core::option::Option<MorphTxConfig>,
-    /// MorphL1MessageConfig holds the Morph specific fields carried by an L1 message transaction.
+    pub morph_trx_input: ::core::option::Option<MorphTrxInput>,
+    /// MorphL1MessageTrxInput holds the Morph specific fields carried by an L1 message transaction.
     ///
     /// This will is populated only if `TransactionTrace.Type == TRX_TYPE_MORPH_L1_MESSAGE`.
     #[prost(message, optional, tag = "38")]
-    pub morph_l1_message_config: ::core::option::Option<MorphL1MessageConfig>,
+    pub morph_l1_message_trx_input: ::core::option::Option<MorphL1MessageTrxInput>,
+    /// AaTrxInput holds the fields carried by an account abstraction transaction that have no
+    /// equivalent among the common transaction fields.
+    ///
+    /// This is populated only if `TransactionTrace.Type == TRX_TYPE_AA`.
+    #[prost(message, optional, tag = "39")]
+    pub aa_trx_input: ::core::option::Option<AaTrxInput>,
 }
 /// Nested message and enum types in `TransactionTrace`.
 pub mod transaction_trace {
@@ -600,6 +611,13 @@ pub mod transaction_trace {
         TrxTypeArbitrumSubmitRetryable = 105,
         TrxTypeArbitrumInternal = 106,
         TrxTypeArbitrumLegacy = 120,
+        /// Account abstraction transaction (type byte 0x79 on chain), carrying batched calls grouped
+        /// in phases, gas sponsorship by a payer, two-dimensional nonces and in-band EIP-7702 style
+        /// delegation. Those extra fields are recorded in \[TransactionTrace.aa_trx_input\].
+        ///
+        /// Specified by the AA Transaction Type proposal (split out of EIP-8130), drafted as EIP-8430
+        /// in <https://github.com/ethereum/EIPs/pull/12385.> Activated on Base by the Everest upgrade.
+        TrxTypeAa = 121,
         /// OPTIMISM-specific transactions
         TrxTypeOptimismDeposit = 126,
         /// Polygon(bor)-specific
@@ -607,14 +625,14 @@ pub mod transaction_trace {
         // Morph-specific transactions
         /// MorphTx (type byte 0x7f on chain), a transaction that can pay for its gas with a registered
         /// ERC-20 token instead of the native token and that can carry an indexable reference and a memo.
-        /// Those extra fields are recorded in \[TransactionTrace.morph_tx_config\].
+        /// Those extra fields are recorded in \[TransactionTrace.morph_trx_input\].
         ///
         /// Specified by <https://docs.morph.network/docs/about-morph/morphtx>
         TrxTypeMorph = 300,
         /// Morph's L1 message transaction (type byte 0x7e on chain), a transaction queued on the L1
         /// chain and later included by the sequencer in an L2 block. It carries no signature, its
         /// 'from' is the L1 sender and its queue index is recorded in
-        /// \[TransactionTrace.morph_l1_message_config\].
+        /// \[TransactionTrace.morph_l1_message_trx_input\].
         ///
         /// It shares its type byte with Optimism's deposit transaction (TRX_TYPE_OPTIMISM_DEPOSIT) but
         /// has different semantics, hence the distinct value here.
@@ -639,6 +657,7 @@ pub mod transaction_trace {
                 Type::TrxTypeArbitrumSubmitRetryable => "TRX_TYPE_ARBITRUM_SUBMIT_RETRYABLE",
                 Type::TrxTypeArbitrumInternal => "TRX_TYPE_ARBITRUM_INTERNAL",
                 Type::TrxTypeArbitrumLegacy => "TRX_TYPE_ARBITRUM_LEGACY",
+                Type::TrxTypeAa => "TRX_TYPE_AA",
                 Type::TrxTypeOptimismDeposit => "TRX_TYPE_OPTIMISM_DEPOSIT",
                 Type::TrxTypePolygonStateSync => "TRX_TYPE_POLYGON_STATE_SYNC",
                 Type::TrxTypeMorph => "TRX_TYPE_MORPH",
@@ -660,6 +679,7 @@ pub mod transaction_trace {
                 "TRX_TYPE_ARBITRUM_SUBMIT_RETRYABLE" => Some(Self::TrxTypeArbitrumSubmitRetryable),
                 "TRX_TYPE_ARBITRUM_INTERNAL" => Some(Self::TrxTypeArbitrumInternal),
                 "TRX_TYPE_ARBITRUM_LEGACY" => Some(Self::TrxTypeArbitrumLegacy),
+                "TRX_TYPE_AA" => Some(Self::TrxTypeAa),
                 "TRX_TYPE_OPTIMISM_DEPOSIT" => Some(Self::TrxTypeOptimismDeposit),
                 "TRX_TYPE_POLYGON_STATE_SYNC" => Some(Self::TrxTypePolygonStateSync),
                 "TRX_TYPE_MORPH" => Some(Self::TrxTypeMorph),
@@ -669,13 +689,134 @@ pub mod transaction_trace {
         }
     }
 }
-/// MorphTxConfig represents the extra fields of a Morph MorphTx transaction, a transaction type
+/// AaTrxInput represents the extra fields of an account abstraction transaction
+/// (`TRX_TYPE_AA`).
+///
+/// The common transaction fields hold the values that keep their meaning: `from` is the resolved
+/// sender, `nonce` is the sequence number within \[AaTrxInput.nonce_key\], `v`, `r` and `s` hold the
+/// sender's signature when the sender signs with its secp256k1 key (the only authentication
+/// without Keystore accounts, EIP-8130), `gas_price` is the effective gas price and `gas_used`
+/// includes the payer's authentication gas. `to`, `value` and `input` are empty: the calls are carried in the
+/// call phases.
+///
+/// Calls are laid out as follows:
+///
+/// - The root call (`calls\[0\]`) is a call from the sender to itself whose input is the encoded
+///    transaction. It runs no code and carries the state changes made outside the calls: the payer's
+///    gas purchase and refund, the fee payouts, the nonce increment and the account changes. It is
+///    never reverted.
+/// - Each signed call that executed is a child of the root call (`parent_index` is the root call's
+///    index), in execution order. Calls made by those calls are nested below them as usual.
+///
+/// Phases run in order, and the calls of a phase take effect all together or not at all. When a
+/// call reverts, its whole phase is reverted, including the calls of the phase that succeeded
+/// before it, and the following phases are skipped. Phases that committed before it keep their
+/// state. \[AaTrxOutput.committed_phases\] counts the phases that committed, and
+/// \[AaTrxInput.phases\] links each signed call to the child of the root call that executed it.
+///
+/// Specified by the AA Transaction Type proposal (split out of EIP-8130), drafted as EIP-8430
+/// in <https://github.com/ethereum/EIPs/pull/12385.>
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AaTrxInput {
+    /// NonceKey selects the nonce channel of the transaction: 0 for the account nonce shared with the
+    /// other transaction types, 2^256-1 for the nonce-free mode, and any other value for a parallel
+    /// channel held by the nonce manager. The sequence number within the channel is in
+    /// \[TransactionTrace.nonce\].
+    ///
+    /// The on chain type is a 'uint256'.
+    #[prost(message, optional, tag = "1")]
+    pub nonce_key: ::core::option::Option<BigInt>,
+    /// Payer is the resolved address paying the gas fees: the sender when self-paying, the payer
+    /// named by the transaction, or the payer recovered from its signature when the transaction
+    /// leaves the payer open.
+    #[prost(bytes = "vec", tag = "2")]
+    pub payer: ::prost::alloc::vec::Vec<u8>,
+    /// ValidAfter is the time, as signed, before which the transaction is not valid. Values below
+    /// 10^11 are seconds and the others are milliseconds. 0 means no lower bound.
+    #[prost(uint64, tag = "3")]
+    pub valid_after: u64,
+    /// ValidBefore is the time, as signed, after which the transaction is not valid. Values below
+    /// 10^11 are seconds and the others are milliseconds. 0 means no expiry.
+    #[prost(uint64, tag = "4")]
+    pub valid_before: u64,
+    /// Metadata is arbitrary attribution or annotation data covered by the signatures. It does not
+    /// affect execution.
+    #[prost(bytes = "vec", tag = "5")]
+    pub metadata: ::prost::alloc::vec::Vec<u8>,
+    /// AccountChanges are the changes applied to the sender's account before the calls run, in
+    /// order. Their state changes are recorded on the root call.
+    #[prost(message, repeated, tag = "6")]
+    pub account_changes: ::prost::alloc::vec::Vec<aa_trx_input::AccountChange>,
+    /// Phases are the calls of the transaction as signed, grouped in phases, in order. Every signed
+    /// call is listed, including the ones that never executed.
+    #[prost(message, repeated, tag = "7")]
+    pub phases: ::prost::alloc::vec::Vec<aa_trx_input::Phase>,
+}
+/// Nested message and enum types in `AaTrxInput`.
+pub mod aa_trx_input {
+    /// Phase represents one entry of \[AaTrxInput.phases\].
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct Phase {
+        /// Calls are the calls of this phase as signed, in order.
+        #[prost(message, repeated, tag = "1")]
+        pub calls: ::prost::alloc::vec::Vec<PhaseCall>,
+    }
+    /// PhaseCall represents one signed call of a phase.
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct PhaseCall {
+        /// To is the account called.
+        #[prost(bytes = "vec", tag = "1")]
+        pub to: ::prost::alloc::vec::Vec<u8>,
+        /// Value is the amount of native token sent by the sender to `to` with the call.
+        #[prost(message, optional, tag = "2")]
+        pub value: ::core::option::Option<super::BigInt>,
+        /// Data is the input of the call.
+        #[prost(bytes = "vec", tag = "3")]
+        pub data: ::prost::alloc::vec::Vec<u8>,
+        /// CallIndex is the \[Call.index\] of the child of the root call that executed this signed call.
+        /// It is 0 when the call never executed: the calls after the one that reverted in the same
+        /// phase, the calls of the phases skipped after it, and a call the protocol refused to
+        /// dispatch.
+        #[prost(uint32, tag = "4")]
+        pub call_index: u32,
+    }
+    /// AccountChange represents one entry of \[AaTrxInput.account_changes\].
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct AccountChange {
+        #[prost(oneof = "account_change::Change", tags = "1")]
+        pub change: ::core::option::Option<account_change::Change>,
+    }
+    /// Nested message and enum types in `AccountChange`.
+    pub mod account_change {
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Oneof)]
+        pub enum Change {
+            /// Delegation sets or clears the EIP-7702 style delegation of the sender (entry type 0x01).
+            #[prost(message, tag = "1")]
+            Delegation(super::Delegation),
+        }
+    }
+    /// Delegation represents an account change delegating the sender's code to another account.
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct Delegation {
+        /// Target is the account the sender delegates to. The sender's code becomes
+        /// `0xef0100 || target`. Empty when the transaction clears the delegation.
+        #[prost(bytes = "vec", tag = "1")]
+        pub target: ::prost::alloc::vec::Vec<u8>,
+    }
+}
+/// MorphTrxInput represents the extra fields of a Morph MorphTx transaction, a transaction type
 /// that enables paying the gas fees with a registered ERC-20 token instead of the native token.
 ///
 /// Specified by <https://docs.morph.network/docs/about-morph/morphtx>
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MorphTxConfig {
+pub struct MorphTrxInput {
     /// Version of the MorphTx payload, 0 for the initial encoding, 1 for the encoding that added
     /// the 'reference' and 'memo' fields as well as support for paying the fees with the native token,
     /// and 2 for the encoding that adds an EIP-7702 authorization list, recorded in
@@ -708,11 +849,11 @@ pub struct MorphTxConfig {
     #[prost(bytes = "vec", tag = "5")]
     pub memo: ::prost::alloc::vec::Vec<u8>,
 }
-/// MorphL1MessageConfig represents the extra fields of a Morph L1 message transaction, a transaction
+/// MorphL1MessageTrxInput represents the extra fields of a Morph L1 message transaction, a transaction
 /// queued on the L1 chain and later included by the sequencer in an L2 block.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
-pub struct MorphL1MessageConfig {
+pub struct MorphL1MessageTrxInput {
     /// QueueIndex is the position of this message in Morph's L1 message queue. The chain requires
     /// L1 messages to be included in strictly increasing queue index order, refer to
     /// \[BlockHeader.morph_next_l1_msg_index\] to know at which index the next block resumes.
@@ -830,17 +971,33 @@ pub struct TransactionReceipt {
     /// if Cancun fork is active on the chain.
     #[prost(message, optional, tag = "6")]
     pub blob_gas_price: ::core::option::Option<BigInt>,
-    /// MorphReceiptConfig holds the Morph specific values that were resolved while executing the
+    /// MorphTrxOutput holds the Morph specific values that were resolved while executing the
     /// transaction, mainly the L1 data fee and the oracle values used to charge the fee token.
     ///
     /// Morph specific, unset on all other chains.
     #[prost(message, optional, tag = "7")]
-    pub morph_receipt_config: ::core::option::Option<MorphReceiptConfig>,
+    pub morph_trx_output: ::core::option::Option<MorphTrxOutput>,
+    /// AaTrxOutput holds the values recorded on the receipt of an account abstraction transaction.
+    ///
+    /// This is populated only if `TransactionTrace.Type == TRX_TYPE_AA`.
+    #[prost(message, optional, tag = "8")]
+    pub aa_trx_output: ::core::option::Option<AaTrxOutput>,
 }
-/// MorphReceiptConfig represents the Morph specific fields recorded on the receipt of a transaction.
+/// AaTrxOutput represents the extra fields recorded on the receipt of an account abstraction
+/// transaction (`TRX_TYPE_AA`).
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct AaTrxOutput {
+    /// CommittedPhases is the number of phases that committed. When it is lower than the number of
+    /// phases in \[AaTrxInput.phases\], phase `committed_phases` (zero-based) reverted and the phases
+    /// after it were skipped.
+    #[prost(uint64, tag = "1")]
+    pub committed_phases: u64,
+}
+/// MorphTrxOutput represents the Morph specific fields recorded on the receipt of a transaction.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MorphReceiptConfig {
+pub struct MorphTrxOutput {
     /// L1Fee is the fee, in the native token, paid to cover the cost of posting this transaction's
     /// data to the L1 chain. It is populated for every Morph transaction except L1 messages, which
     /// are prepaid on L1. For a MorphTx paying with a fee token, it is included in the token debit.
@@ -850,7 +1007,7 @@ pub struct MorphReceiptConfig {
     /// units of the transaction's fee token.
     ///
     /// This will is populated only if `TransactionTrace.Type == TRX_TYPE_MORPH` and
-    /// \[MorphTxConfig.fee_token_id\] is not 0.
+    /// \[MorphTrxInput.fee_token_id\] is not 0.
     #[prost(message, optional, tag = "2")]
     pub fee_rate: ::core::option::Option<BigInt>,
     /// TokenScale is the scaling factor of the transaction's fee token. Together with 'fee_rate', a
@@ -861,7 +1018,7 @@ pub struct MorphReceiptConfig {
     /// conversion of the gas used.
     ///
     /// This will is populated only if `TransactionTrace.Type == TRX_TYPE_MORPH` and
-    /// \[MorphTxConfig.fee_token_id\] is not 0.
+    /// \[MorphTrxInput.fee_token_id\] is not 0.
     #[prost(message, optional, tag = "3")]
     pub token_scale: ::core::option::Option<BigInt>,
 }

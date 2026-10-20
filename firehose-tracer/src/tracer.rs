@@ -21,7 +21,7 @@ use super::{
 use crate::config::EmissionMode;
 pub use crate::emission::ShutdownHandle;
 use crate::emission::{background_writer_loop, read_cursor_file, update_cursor_file, RawBlock};
-use crate::pb::sf::ethereum::r#type::v2::{Block, Call, TransactionTrace, Withdrawal};
+use crate::pb::sf::ethereum::r#type::v2::{AaTrxOutput, Block, Call, TransactionTrace, Withdrawal};
 use crate::types::{BlockEvent, FlashBlockData, ReceiptData, StateReader, TxEvent};
 use crate::{
     config::ChainConfig, config::Rules, firehose_debug, firehose_info, firehose_trace,
@@ -110,6 +110,9 @@ pub struct Tracer {
     // Whether the current transaction or system call already logged its first truncation.
     transaction_call_input_truncation_logged: bool,
     transaction_return_data_truncation_logged: bool,
+    // Receipt values of the current account abstraction transaction, set by the caller before
+    // `on_tx_end` and written to the receipt when the transaction completes.
+    transaction_aa_trx_output: Option<AaTrxOutput>,
     in_system_call: bool,
 
     // Flash block state
@@ -228,6 +231,7 @@ impl Tracer {
             transaction_return_data_bytes: 0,
             transaction_call_input_truncation_logged: false,
             transaction_return_data_truncation_logged: false,
+            transaction_aa_trx_output: None,
 
             // Flash block state
             flash_block_index: None,
@@ -282,6 +286,7 @@ impl Tracer {
         self.transaction_return_data_bytes = 0;
         self.transaction_call_input_truncation_logged = false;
         self.transaction_return_data_truncation_logged = false;
+        self.transaction_aa_trx_output = None;
 
         self.call_stack.reset();
         self.open_calls.reset();
@@ -367,6 +372,7 @@ impl Tracer {
             blob_gas_fee_cap: None,
             blob_hashes: Vec::new(),
             set_code_authorizations: Vec::new(),
+            aa_trx_input: None,
         };
 
         self.on_tx_start(tx_event, None);
@@ -710,14 +716,14 @@ impl Tracer {
 
         // Convert transaction type to protobuf enum
         use crate::pb::sf::ethereum::r#type::v2::transaction_trace::Type;
-        let tx_type = match TxType::try_from(event.tx_type) {
-            Ok(TxType::Legacy) => Type::TrxTypeLegacy as i32,
-            Ok(TxType::AccessList) => Type::TrxTypeAccessList as i32,
-            Ok(TxType::DynamicFee) => Type::TrxTypeDynamicFee as i32,
-            Ok(TxType::Blob) => Type::TrxTypeBlob as i32,
-            Ok(TxType::SetCode) => Type::TrxTypeSetCode as i32,
-            Ok(TxType::OptimismDeposit) => Type::TrxTypeOptimismDeposit as i32,
-            _ => Type::TrxTypeLegacy as i32, // Default to legacy for unknown types
+        let tx_type = match event.tx_type {
+            TxType::Legacy => Type::TrxTypeLegacy as i32,
+            TxType::AccessList => Type::TrxTypeAccessList as i32,
+            TxType::DynamicFee => Type::TrxTypeDynamicFee as i32,
+            TxType::Blob => Type::TrxTypeBlob as i32,
+            TxType::SetCode => Type::TrxTypeSetCode as i32,
+            TxType::Aa => Type::TrxTypeAa as i32,
+            TxType::OptimismDeposit => Type::TrxTypeOptimismDeposit as i32,
         };
 
         // Convert access list to protobuf format
@@ -824,6 +830,7 @@ impl Tracer {
             blob_gas_fee_cap: event.blob_gas_fee_cap.and_then(utils::u256_to_protobuf),
             blob_hashes,
             set_code_authorizations,
+            aa_trx_input: event.aa_trx_input,
             index: event.index,
             ..Default::default()
         };
@@ -875,6 +882,12 @@ impl Tracer {
         // Step 1: Sort calls by index (MUST happen first)
         trx.calls.sort_by(|a, b| a.index.cmp(&b.index));
 
+        // An account abstraction transaction can fail in one phase and keep the state of the
+        // phases that committed before it, so its root call is never failed (see
+        // `link_aa_phase_calls`).
+        let is_aa = trx.r#type
+            == crate::pb::sf::ethereum::r#type::v2::transaction_trace::Type::TrxTypeAa as i32;
+
         // Step 2: Get root call for later operations
         let root_call_reverted = trx
             .calls
@@ -923,7 +936,11 @@ impl Tracer {
                 .transaction_index
                 .saturating_add(self.flashblock_tx_index_offset);
             trx.gas_used = receipt.gas_used;
-            trx.receipt = Some(self.new_receipt_from_data(receipt, trx.r#type));
+            let mut trx_receipt = self.new_receipt_from_data(receipt, trx.r#type);
+            if is_aa {
+                trx_receipt.aa_trx_output = self.transaction_aa_trx_output.clone();
+            }
+            trx.receipt = Some(trx_receipt);
 
             // Set transaction status based on receipt
             if receipt.status == 1 {
@@ -940,7 +957,7 @@ impl Tracer {
         // failed (e.g., out-of-gas). In Geth, `OnExit` receives the EVM-level error
         // directly, but revm determines failure at the executor level. When the receipt
         // says failure but the root call wasn't marked as failed, reconcile here.
-        if self.config.chain_client == config::ChainClient::Reth {
+        if self.config.chain_client == config::ChainClient::Reth && !is_aa {
             if let Some(receipt) = receipt {
                 if receipt.status != 1 {
                     if let Some(root_call) = trx.calls.first_mut() {
@@ -954,7 +971,7 @@ impl Tracer {
         }
 
         // Step 5: Check if root call reverted (overrides receipt status)
-        if root_call_reverted && !self.block_rules.is_optimism {
+        if root_call_reverted && !self.block_rules.is_optimism && !is_aa {
             trx.status =
                 crate::pb::sf::ethereum::r#type::v2::TransactionTraceStatus::Reverted as i32;
         }
@@ -965,7 +982,17 @@ impl Tracer {
         }
 
         // Step 7: Populate StateReverted for all calls
+        if is_aa {
+            if let Some(root_call) = trx.calls.first_mut() {
+                root_call.status_failed = false;
+                root_call.status_reverted = false;
+                root_call.failure_reason.clear();
+            }
+        }
         Self::populate_state_reverted(&mut trx);
+        if is_aa {
+            self.link_aa_phase_calls(&mut trx);
+        }
 
         // Step 8: Remove BlockIndex from logs in reverted calls
         Self::remove_log_block_index_on_state_reverted_calls(&mut trx);
@@ -1064,6 +1091,86 @@ impl Tracer {
 
             let status_failed = trx.calls[i].status_failed;
             trx.calls[i].state_reverted = parent_reverted || status_failed;
+        }
+    }
+
+    /// Links each signed call of an account abstraction transaction to the call that executed it
+    /// (`PhaseCall.call_index`) and reverts the calls of the phase that failed.
+    ///
+    /// The executed calls are the children of the root call, in index order. Every call of a
+    /// committed phase executed. The phase that failed, phase `committed_phases`, executed its
+    /// leading calls up to the one that reverted, or none when the protocol refused to dispatch
+    /// it, and no later phase executed. That phase is rolled back after its calls returned, so
+    /// those calls and everything below them are marked `state_reverted` here, even the ones
+    /// that succeeded.
+    ///
+    /// Must run after `populate_state_reverted`, which recomputes the flag from call statuses.
+    fn link_aa_phase_calls(&self, trx: &mut TransactionTrace) {
+        let Some(committed_phases) = self
+            .transaction_aa_trx_output
+            .as_ref()
+            .map(|output| output.committed_phases)
+        else {
+            self.panic_invalid_state(
+                "account abstraction transaction completed without its receipt output, \
+                 set_aa_trx_output must be called before on_tx_end",
+            );
+        };
+        let root_index = trx.calls[0].index;
+        let mut executed = trx
+            .calls
+            .iter()
+            .filter(|call| call.parent_index == root_index)
+            .map(|call| call.index)
+            .collect::<Vec<_>>()
+            .into_iter();
+
+        let Some(input) = trx.aa_trx_input.as_mut() else {
+            self.panic_invalid_state("account abstraction transaction has no aa_trx_input");
+        };
+        if committed_phases > input.phases.len() as u64 {
+            self.panic_invalid_state(format!(
+                "account abstraction transaction committed {} phases out of {}",
+                committed_phases,
+                input.phases.len()
+            ));
+        }
+
+        let mut reverted = std::collections::HashSet::new();
+        for (phase_index, phase) in input.phases.iter_mut().enumerate() {
+            let phase_index = phase_index as u64;
+            if phase_index > committed_phases {
+                break;
+            }
+            for call in &mut phase.calls {
+                match executed.next() {
+                    Some(index) => {
+                        call.call_index = index;
+                        if phase_index == committed_phases {
+                            reverted.insert(index);
+                        }
+                    }
+                    None if phase_index == committed_phases => break,
+                    None => self.panic_invalid_state(format!(
+                        "committed phase {} of account abstraction transaction has a call \
+                         that did not execute",
+                        phase_index
+                    )),
+                }
+            }
+        }
+        if executed.next().is_some() {
+            self.panic_invalid_state(
+                "account abstraction transaction executed more calls than its phases list",
+            );
+        }
+
+        // Calls are sorted by index, so a parent is seen before its children.
+        for call in &mut trx.calls {
+            if reverted.contains(&call.index) || reverted.contains(&call.parent_index) {
+                call.state_reverted = true;
+                reverted.insert(call.index);
+            }
         }
     }
 
@@ -1168,7 +1275,8 @@ impl Tracer {
             logs: Vec::new(),
             blob_gas_used: None,
             blob_gas_price: None,
-            morph_receipt_config: None,
+            morph_trx_output: None,
+            aa_trx_output: None,
         };
 
         // Add EIP-4844 blob fields for blob transactions (type 3)
@@ -2277,6 +2385,15 @@ impl Tracer {
     /// (before `on_block_start` or after `on_block_end`).
     pub fn block_mut(&mut self) -> Option<&mut Block> {
         self.block.as_mut()
+    }
+
+    /// Records the receipt values of the current account abstraction transaction
+    /// (`TxType::Aa`), which only the caller's execution knows. Must be called before
+    /// `on_tx_end`: completing the transaction reads `committed_phases` to link each signed call
+    /// to the call that executed it and to revert the calls of the phase that failed.
+    pub fn set_aa_trx_output(&mut self, output: AaTrxOutput) {
+        self.ensure_in_block_and_in_trx();
+        self.transaction_aa_trx_output = Some(output);
     }
 
     #[deprecated(note = "use `block_mut` instead")]
