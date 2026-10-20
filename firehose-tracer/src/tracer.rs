@@ -93,6 +93,7 @@ pub struct Tracer {
     block_finality: FinalityStatus,
     block_rules: Rules, // Fork rules for current block (computed once per block)
     block_is_genesis: bool,
+    block_time_ns: Option<u64>, // FIRE BLOCK line time from Config::fire_block_time_ns
 
     // Transaction state
     transaction: Option<TransactionTrace>,
@@ -214,6 +215,7 @@ impl Tracer {
             block_finality: FinalityStatus::default(),
             block_rules: Rules::default(),
             block_is_genesis: false,
+            block_time_ns: None,
 
             // Transaction state
             transaction: None,
@@ -251,6 +253,7 @@ impl Tracer {
         self.block_finality.reset();
         self.block_rules = Rules::default();
         self.block_is_genesis = false;
+        self.block_time_ns = None;
         // Set to None to signal "not currently in a flash block" for the next block.
         // snapshotForNextFlashBlock is intentionally NOT reset: it persists until
         // the next flash block iteration picks it up or a new block number discards it
@@ -471,6 +474,8 @@ impl Tracer {
             self.snapshot_for_next_flash_block.is_some()
         );
 
+        self.block_time_ns = self.config.fire_block_time_ns.map(|f| f(block_data));
+
         // Create protobuf block
         self.block = Some(Block {
             hash: block_data.hash.0.to_vec(),
@@ -560,6 +565,7 @@ impl Tracer {
                         block,
                         lib_num,
                         printed_flash_block_index,
+                        block_time_ns: self.block_time_ns,
                     };
                     self.async_sender
                         .as_ref()
@@ -573,6 +579,7 @@ impl Tracer {
                         block,
                         lib_num,
                         printed_flash_block_index,
+                        self.block_time_ns,
                     );
                     drop(writer);
                     // Update cursor file on the blocking path.

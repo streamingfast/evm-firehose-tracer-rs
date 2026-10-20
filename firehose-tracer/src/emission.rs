@@ -18,6 +18,7 @@ pub(crate) struct RawBlock {
     pub block: Block,
     pub lib_num: u64,
     pub printed_flash_block_index: u64,
+    pub block_time_ns: Option<u64>,
     pub block_num: u64,
 }
 
@@ -95,6 +96,7 @@ pub(crate) fn background_writer_loop(
                     raw.block,
                     raw.lib_num,
                     raw.printed_flash_block_index,
+                    raw.block_time_ns,
                 );
                 if let Some(path) = &cursor_path {
                     update_cursor_file(path, raw.block_num);

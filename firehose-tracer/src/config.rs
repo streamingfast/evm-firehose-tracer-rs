@@ -5,6 +5,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::types::BlockData;
+
 /// ChainConfig defines the chain configuration for the tracer
 /// Simplified version - assumes all historical forks are active
 /// Only tracks future timestamp-based forks that may affect tracing behavior
@@ -307,6 +309,13 @@ pub struct Config {
     /// unclean shutdowns.  Format: a single decimal integer followed by `\n`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor_path: Option<PathBuf>,
+
+    /// Computes the `<timestamp_unix_nano>` field of each FIRE BLOCK line, for chains whose
+    /// header carries a finer block time than `BlockData::time` (whole seconds), like BSC's
+    /// millisecond remainder in `mix_digest`. `None` uses `BlockData::time`. The protobuf
+    /// block header's `timestamp` always stays `BlockData::time`.
+    #[serde(skip)]
+    pub fire_block_time_ns: Option<fn(&BlockData) -> u64>,
 }
 
 impl Config {
@@ -348,6 +357,12 @@ impl Config {
     /// Builder method to set the cursor file path
     pub fn with_cursor_path(mut self, path: PathBuf) -> Self {
         self.cursor_path = Some(path);
+        self
+    }
+
+    /// Builder method to set the FIRE BLOCK line time function
+    pub fn with_fire_block_time_ns(mut self, f: fn(&BlockData) -> u64) -> Self {
+        self.fire_block_time_ns = Some(f);
         self
     }
 
@@ -394,6 +409,7 @@ impl Default for Config {
             ignore_genesis_block: false,
             emission_mode: EmissionMode::default(),
             cursor_path: None,
+            fire_block_time_ns: None,
         }
     }
 }
@@ -505,6 +521,7 @@ mod tests {
             ignore_genesis_block: false,
             emission_mode: EmissionMode::default(),
             cursor_path: None,
+            fire_block_time_ns: None,
         };
 
         let json = serde_json::to_string_pretty(&config).unwrap();

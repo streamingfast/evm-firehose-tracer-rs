@@ -30,11 +30,14 @@ pub fn print_to_firehose<W: Write>(
 ///
 /// flash_block_idx is 0 for non-flash blocks; for flash blocks it is the current
 /// flash block index plus 1000 when this is the final iteration for the block.
+///
+/// timestamp_unix_nano is `block_time_ns` when set, otherwise the block header's timestamp.
 pub fn print_block_to_firehose<W: Write>(
     writer: &mut W,
     mut block: Block,
     lib_num: u64,
     printed_flash_block_index: u64,
+    block_time_ns: Option<u64>,
 ) {
     let block_number = block.number;
     let block_hash = hex::encode(&block.hash);
@@ -63,6 +66,7 @@ pub fn print_block_to_firehose<W: Write>(
             };
             (previous_number, "0".to_string(), 0)
         };
+    let timestamp_ns = block_time_ns.unwrap_or(timestamp_ns);
 
     // Marshal the protobuf block to bytes. `fit_block` already computed the encoded length, which
     // is what `encode_to_vec` would compute again before encoding.
@@ -137,7 +141,7 @@ pub fn compute_printed_flash_block_index(flash_block_index: Option<&u64>, is_fin
 pub fn firehose_block_to_stdout(block: Block, finality_status: FinalityStatus) {
     let mut stdout = std::io::stdout();
     let lib_num = compute_lib_num(block.number, &finality_status);
-    print_block_to_firehose(&mut stdout, block, lib_num, 0);
+    print_block_to_firehose(&mut stdout, block, lib_num, 0, None);
 }
 
 #[cfg(test)]
