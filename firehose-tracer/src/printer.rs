@@ -8,6 +8,7 @@ use crate::pb::sf::ethereum::r#type::v2::Block;
 use base64_simd::STANDARD as B64_SIMD;
 use prost::Message;
 use std::io::Write;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Print a formatted message to the Firehose output stream
 pub fn print_to_firehose<W: Write>(
@@ -30,11 +31,14 @@ pub fn print_to_firehose<W: Write>(
 ///
 /// flash_block_idx is 0 for non-flash blocks; for flash blocks it is the current
 /// flash block index plus 1000 when this is the final iteration for the block.
+///
+/// timestamp_unix_nano is `block_time` when set, otherwise the block header's timestamp.
 pub fn print_block_to_firehose<W: Write>(
     writer: &mut W,
     mut block: Block,
     lib_num: u64,
     printed_flash_block_index: u64,
+    block_time: Option<SystemTime>,
 ) {
     let block_number = block.number;
     let block_hash = hex::encode(&block.hash);
@@ -63,6 +67,9 @@ pub fn print_block_to_firehose<W: Write>(
             };
             (previous_number, "0".to_string(), 0)
         };
+    let timestamp_ns = block_time
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map_or(timestamp_ns, |since_epoch| since_epoch.as_nanos() as u64);
 
     // Marshal the protobuf block to bytes. `fit_block` already computed the encoded length, which
     // is what `encode_to_vec` would compute again before encoding.
@@ -137,7 +144,7 @@ pub fn compute_printed_flash_block_index(flash_block_index: Option<&u64>, is_fin
 pub fn firehose_block_to_stdout(block: Block, finality_status: FinalityStatus) {
     let mut stdout = std::io::stdout();
     let lib_num = compute_lib_num(block.number, &finality_status);
-    print_block_to_firehose(&mut stdout, block, lib_num, 0);
+    print_block_to_firehose(&mut stdout, block, lib_num, 0, None);
 }
 
 #[cfg(test)]

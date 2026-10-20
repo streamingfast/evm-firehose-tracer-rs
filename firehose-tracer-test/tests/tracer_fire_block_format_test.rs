@@ -8,8 +8,13 @@
 // test, to catch regressions in field ordering or formatting.
 
 use alloy_primitives::{Bloom, Bytes, B256};
+use firehose_tracer::config::{ChainConfig, Config, EmissionMode};
 use firehose_tracer::types::{BlockData, BlockEvent, FinalizedBlockRef, FlashBlockData};
-use firehose_tracer_test::{hash32, miner_addr, test_block, FirehoseBlockEntry, TracerTester};
+use firehose_tracer::Tracer;
+use firehose_tracer_test::{
+    hash32, miner_addr, parse_firehose_block_entries, test_block, FirehoseBlockEntry, TracerTester,
+};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Validates every wire-level header field of a FirehoseBlockEntry against expected values.
 fn assert_all_fields(
@@ -472,4 +477,77 @@ fn test_fire_block_format_finality_and_flash_block() {
         480, // finalized
         bd.time,
     );
+}
+
+// ===========================================================================
+// timestamp_unix_nano from Config::fire_block_time
+// ===========================================================================
+
+/// Reads the sub-second milliseconds from the last 8 bytes of `mix_digest`, like BSC.
+fn mix_digest_millis_time(block: &BlockData) -> SystemTime {
+    let mut millis = [0u8; 8];
+    millis.copy_from_slice(&block.mix_digest[24..]);
+    UNIX_EPOCH + Duration::from_millis(block.time * 1_000 + u64::from_be_bytes(millis))
+}
+
+fn block_data_with_millis(number: u64, millis: u64) -> BlockData {
+    let mut mix_digest = [0u8; 32];
+    mix_digest[24..].copy_from_slice(&millis.to_be_bytes());
+    BlockData {
+        mix_digest: B256::from(mix_digest),
+        ..block_data_with_number(number)
+    }
+}
+
+fn assert_fire_block_time(mode: EmissionMode, millis: u64, want_timestamp_nano: i64) {
+    let bd = block_data_with_millis(100, millis);
+    let config = Config::new()
+        .with_emission_mode(mode)
+        .with_fire_block_time(mix_digest_millis_time);
+    let (mut tracer, buffer) = Tracer::with_buffer(config, ChainConfig::new(1), "test", "1.0.0");
+
+    tracer.on_block_start(BlockEvent::new(bd.clone()));
+    tracer.on_block_end(None);
+    // Drains the background writer in async mode.
+    drop(tracer);
+
+    let entries = parse_firehose_block_entries(&buffer.get_bytes());
+    assert_eq!(1, entries.len());
+    assert_eq!(
+        want_timestamp_nano, entries[0].timestamp_nano,
+        "timestamp_nano"
+    );
+
+    let header = entries[0]
+        .block
+        .header
+        .as_ref()
+        .expect("protobuf block.Header");
+    let header_timestamp = header
+        .timestamp
+        .as_ref()
+        .expect("protobuf block.Header.Timestamp");
+    assert_eq!(
+        bd.time as i64, header_timestamp.seconds,
+        "header timestamp seconds"
+    );
+    assert_eq!(0, header_timestamp.nanos, "header timestamp nanos");
+}
+
+#[test]
+fn test_fire_block_format_timestamp_from_config() {
+    let want = 1704067300 * 1_000_000_000 + 750 * 1_000_000;
+    assert_fire_block_time(EmissionMode::Blocking, 750, want);
+    assert_fire_block_time(
+        EmissionMode::Async {
+            channel_capacity: 4,
+        },
+        750,
+        want,
+    );
+}
+
+#[test]
+fn test_fire_block_format_timestamp_from_config_zero_millis() {
+    assert_fire_block_time(EmissionMode::Blocking, 0, 1704067300 * 1_000_000_000);
 }

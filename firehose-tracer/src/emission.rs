@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::SystemTime;
 
 use crate::pb::sf::ethereum::r#type::v2::Block;
 
@@ -18,6 +19,7 @@ pub(crate) struct RawBlock {
     pub block: Block,
     pub lib_num: u64,
     pub printed_flash_block_index: u64,
+    pub block_time: Option<SystemTime>,
     pub block_num: u64,
 }
 
@@ -95,6 +97,7 @@ pub(crate) fn background_writer_loop(
                     raw.block,
                     raw.lib_num,
                     raw.printed_flash_block_index,
+                    raw.block_time,
                 );
                 if let Some(path) = &cursor_path {
                     update_cursor_file(path, raw.block_num);
