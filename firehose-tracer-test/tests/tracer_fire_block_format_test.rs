@@ -14,6 +14,7 @@ use firehose_tracer::Tracer;
 use firehose_tracer_test::{
     hash32, miner_addr, parse_firehose_block_entries, test_block, FirehoseBlockEntry, TracerTester,
 };
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Validates every wire-level header field of a FirehoseBlockEntry against expected values.
 fn assert_all_fields(
@@ -479,14 +480,14 @@ fn test_fire_block_format_finality_and_flash_block() {
 }
 
 // ===========================================================================
-// timestamp_unix_nano from Config::fire_block_time_ns
+// timestamp_unix_nano from Config::fire_block_time
 // ===========================================================================
 
 /// Reads the sub-second milliseconds from the last 8 bytes of `mix_digest`, like BSC.
-fn mix_digest_millis_time_ns(block: &BlockData) -> u64 {
+fn mix_digest_millis_time(block: &BlockData) -> SystemTime {
     let mut millis = [0u8; 8];
     millis.copy_from_slice(&block.mix_digest[24..]);
-    block.time * 1_000_000_000 + u64::from_be_bytes(millis) * 1_000_000
+    UNIX_EPOCH + Duration::from_millis(block.time * 1_000 + u64::from_be_bytes(millis))
 }
 
 fn block_data_with_millis(number: u64, millis: u64) -> BlockData {
@@ -502,7 +503,7 @@ fn assert_fire_block_time(mode: EmissionMode, millis: u64, want_timestamp_nano: 
     let bd = block_data_with_millis(100, millis);
     let config = Config::new()
         .with_emission_mode(mode)
-        .with_fire_block_time_ns(mix_digest_millis_time_ns);
+        .with_fire_block_time(mix_digest_millis_time);
     let (mut tracer, buffer) = Tracer::with_buffer(config, ChainConfig::new(1), "test", "1.0.0");
 
     tracer.on_block_start(BlockEvent::new(bd.clone()));

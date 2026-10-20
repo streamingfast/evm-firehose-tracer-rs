@@ -7,11 +7,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-* `Config::fire_block_time_ns` (and `Config::with_fire_block_time_ns`): a function that computes the `<timestamp_unix_nano>` field of each FIRE BLOCK line from the block, for chains whose header carries a finer block time than whole seconds (BSC stores the millisecond remainder in `mix_digest`). The protobuf block header's `timestamp` is unchanged. Unset, the line keeps using the header time.
+* `Config::fire_block_time` (and `Config::with_fire_block_time`): a function that computes, as a `SystemTime`, the block time written in the `<timestamp_unix_nano>` field of each FIRE BLOCK line, for chains whose header carries a finer block time than whole seconds (BSC stores the millisecond remainder in `mix_digest`). The protobuf block header's `timestamp` is unchanged. Unset, the line keeps using the header time.
 
 ### Changed
 
-* `printer::print_block_to_firehose` takes a `block_time_ns: Option<u64>` argument that overrides the header time on the FIRE BLOCK line; pass `None` for the previous behavior.
+* `printer::print_block_to_firehose` takes a `block_time: Option<SystemTime>` argument that overrides the header time on the FIRE BLOCK line; pass `None` for the previous behavior.
 
 ## v5.5.0
 

@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::SystemTime;
 
 use alloy_primitives::{Address, B256, U256};
 
@@ -93,7 +94,7 @@ pub struct Tracer {
     block_finality: FinalityStatus,
     block_rules: Rules, // Fork rules for current block (computed once per block)
     block_is_genesis: bool,
-    block_time_ns: Option<u64>, // FIRE BLOCK line time from Config::fire_block_time_ns
+    block_time: Option<SystemTime>, // FIRE BLOCK line time from Config::fire_block_time
 
     // Transaction state
     transaction: Option<TransactionTrace>,
@@ -215,7 +216,7 @@ impl Tracer {
             block_finality: FinalityStatus::default(),
             block_rules: Rules::default(),
             block_is_genesis: false,
-            block_time_ns: None,
+            block_time: None,
 
             // Transaction state
             transaction: None,
@@ -253,7 +254,7 @@ impl Tracer {
         self.block_finality.reset();
         self.block_rules = Rules::default();
         self.block_is_genesis = false;
-        self.block_time_ns = None;
+        self.block_time = None;
         // Set to None to signal "not currently in a flash block" for the next block.
         // snapshotForNextFlashBlock is intentionally NOT reset: it persists until
         // the next flash block iteration picks it up or a new block number discards it
@@ -474,7 +475,7 @@ impl Tracer {
             self.snapshot_for_next_flash_block.is_some()
         );
 
-        self.block_time_ns = self.config.fire_block_time_ns.map(|f| f(block_data));
+        self.block_time = self.config.fire_block_time.map(|f| f(block_data));
 
         // Create protobuf block
         self.block = Some(Block {
@@ -565,7 +566,7 @@ impl Tracer {
                         block,
                         lib_num,
                         printed_flash_block_index,
-                        block_time_ns: self.block_time_ns,
+                        block_time: self.block_time,
                     };
                     self.async_sender
                         .as_ref()
@@ -579,7 +580,7 @@ impl Tracer {
                         block,
                         lib_num,
                         printed_flash_block_index,
-                        self.block_time_ns,
+                        self.block_time,
                     );
                     drop(writer);
                     // Update cursor file on the blocking path.

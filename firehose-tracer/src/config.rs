@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use crate::types::BlockData;
 
@@ -310,12 +310,12 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor_path: Option<PathBuf>,
 
-    /// Computes the `<timestamp_unix_nano>` field of each FIRE BLOCK line, for chains whose
-    /// header carries a finer block time than `BlockData::time` (whole seconds), like BSC's
-    /// millisecond remainder in `mix_digest`. `None` uses `BlockData::time`. The protobuf
-    /// block header's `timestamp` always stays `BlockData::time`.
+    /// Computes the block time written in the `<timestamp_unix_nano>` field of each FIRE BLOCK
+    /// line, for chains whose header carries a finer block time than `BlockData::time` (whole
+    /// seconds), like BSC's millisecond remainder in `mix_digest`. `None` uses
+    /// `BlockData::time`. The protobuf block header's `timestamp` always stays `BlockData::time`.
     #[serde(skip)]
-    pub fire_block_time_ns: Option<fn(&BlockData) -> u64>,
+    pub fire_block_time: Option<fn(&BlockData) -> SystemTime>,
 }
 
 impl Config {
@@ -361,8 +361,8 @@ impl Config {
     }
 
     /// Builder method to set the FIRE BLOCK line time function
-    pub fn with_fire_block_time_ns(mut self, f: fn(&BlockData) -> u64) -> Self {
-        self.fire_block_time_ns = Some(f);
+    pub fn with_fire_block_time(mut self, f: fn(&BlockData) -> SystemTime) -> Self {
+        self.fire_block_time = Some(f);
         self
     }
 
@@ -409,7 +409,7 @@ impl Default for Config {
             ignore_genesis_block: false,
             emission_mode: EmissionMode::default(),
             cursor_path: None,
-            fire_block_time_ns: None,
+            fire_block_time: None,
         }
     }
 }
@@ -521,7 +521,7 @@ mod tests {
             ignore_genesis_block: false,
             emission_mode: EmissionMode::default(),
             cursor_path: None,
-            fire_block_time_ns: None,
+            fire_block_time: None,
         };
 
         let json = serde_json::to_string_pretty(&config).unwrap();
