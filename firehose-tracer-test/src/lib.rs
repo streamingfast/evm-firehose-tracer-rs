@@ -36,9 +36,10 @@ pub use eip7702::{recover_set_code_auth_authority, sign_set_code_auth};
 pub use mock_state::MockStateDB;
 pub use testing_helpers::*;
 pub use tracer_tester::{
-    parse_firehose_block, parse_firehose_block_entries, test_access_list_trx, test_blob_trx,
-    test_block, test_dynamic_fee_trx, test_legacy_trx, test_set_code_trx,
-    try_parse_firehose_block_entries, FirehoseBlockEntry, InMemoryBuffer, TracerTester,
+    parse_firehose_block, parse_firehose_block_entries, test_access_list_trx,
+    test_account_abstraction_trx, test_blob_trx, test_block, test_dynamic_fee_trx, test_legacy_trx,
+    test_set_code_trx, try_parse_firehose_block_entries, FirehoseBlockEntry, InMemoryBuffer,
+    TracerTester,
 };
 
 pub use capture::FirehoseCapture;

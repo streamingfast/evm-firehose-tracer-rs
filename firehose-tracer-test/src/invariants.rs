@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use firehose_tracer::pb::sf::ethereum::r#type::v2::{
-    BigInt, Block, Log, TransactionTrace, TransactionTraceStatus,
+    transaction_trace, BigInt, Block, Log, TransactionTrace, TransactionTraceStatus,
 };
 
 /// The one knob a chain can legitimately need to set.
@@ -395,10 +395,25 @@ impl BlockInvariants {
     }
 
     /// A transaction whose root call failed cannot be reported as succeeded.
+    ///
+    /// An account abstraction transaction is the exception: its status follows the receipt,
+    /// which fails when one of its phases reverted, and its root call is never failed.
     fn check_status_consistency(path: &str, trace: &TransactionTrace, out: &mut Vec<Violation>) {
         let Some(root) = trace.calls.iter().find(|call| call.depth == 0) else {
             return;
         };
+
+        if trace.r#type == transaction_trace::Type::TrxTypeAccountAbstraction as i32 {
+            if root.status_failed || root.status_reverted || root.state_reverted {
+                out.push(Violation {
+                    path: path.to_owned(),
+                    detail: "the root call of an account abstraction transaction is failed or \
+                             reverted"
+                        .to_owned(),
+                });
+            }
+            return;
+        }
 
         let succeeded = trace.status == TransactionTraceStatus::Succeeded as i32;
         if succeeded && (root.status_failed || root.status_reverted) {

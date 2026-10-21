@@ -3,6 +3,22 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v5.7.0
+
+### Added
+
+* Account abstraction transactions (type `0x79`, EIP-8130 / EIP-8430 draft), traced as `TRX_TYPE_ACCOUNT_ABSTRACTION`:
+  * `TxType::AccountAbstraction` and `TxEvent.account_abstraction_trx_input`, copied to `TransactionTrace.account_abstraction_trx_input`.
+  * `Tracer::set_account_abstraction_trx_output`, which records the transaction's `committed_phases` on its receipt. The integration must call it before `on_tx_end`.
+  * When the transaction completes, each signed call's `AccountAbstractionCallInput.call_index` is set to the child of the root call that executed it, and the calls of the phase that failed, with everything below them, are marked `state_reverted`, including the ones that succeeded before the phase was rolled back. The root call is never failed, and the transaction status follows the receipt.
+  * The test invariants accept a failed account abstraction transaction whose root call did not fail.
+* Regenerated `sf.ethereum.type.v2` bindings from streamingfast/firehose-ethereum#262, which also renames `morph_receipt_config` to `morph_trx_output` (and `MorphTxConfig` / `MorphL1MessageConfig` to `MorphTrxInput` / `MorphL1MessageTrxInput`).
+* Regenerated the bindings with the Keystore account changes of EIP-8130 (`create` and `config_change` in `AccountAbstractionAccountChange`) and `AccountAbstractionTrxInput.sender_auth`, from streamingfast/firehose-ethereum#264 (BSR commit `33eaa324c4fc46a68cf9593d289278fe`, pinned in `proto/buf.yaml`). The integration fills them.
+
+### Changed
+
+* The transaction type mapping is exhaustive: a `TxType` without a block model value no longer compiles, instead of being recorded as `TRX_TYPE_LEGACY`.
+
 ## v5.6.0
 
 ### Added

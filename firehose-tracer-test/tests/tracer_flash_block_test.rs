@@ -70,6 +70,7 @@ fn flash_tx(nonce: u64, hash_byte: u8) -> TxEvent {
         blob_gas_fee_cap: None,
         blob_hashes: vec![],
         set_code_authorizations: vec![],
+        account_abstraction_trx_input: None,
     }
 }
 
