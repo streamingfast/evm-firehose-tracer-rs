@@ -271,7 +271,7 @@ impl Default for EmissionMode {
 }
 
 /// Config holds tracer runtime configuration
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// The chain client providing tracing data
     #[serde(default)]

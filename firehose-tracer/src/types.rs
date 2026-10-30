@@ -277,6 +277,19 @@ impl std::fmt::Display for StringError {
 
 impl std::error::Error for StringError {}
 
+/// Where a transaction trace completed by a detached tracer lands in its block, see
+/// `Tracer::attach_transaction`.
+///
+/// These are the block-cumulative values a detached tracer cannot know: the transaction's index
+/// in the block, the gas used by the block through this transaction, and the block-wide index of
+/// its first committed log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransactionPlacement {
+    pub index: u32,
+    pub cumulative_gas_used: u64,
+    pub log_index_start: u32,
+}
+
 /// ReceiptData contains transaction receipt data
 #[derive(Debug, Clone)]
 pub struct ReceiptData {

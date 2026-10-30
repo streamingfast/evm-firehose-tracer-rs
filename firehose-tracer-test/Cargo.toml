@@ -159,3 +159,7 @@ path = "tests/tracer_delegation_test.rs"
 [[test]]
 name = "tracer_emission_mode_test"
 path = "tests/tracer_emission_mode_test.rs"
+
+[[test]]
+name = "tracer_detached_test"
+path = "tests/tracer_detached_test.rs"

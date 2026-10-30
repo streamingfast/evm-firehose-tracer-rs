@@ -18,7 +18,7 @@ pub mod utils;
 pub mod version;
 
 // Re-export Tracer and InMemoryBuffer so consumers can use them directly.
-pub use tracer::{InMemoryBuffer, Tracer};
 pub use emission::ShutdownHandle;
+pub use tracer::{InMemoryBuffer, Tracer};
 // Re-export EmissionMode for convenience.
 pub use config::EmissionMode;
