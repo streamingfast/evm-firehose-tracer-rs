@@ -106,7 +106,7 @@ pub struct Tracer {
     transaction_state_reader: Option<Box<dyn StateReader + Send>>,
     // KECCAK256 preimages of the current transaction or system call, kept as raw bytes until it
     // ends; keccak_filter then hex-encodes the ones that explain a storage change into the calls.
-    transaction_keccak_preimages: Vec<keccak_filter::RecordedPreimage>,
+    transaction_keccak_preimages: keccak_filter::RecordedPreimages,
     // Input and return data passed to the internal calls of the current transaction or system
     // call so far, counted in full even once call_data_limit truncates what is recorded.
     transaction_call_input_bytes: usize,
@@ -230,7 +230,7 @@ impl Tracer {
             transaction_log_index: 0,
             transaction_state_reader: None,
             in_system_call: false,
-            transaction_keccak_preimages: Vec::new(),
+            transaction_keccak_preimages: keccak_filter::RecordedPreimages::default(),
             transaction_call_input_bytes: 0,
             transaction_return_data_bytes: 0,
             transaction_call_input_truncation_logged: false,
@@ -1004,7 +1004,7 @@ impl Tracer {
         // change of the transaction is attached to its calls once deferred state is moved.
         keccak_filter::attach_storage_slot_preimages(
             &mut trx.calls,
-            std::mem::take(&mut self.transaction_keccak_preimages),
+            &mut self.transaction_keccak_preimages,
         );
 
         // Step 3.5: Discard SetCode authorizations that don't have corresponding nonce changes
@@ -2028,7 +2028,7 @@ impl Tracer {
 
         if let Some(call) = self.call_stack.peek() {
             self.transaction_keccak_preimages
-                .push((call.index, hash, preimage.to_vec()));
+                .push(call.index, hash, preimage);
 
             firehose_trace!(
                 "keccak preimage (hash={:?} preimage_len={})",
@@ -2061,7 +2061,7 @@ impl Tracer {
         if let (Some(block), Some(trx)) = (&mut self.block, &mut self.transaction) {
             keccak_filter::attach_storage_slot_preimages(
                 &mut trx.calls,
-                std::mem::take(&mut self.transaction_keccak_preimages),
+                &mut self.transaction_keccak_preimages,
             );
             block.system_calls.append(&mut trx.calls);
         }

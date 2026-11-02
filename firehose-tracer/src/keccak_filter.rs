@@ -42,20 +42,65 @@ const MAX_SLOT_OFFSET: U256 = U256::from_limbs([u64::MAX, 0, 0, 0]);
 
 type Hash = [u8; 32];
 
-/// A KECCAK256 preimage recorded during execution: the index of the call that computed it, the
-/// hash and the preimage bytes.
-pub(crate) type RecordedPreimage = (u32, B256, Vec<u8>);
+/// The KECCAK256 preimages recorded during one transaction or system call, in recording order.
+///
+/// The preimage bytes of all entries share one buffer, so recording allocates nothing once the
+/// buffers have grown to the size of a busy transaction: [`Self::clear`] keeps their capacity.
+#[derive(Debug, Default)]
+pub(crate) struct RecordedPreimages {
+    entries: Vec<RecordedPreimage>,
+    bytes: Vec<u8>,
+}
+
+/// One recorded preimage: the index of the call that computed it, its hash and where its bytes
+/// sit in [`RecordedPreimages::bytes`].
+#[derive(Debug, Clone, Copy)]
+struct RecordedPreimage {
+    call_index: u32,
+    hash: Hash,
+    start: usize,
+    len: usize,
+}
+
+impl RecordedPreimages {
+    /// Records the `preimage` of `hash`, computed by the call with index `call_index`.
+    pub(crate) fn push(&mut self, call_index: u32, hash: B256, preimage: &[u8]) {
+        let start = self.bytes.len();
+        self.bytes.extend_from_slice(preimage);
+        self.entries.push(RecordedPreimage {
+            call_index,
+            hash: hash.0,
+            start,
+            len: preimage.len(),
+        });
+    }
+
+    /// Forgets every recorded preimage, keeping the allocated capacity.
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+        self.bytes.clear();
+    }
+
+    fn preimage(&self, entry: &RecordedPreimage) -> &[u8] {
+        &self.bytes[entry.start..entry.start + entry.len]
+    }
+}
 
 /// Fills `Call.keccak_preimages` with the recorded preimages that explain a storage change key
-/// of `calls`, hex-encoding only those. `calls` are all the calls of one transaction or system
-/// call, and must run once all of their storage changes are attached.
-pub(crate) fn attach_storage_slot_preimages(calls: &mut [Call], recorded: Vec<RecordedPreimage>) {
-    if recorded.is_empty() {
+/// of `calls`, hex-encoding only those, then clears `recorded`. `calls` are all the calls of one
+/// transaction or system call, and must run once all of their storage changes are attached.
+pub(crate) fn attach_storage_slot_preimages(calls: &mut [Call], recorded: &mut RecordedPreimages) {
+    if recorded.entries.is_empty() {
+        return;
+    }
+    if calls.iter().all(|call| call.storage_changes.is_empty()) {
+        recorded.clear();
         return;
     }
 
-    let kept = storage_slot_hashes(calls, &recorded);
+    let kept = storage_slot_hashes(calls, recorded);
     if kept.is_empty() {
+        recorded.clear();
         return;
     }
 
@@ -64,28 +109,38 @@ pub(crate) fn attach_storage_slot_preimages(calls: &mut [Call], recorded: Vec<Re
         .enumerate()
         .map(|(position, call)| (call.index, position))
         .collect();
-    for (index, hash, preimage) in recorded {
-        if !kept.contains(&hash.0) {
+    for entry in &recorded.entries {
+        if !kept.contains(&entry.hash) {
             continue;
         }
-        if let Some(&position) = positions.get(&index) {
+        if let Some(&position) = positions.get(&entry.call_index) {
             calls[position]
                 .keccak_preimages
-                .entry(hex::encode(hash))
-                .or_insert_with(|| hex::encode(&preimage));
+                .entry(hex::encode(entry.hash))
+                .or_insert_with(|| hex::encode(recorded.preimage(entry)));
         }
     }
+    recorded.clear();
 }
 
 /// The recorded hashes that explain one of the storage change keys of `calls`.
-fn storage_slot_hashes(calls: &[Call], recorded: &[RecordedPreimage]) -> HashSet<Hash> {
-    let mut preimages: HashMap<Hash, &[u8]> = HashMap::new();
-    for (_, hash, preimage) in recorded {
-        preimages.entry(hash.0).or_insert(preimage.as_slice());
-    }
-
-    let mut sorted: Vec<Hash> = preimages.keys().copied().collect();
+fn storage_slot_hashes(calls: &[Call], recorded: &RecordedPreimages) -> HashSet<Hash> {
+    // Every distinct hash in ascending order, with the entry that first recorded it. A sorted
+    // list serves both the nearest-hash search and the preimage lookup without hashing the keys.
+    let mut sorted: Vec<(Hash, usize)> = recorded
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(position, entry)| (entry.hash, position))
+        .collect();
     sorted.sort_unstable();
+    sorted.dedup_by_key(|(hash, _)| *hash);
+    let preimage_of = |hash: &Hash| -> &[u8] {
+        let position = sorted
+            .binary_search_by_key(hash, |(hash, _)| *hash)
+            .expect("kept hashes are recorded");
+        recorded.preimage(&recorded.entries[sorted[position].1])
+    };
 
     let mut kept: HashSet<Hash> = HashSet::new();
     let mut frontier: Vec<Hash> = Vec::new();
@@ -108,7 +163,7 @@ fn storage_slot_hashes(calls: &[Call], recorded: &[RecordedPreimage]) -> HashSet
         }
         let mut next = Vec::new();
         for hash in &frontier {
-            for word in inner_hash_candidates(preimages[hash]) {
+            for word in inner_hash_candidates(preimage_of(hash)) {
                 if let Some(inner) = slot_base(&sorted, &word) {
                     if kept.insert(inner) {
                         next.push(inner);
@@ -124,9 +179,9 @@ fn storage_slot_hashes(calls: &[Call], recorded: &[RecordedPreimage]) -> HashSet
 
 /// Returns the largest hash at or below `key` when `key` is at most [`MAX_SLOT_OFFSET`]
 /// above it, which covers an exact match.
-fn slot_base(sorted: &[Hash], key: &Hash) -> Option<Hash> {
-    let idx = sorted.partition_point(|hash| hash <= key);
-    let base = sorted[..idx].last()?;
+fn slot_base(sorted: &[(Hash, usize)], key: &Hash) -> Option<Hash> {
+    let idx = sorted.partition_point(|(hash, _)| hash <= key);
+    let (base, _) = sorted[..idx].last()?;
     let distance = U256::from_be_bytes(*key) - U256::from_be_bytes(*base);
     (distance <= MAX_SLOT_OFFSET).then_some(*base)
 }
@@ -176,15 +231,15 @@ mod tests {
     /// Moves the preimages the tests put in the maps into a recorded list, as the tracer holds
     /// them during execution, then attaches the kept ones back.
     fn retain_storage_slot_preimages(calls: &mut [Call]) {
-        let mut recorded = Vec::new();
+        let mut recorded = RecordedPreimages::default();
         for (position, call) in calls.iter_mut().enumerate() {
             call.index = position as u32 + 1;
             for (hash, preimage) in std::mem::take(&mut call.keccak_preimages) {
                 let hash = B256::from_slice(&hex::decode(hash).unwrap());
-                recorded.push((call.index, hash, hex::decode(preimage).unwrap()));
+                recorded.push(call.index, hash, &hex::decode(preimage).unwrap());
             }
         }
-        attach_storage_slot_preimages(calls, recorded);
+        attach_storage_slot_preimages(calls, &mut recorded);
     }
 
     fn kept(calls: &[Call]) -> HashSet<String> {
