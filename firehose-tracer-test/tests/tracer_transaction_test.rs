@@ -328,13 +328,7 @@ fn test_zero_effective_gas_price_emitted_as_nil() {
     let mut tester = TracerTester::new();
     tester
         .start_block_trx(zero_gas_price_tx())
-        .start_call(
-            alice_addr(),
-            bob_addr(),
-            alloy_primitives::U256::ZERO,
-            21000,
-            vec![],
-        )
+        .start_call(alice_addr(), bob_addr(), alloy_primitives::U256::ZERO, 21000, vec![])
         .end_call(vec![], 21000)
         .end_block_trx(Some(success_receipt(21000)), None, None)
         .validate(|block| {
@@ -352,13 +346,7 @@ fn test_zero_effective_gas_price_emitted_as_nil() {
     let mut tester2 = TracerTester::new();
     tester2
         .start_block_trx(test_legacy_trx())
-        .start_call(
-            alice_addr(),
-            bob_addr(),
-            alloy_primitives::U256::ZERO,
-            21000,
-            vec![],
-        )
+        .start_call(alice_addr(), bob_addr(), alloy_primitives::U256::ZERO, 21000, vec![])
         .end_call(vec![], 21000)
         .end_block_trx(Some(success_receipt(21000)), None, None)
         .validate(|block| {
