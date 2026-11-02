@@ -3,18 +3,20 @@
 
 use alloy_primitives::{Bytes, B256, U256};
 use firehose_tracer::pb::sf::ethereum::r#type::v2 as pbeth;
-use firehose_tracer::types::{LogData, ReceiptData, StringError, TransactionPlacement, TxEvent};
+use firehose_tracer::types::{
+    BlockEvent, FlashBlockData, LogData, ReceiptData, StringError, TransactionPlacement, TxEvent,
+};
 use firehose_tracer::Tracer;
 use firehose_tracer_test::{
     alice_addr, big_int, bob_addr, charlie_addr, hash32, miner_addr, parse_firehose_block,
-    test_block, test_legacy_trx, TracerTester,
+    parse_firehose_block_entries, test_block, test_legacy_trx, TracerTester,
 };
 
 const GAS_USED: u64 = 50_000;
 
 /// Transaction `index` of the block: a root call that changes a balance and a storage slot, a
 /// nested call that emits a log, a nested call that reverts after emitting a log, and a log at
-/// the root. `log_index_start` is the block-wide index of its first committed log.
+/// the root.
 fn transaction(index: u32) -> TxEvent {
     TxEvent {
         hash: hash32(1_000 + index as u64),
@@ -235,4 +237,103 @@ fn detached_tracer_never_prints() {
         printed_before,
         "the detached tracer wrote to the output"
     );
+}
+
+#[test]
+#[should_panic(expected = "attached out of block order")]
+fn attaching_out_of_block_order_panics() {
+    let (mut tracer, _buffer) = TracerTester::new().into_parts();
+    tracer.on_block_start(test_block());
+    let mut detached = tracer.detached();
+    detached.on_block_start(test_block());
+    detached.on_tx_start(transaction(1), None);
+    let receipt = trace_transaction(&mut detached, 1, 0);
+    let trx = detached.on_tx_end_detached(Some(&receipt), None);
+
+    // The block has no transaction yet, so index 1 is not the next one.
+    tracer.attach_transaction(
+        trx,
+        TransactionPlacement {
+            index: 1,
+            cumulative_gas_used: GAS_USED,
+            log_index_start: 0,
+        },
+    );
+}
+
+fn flash_block_event(idx: u64) -> BlockEvent {
+    let mut event = test_block();
+    event.flash_block = Some(FlashBlockData {
+        idx,
+        is_final: false,
+    });
+    event
+}
+
+/// First flashblock iteration of a block, two transactions traced serially, snapshotted for the
+/// next iteration.
+fn first_flash_block_iteration(tracer: &mut Tracer) {
+    tracer.on_block_start(flash_block_event(1));
+    for index in 0..2u32 {
+        tracer.on_tx_start(transaction(index), None);
+        let receipt = trace_transaction(tracer, index, index * 2);
+        tracer.on_tx_end(Some(&receipt), None);
+    }
+    tracer.snapshot_flash_block_for_next_iteration();
+    tracer.on_block_end(None);
+}
+
+/// The second flashblock iteration runs a fresh executor, whose values restart at 0 for the one
+/// transaction it adds. The serial path offsets the receipt's values; attaching must offset the
+/// placement the same way.
+#[test]
+fn attached_transaction_gets_the_flash_block_offsets() {
+    let (mut serial_tracer, serial_buffer) = TracerTester::new().into_parts();
+    first_flash_block_iteration(&mut serial_tracer);
+    serial_tracer.on_block_start(flash_block_event(2));
+    serial_tracer.on_tx_start(transaction(2), None);
+    let mut receipt = trace_transaction(&mut serial_tracer, 2, 0);
+    receipt.transaction_index = 0;
+    receipt.cumulative_gas_used = GAS_USED;
+    serial_tracer.on_tx_end(Some(&receipt), None);
+    serial_tracer.on_block_end(None);
+
+    let (mut tracer, buffer) = TracerTester::new().into_parts();
+    first_flash_block_iteration(&mut tracer);
+    tracer.on_block_start(flash_block_event(2));
+    let mut detached = tracer.detached();
+    detached.on_block_start(flash_block_event(2));
+    detached.on_tx_start(transaction(2), None);
+    let mut receipt = trace_transaction(&mut detached, 2, 0);
+    receipt.transaction_index = 0;
+    receipt.cumulative_gas_used = GAS_USED;
+    let trx = detached.on_tx_end_detached(Some(&receipt), None);
+    tracer.attach_transaction(
+        trx,
+        TransactionPlacement {
+            index: 0,
+            cumulative_gas_used: GAS_USED,
+            log_index_start: 0,
+        },
+    );
+    tracer.on_block_end(None);
+
+    let second_iteration = |bytes: Vec<u8>| {
+        let mut entries = parse_firehose_block_entries(&bytes);
+        assert_eq!(entries.len(), 2);
+        entries.pop().unwrap().block
+    };
+    let serial = second_iteration(serial_buffer.get_bytes());
+    let attached = second_iteration(buffer.get_bytes());
+
+    let last = serial.transaction_traces.last().unwrap();
+    assert_eq!(serial.transaction_traces.len(), 3);
+    assert_eq!(last.index, 2);
+    assert_eq!(
+        last.receipt.as_ref().unwrap().cumulative_gas_used,
+        GAS_USED * 3
+    );
+    assert_eq!(last.receipt.as_ref().unwrap().logs[1].block_index, 5);
+
+    assert_eq!(attached, serial);
 }

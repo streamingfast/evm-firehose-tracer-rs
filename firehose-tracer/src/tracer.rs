@@ -77,15 +77,15 @@ impl Write for InMemoryBuffer {
 
 /// Tracer is the main Firehose tracer that captures EVM execution and produces
 /// protobuf blocks for indexing.
-///
-/// Note: Parallel execution support (isolated tracer + coordinator) is excluded
-/// from this Rust port as per requirements.
 pub struct Tracer {
     // Global state
     output_writer: Arc<Mutex<Box<dyn Write + Send>>>,
     init_sent: Arc<AtomicBool>,
     config: Config,
     chain_config: Option<ChainConfig>,
+    /// Set on a tracer made by [`Self::detached`], which has no block of its own to put
+    /// block-level events in.
+    detached: bool,
 
     // Async emission state (None when mode is Blocking)
     async_sender: Option<SyncSender<RawBlock>>,
@@ -211,6 +211,7 @@ impl Tracer {
             init_sent: Arc::new(AtomicBool::new(false)),
             config,
             chain_config: None,
+            detached: false,
 
             // Async emission state
             async_sender,
@@ -256,22 +257,39 @@ impl Tracer {
 
     /// Returns a tracer that completes transaction traces on behalf of this one and never prints.
     ///
-    /// It shares this tracer's configuration and chain configuration and counts as initialized.
-    /// Drive it with `on_block_start` (the same `BlockEvent` as this tracer) and then, for each
-    /// transaction, the transaction events followed by [`Self::on_tx_end_detached`], whose result
-    /// goes to this tracer's [`Self::attach_transaction`]. Several detached tracers can trace the
-    /// transactions of one block at the same time, each on its own thread, as long as the traces
-    /// are attached in block order. A detached tracer never receives `on_block_end`.
+    /// It shares this tracer's configuration and chain configuration, so this tracer must have
+    /// received `on_blockchain_init` and the detached tracer must not. Drive it with
+    /// `on_block_start` (the same `BlockEvent` as this tracer) and then, for each transaction,
+    /// the transaction events followed by [`Self::on_tx_end_detached`], whose result goes to this
+    /// tracer's [`Self::attach_transaction`]. Several detached tracers can trace the transactions
+    /// of one block at the same time, each on its own thread, as long as the traces are attached
+    /// in block order.
+    ///
+    /// A detached tracer only has a place for transactions. System calls, block-level balance and
+    /// code changes and `on_block_end` belong to the block tracer; a detached tracer that receives
+    /// one logs a warning and drops it.
     pub fn detached(&self) -> Self {
+        self.ensure_blockchain_init();
         let config = Config {
             emission_mode: EmissionMode::Blocking,
             cursor_path: None,
             ..self.config.clone()
         };
         let mut tracer = Self::new_with_writer(config, Box::new(std::io::sink()));
-        tracer.init_sent.store(true, Ordering::SeqCst);
         tracer.chain_config = self.chain_config.clone();
+        tracer.detached = true;
         tracer
+    }
+
+    /// Logs that a block-level event reached a detached tracer, which drops it (see
+    /// [`Self::detached`]).
+    fn warn_if_detached(&self, event: &str) {
+        if self.detached {
+            tracing::warn!(
+                event,
+                "detached tracer received a block-level event, dropping it: only the block tracer can record it"
+            );
+        }
     }
 
     /// Resets the block state only (not transaction or call state)
@@ -562,6 +580,7 @@ impl Tracer {
     /// OnBlockEnd is called at the end of block processing
     pub fn on_block_end(&mut self, err: Option<&dyn std::error::Error>) {
         firehose_info!("block ending (err={:?})", err);
+        self.warn_if_detached("on_block_end");
 
         if err.is_none() {
             // Validate state: Must be in block and not in transaction
@@ -911,12 +930,15 @@ impl Tracer {
     /// Every ordinal of the trace is shifted so the trace follows the last ordinal of this block,
     /// and the block's ordinal counter continues after it. The transaction index, the receipt's
     /// `cumulative_gas_used` and the `block_index` of every committed log (in the calls and in
-    /// the receipt) take the block-cumulative values of `placement`. Logs of state-reverted calls
-    /// keep the zero `block_index` the completion gave them.
+    /// the receipt) take the values of `placement`. During a flashblock continuation these get
+    /// the same offsets `on_tx_end` applies to the receipt's values, so the integration supplies
+    /// the values of its own executor on both paths. Logs of state-reverted calls keep the zero
+    /// `block_index` the completion gave them.
     ///
-    /// The caller commits the transactions in block order and knows their placement, so no
-    /// flashblock offset applies here. Must be called between transactions: not inside a
-    /// transaction, a call or a system call.
+    /// The traces must be attached in block order: `placement` must name the transaction after
+    /// the last one in the block, with a cumulative gas no lower than its and the block's
+    /// committed log count as its first log index, or this panics. Must be called between
+    /// transactions: not inside a transaction, a call or a system call.
     pub fn attach_transaction(
         &mut self,
         mut trx: TransactionTrace,
@@ -931,25 +953,77 @@ impl Tracer {
 
         self.ensure_in_block_and_not_in_trx_and_not_in_call();
 
+        let index = placement
+            .index
+            .saturating_add(self.flashblock_tx_index_offset);
+        let cumulative_gas_used = placement
+            .cumulative_gas_used
+            .saturating_add(self.flashblock_cumulative_gas_offset);
+        let log_index_start = placement
+            .log_index_start
+            .saturating_add(self.flashblock_log_block_index_offset);
+        self.ensure_next_transaction_placement(index, cumulative_gas_used, log_index_start);
+
         let shift = (self.block_ordinal.peek() + 1).wrapping_sub(trx.begin_ordinal);
         rebase_ordinals(&mut trx, shift);
         self.block_ordinal.restore(trx.end_ordinal);
 
-        trx.index = placement.index;
+        trx.index = index;
         if let Some(receipt) = &mut trx.receipt {
-            receipt.cumulative_gas_used = placement.cumulative_gas_used;
+            receipt.cumulative_gas_used = cumulative_gas_used;
             for log in &mut receipt.logs {
-                log.block_index += placement.log_index_start;
+                log.block_index = log.block_index.saturating_add(log_index_start);
             }
         }
         for call in trx.calls.iter_mut().filter(|call| !call.state_reverted) {
             for log in &mut call.logs {
-                log.block_index += placement.log_index_start;
+                log.block_index = log.block_index.saturating_add(log_index_start);
             }
         }
 
         if let Some(block) = &mut self.block {
             block.transaction_traces.push(trx);
+        }
+    }
+
+    /// Panics unless a transaction at `index` with these block-cumulative values is the next
+    /// transaction of the block, see [`Self::attach_transaction`].
+    fn ensure_next_transaction_placement(
+        &self,
+        index: u32,
+        cumulative_gas_used: u64,
+        log_index_start: u32,
+    ) {
+        let Some(block) = &self.block else {
+            return;
+        };
+        let traces = &block.transaction_traces;
+        if index as usize != traces.len() {
+            self.panic_invalid_state(format!(
+                "detached transaction attached out of block order: placement index is {index} but the block has {} transactions",
+                traces.len()
+            ));
+        }
+        let last_cumulative_gas_used = traces
+            .iter()
+            .rev()
+            .find_map(|trx| trx.receipt.as_ref())
+            .map(|receipt| receipt.cumulative_gas_used)
+            .unwrap_or(0);
+        if cumulative_gas_used < last_cumulative_gas_used {
+            self.panic_invalid_state(format!(
+                "detached transaction attached out of block order: placement cumulative gas is {cumulative_gas_used} but the block's last transaction has {last_cumulative_gas_used}"
+            ));
+        }
+        let committed_logs: u32 = traces
+            .iter()
+            .filter_map(|trx| trx.receipt.as_ref())
+            .map(|receipt| receipt.logs.len() as u32)
+            .sum();
+        if log_index_start != committed_logs {
+            self.panic_invalid_state(format!(
+                "detached transaction attached out of block order: placement first log index is {log_index_start} but the block has {committed_logs} committed logs"
+            ));
         }
     }
 
@@ -1777,6 +1851,7 @@ impl Tracer {
             }
         } else {
             // Block-level balance change
+            self.warn_if_detached("on_balance_change");
             if let Some(block) = &mut self.block {
                 block.balance_changes.push(change);
             }
@@ -1857,6 +1932,7 @@ impl Tracer {
             }
         } else {
             // Block-level code change
+            self.warn_if_detached("on_code_change");
             if let Some(block) = &mut self.block {
                 block.code_changes.push(change);
             }
@@ -2046,6 +2122,7 @@ impl Tracer {
     pub fn on_system_call_start(&mut self) {
         firehose_info!("system call start");
         self.ensure_in_block_and_not_in_trx();
+        self.warn_if_detached("on_system_call_start");
 
         self.in_system_call = true;
         self.transaction = Some(TransactionTrace::default());
@@ -2591,7 +2668,13 @@ pub(crate) fn is_live_block(block: &Block, live_threshold: std::time::Duration) 
 /// change, log and gas change they hold, and those of the receipt logs. The deprecated
 /// `Call.account_creations` is never written, so it is not rebased.
 fn rebase_ordinals(trx: &mut TransactionTrace, shift: u64) {
-    let rebase = |ordinal: &mut u64| *ordinal = ordinal.wrapping_add(shift);
+    // Assigned ordinals start at 1. A receipt log keeps ordinal 0 when
+    // FIREHOSE_TRACER_IGNORE_LOG_MISMATCH suppressed its assignment, and must stay at 0.
+    let rebase = |ordinal: &mut u64| {
+        if *ordinal != 0 {
+            *ordinal = ordinal.wrapping_add(shift);
+        }
+    };
     rebase(&mut trx.begin_ordinal);
     rebase(&mut trx.end_ordinal);
     for call in &mut trx.calls {
@@ -2639,6 +2722,50 @@ fn sort_keeping_ordinals<T>(
     items.sort_by(|a, b| cmp(a, b));
     for (item, ordinal) in items.iter_mut().zip(ordinals) {
         set_ordinal(item, ordinal);
+    }
+}
+
+#[cfg(test)]
+mod rebase_ordinals_tests {
+    use super::rebase_ordinals;
+    use crate::pb::sf::ethereum::r#type::v2::{Call, Log, TransactionReceipt, TransactionTrace};
+
+    fn log(ordinal: u64) -> Log {
+        Log {
+            ordinal,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn shifts_every_assigned_ordinal_and_leaves_unassigned_ones_at_zero() {
+        let mut trx = TransactionTrace {
+            begin_ordinal: 1,
+            end_ordinal: 5,
+            calls: vec![Call {
+                begin_ordinal: 2,
+                end_ordinal: 4,
+                logs: vec![log(3)],
+                ..Default::default()
+            }],
+            receipt: Some(TransactionReceipt {
+                logs: vec![log(3), log(0)],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        rebase_ordinals(&mut trx, 10);
+
+        assert_eq!((trx.begin_ordinal, trx.end_ordinal), (11, 15));
+        assert_eq!(
+            (trx.calls[0].begin_ordinal, trx.calls[0].end_ordinal),
+            (12, 14)
+        );
+        assert_eq!(trx.calls[0].logs[0].ordinal, 13);
+        let receipt_logs = &trx.receipt.as_ref().unwrap().logs;
+        assert_eq!(receipt_logs[0].ordinal, 13);
+        assert_eq!(receipt_logs[1].ordinal, 0);
     }
 }
 

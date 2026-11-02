@@ -280,9 +280,10 @@ impl std::error::Error for StringError {}
 /// Where a transaction trace completed by a detached tracer lands in its block, see
 /// `Tracer::attach_transaction`.
 ///
-/// These are the block-cumulative values a detached tracer cannot know: the transaction's index
-/// in the block, the gas used by the block through this transaction, and the block-wide index of
-/// its first committed log.
+/// These are the values a detached tracer cannot know: the transaction's index in the block, the
+/// gas used by the block through this transaction, and the block-wide index of its first
+/// committed log. They are the values the integration's executor has, the same ones a receipt
+/// carries on the serial path; during a flashblock continuation the tracer offsets them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransactionPlacement {
     pub index: u32,

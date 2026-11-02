@@ -9,7 +9,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 * Detached transaction tracing, for integrations that execute the transactions of a block in parallel (reth's EIP-7928 block access list path):
   * `Tracer::detached` returns a tracer that shares this tracer's configuration, never prints, and traces transactions on its own thread: `on_block_start` with the block's event, then the transaction events, then `Tracer::on_tx_end_detached`, which completes the transaction like `on_tx_end` and returns the `TransactionTrace` instead of appending it to the block.
-  * `Tracer::attach_transaction` appends such a trace to the block tracer's block at a `TransactionPlacement` (transaction index, block-cumulative gas, block-wide index of its first log): every ordinal is shifted to follow the block's last ordinal, and the receipt takes the block-cumulative values. The integration gives the detached tracer transaction-relative receipt values and attaches the traces in block order.
+  * `Tracer::attach_transaction` appends such a trace to the block tracer's block at a `TransactionPlacement` (transaction index, block-cumulative gas, block-wide index of its first log, offset during a flashblock continuation as `on_tx_end` offsets a receipt): every ordinal is shifted to follow the block's last ordinal, and the receipt takes the block-cumulative values. The integration gives the detached tracer transaction-relative receipt values and attaches the traces in block order, which `attach_transaction` checks.
 
 ### Changed
 
