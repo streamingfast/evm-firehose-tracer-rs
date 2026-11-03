@@ -2668,8 +2668,9 @@ pub(crate) fn is_live_block(block: &Block, live_threshold: std::time::Duration) 
 /// change, log and gas change they hold, and those of the receipt logs. The deprecated
 /// `Call.account_creations` is never written, so it is not rebased.
 fn rebase_ordinals(trx: &mut TransactionTrace, shift: u64) {
-    // Assigned ordinals start at 1. A receipt log keeps ordinal 0 when
-    // FIREHOSE_TRACER_IGNORE_LOG_MISMATCH suppressed its assignment, and must stay at 0.
+    // 0 means "never assigned" (real ordinals start at 1) and must not be shifted. Receipt logs
+    // mismatch like this usually panic unless FIREHOSE_TRACER_IGNORE_LOG_MISMATCH is set. This
+    // is the only case where you would get a 0 value
     let rebase = |ordinal: &mut u64| {
         if *ordinal != 0 {
             *ordinal = ordinal.wrapping_add(shift);
