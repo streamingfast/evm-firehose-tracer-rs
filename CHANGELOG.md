@@ -3,6 +3,19 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+* Detached transaction tracing, for integrations that execute the transactions of a block in parallel (reth's EIP-7928 block access list path):
+  * `Tracer::detached` returns a tracer that shares this tracer's configuration, never prints, and traces transactions on its own thread: `on_block_start` with the block's event, then the transaction events, then `Tracer::on_tx_end_detached`, which completes the transaction like `on_tx_end` and returns the `TransactionTrace` instead of appending it to the block.
+  * `Tracer::attach_transaction` appends such a trace to the block tracer's block at a `TransactionPlacement` (transaction index, block-cumulative gas, block-wide index of its first log, offset during a flashblock continuation as `on_tx_end` offsets a receipt): every ordinal is shifted to follow the block's last ordinal, and the receipt takes the block-cumulative values. The integration gives the detached tracer transaction-relative receipt values and attaches the traces in block order, which `attach_transaction` checks.
+
+### Changed
+
+* `Config` is `Clone`.
+* The KECCAK256 preimages of a transaction are recorded in one buffer instead of one allocation each, and the storage-slot filter that runs when the transaction completes looks them up in a sorted list instead of hashing every one of them into a map. On a block of 200 calls hashing 1000 words each, completing the transactions took 15% of the traced execution time before and 6% after. The output is unchanged.
+
 ## v5.7.0
 
 ### Added
