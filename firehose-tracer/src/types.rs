@@ -217,6 +217,7 @@ pub enum TxType {
     Blob = 3,                 // EIP-4844 blob transaction
     SetCode = 4,              // EIP-7702 set code transaction
     AccountAbstraction = 121, // Account abstraction transaction (EIP-8130 / EIP-8430 draft)
+    OptimismPostExec = 125,   // Optimism post-exec system transaction (Lagoon)
     OptimismDeposit = 126,    // Optimism-specific transaction
 }
 
@@ -235,6 +236,7 @@ impl Display for TxType {
             TxType::Blob => "TrxBlob",
             TxType::SetCode => "TrxSetCode",
             TxType::AccountAbstraction => "TrxAccountAbstraction",
+            TxType::OptimismPostExec => "TrxOptimismPostExec",
             TxType::OptimismDeposit => "TrxOptimismDeposit",
         };
         write!(f, "{}", type_str)
@@ -525,6 +527,16 @@ mod tests {
             0,
         );
         assert!(!tx_with_to.is_create());
+    }
+
+    #[test]
+    fn test_tx_type_optimism_post_exec() {
+        assert_eq!(
+            Ok(TxType::OptimismPostExec),
+            TxType::try_from(0x7du8).map_err(|_| ())
+        );
+        assert_eq!(125, TxType::OptimismPostExec as u8);
+        assert_eq!("TrxOptimismPostExec", TxType::OptimismPostExec.to_string());
     }
 
     #[test]

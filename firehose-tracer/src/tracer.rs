@@ -766,6 +766,7 @@ impl Tracer {
             TxType::Blob => Type::TrxTypeBlob as i32,
             TxType::SetCode => Type::TrxTypeSetCode as i32,
             TxType::AccountAbstraction => Type::TrxTypeAccountAbstraction as i32,
+            TxType::OptimismPostExec => Type::TrxTypeOptimismPostExec as i32,
             TxType::OptimismDeposit => Type::TrxTypeOptimismDeposit as i32,
         };
 
