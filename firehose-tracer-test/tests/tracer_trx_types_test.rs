@@ -281,3 +281,52 @@ fn test_set_code_transaction_type() {
             // properly signed authorizations.
         });
 }
+
+#[test]
+fn test_optimism_post_exec_transaction_type() {
+    // Type 0x7d: Optimism post-exec transaction, which runs no EVM code so no call is traced
+    let post_exec = firehose_tracer::types::TxEvent {
+        tx_type: firehose_tracer::types::TxType::OptimismPostExec,
+        from: alloy_primitives::Address::ZERO,
+        to: None,
+        input: alloy_primitives::Bytes::from_static(&[0xc0]),
+        value: big_int(0),
+        gas: 0,
+        gas_price: big_int(0),
+        ..test_legacy_trx()
+    };
+
+    let mut tester = TracerTester::new();
+    tester
+        .start_block_trx(post_exec)
+        .end_trx(Some(success_receipt(0)), None)
+        .start_trx(test_legacy_trx())
+        .start_call(alice_addr(), bob_addr(), big_int(100), 21000, vec![])
+        .end_call(vec![], 21000)
+        .end_block_trx(Some(success_receipt(21000)), None, None)
+        .validate_with_category("txtypes", |block| {
+            assert_eq!(2, block.transaction_traces.len());
+            let post_exec = &block.transaction_traces[0];
+            let next = &block.transaction_traces[1];
+
+            assert_eq!(
+                pbeth::transaction_trace::Type::TrxTypeOptimismPostExec as i32,
+                post_exec.r#type,
+                "Type should be OPTIMISM_POST_EXEC"
+            );
+            assert_eq!(125, post_exec.r#type);
+            assert!(post_exec.calls.is_empty());
+            assert_eq!(vec![0xc0], post_exec.input);
+            assert_eq!(0, post_exec.gas_used);
+
+            // The transaction without calls still takes its own ordinals, and the next
+            // transaction follows it
+            assert_eq!(post_exec.begin_ordinal + 1, post_exec.end_ordinal);
+            assert_eq!(post_exec.end_ordinal + 1, next.begin_ordinal);
+            assert_eq!(
+                pbeth::transaction_trace::Type::TrxTypeLegacy as i32,
+                next.r#type
+            );
+            assert_eq!(1, next.calls.len());
+        });
+}

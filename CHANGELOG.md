@@ -3,6 +3,12 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v5.5.1
+
+### Added
+
+* Optimism post-exec transactions (type `0x7d`, activated by the OP Stack Lagoon upgrade), traced as `TRX_TYPE_OPTIMISM_POST_EXEC` with `TxType::OptimismPostExec`. The `sf.ethereum.type.v2` bindings are regenerated from the 5.5.0 schema with only this type added (BSR commit `444a73cd7a174b4ebc4267a841d85c1a`, pinned in `proto/buf.yaml`).
+
 ## v5.5.0
 
 ### Added

@@ -602,6 +602,13 @@ pub mod transaction_trace {
         TrxTypeArbitrumLegacy = 120,
         /// OPTIMISM-specific transactions
         TrxTypeOptimismDeposit = 126,
+        /// Optimism's post-exec transaction (type byte 0x7d on chain), a system transaction the block
+        /// builder appends to the block. It is not signed and its sender is the zero address, its input
+        /// is the RLP-encoded post-exec payload, and it runs no EVM code: it has no calls and its gas
+        /// used is 0.
+        ///
+        /// Activated on OP Stack chains by the Lagoon upgrade.
+        TrxTypeOptimismPostExec = 125,
         /// Polygon(bor)-specific
         TrxTypePolygonStateSync = 200,
         // Morph-specific transactions
@@ -640,6 +647,7 @@ pub mod transaction_trace {
                 Type::TrxTypeArbitrumInternal => "TRX_TYPE_ARBITRUM_INTERNAL",
                 Type::TrxTypeArbitrumLegacy => "TRX_TYPE_ARBITRUM_LEGACY",
                 Type::TrxTypeOptimismDeposit => "TRX_TYPE_OPTIMISM_DEPOSIT",
+                Type::TrxTypeOptimismPostExec => "TRX_TYPE_OPTIMISM_POST_EXEC",
                 Type::TrxTypePolygonStateSync => "TRX_TYPE_POLYGON_STATE_SYNC",
                 Type::TrxTypeMorph => "TRX_TYPE_MORPH",
                 Type::TrxTypeMorphL1Message => "TRX_TYPE_MORPH_L1_MESSAGE",
@@ -661,6 +669,7 @@ pub mod transaction_trace {
                 "TRX_TYPE_ARBITRUM_INTERNAL" => Some(Self::TrxTypeArbitrumInternal),
                 "TRX_TYPE_ARBITRUM_LEGACY" => Some(Self::TrxTypeArbitrumLegacy),
                 "TRX_TYPE_OPTIMISM_DEPOSIT" => Some(Self::TrxTypeOptimismDeposit),
+                "TRX_TYPE_OPTIMISM_POST_EXEC" => Some(Self::TrxTypeOptimismPostExec),
                 "TRX_TYPE_POLYGON_STATE_SYNC" => Some(Self::TrxTypePolygonStateSync),
                 "TRX_TYPE_MORPH" => Some(Self::TrxTypeMorph),
                 "TRX_TYPE_MORPH_L1_MESSAGE" => Some(Self::TrxTypeMorphL1Message),
