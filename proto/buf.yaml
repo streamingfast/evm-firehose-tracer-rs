@@ -4,7 +4,7 @@ version: v2
 modules:
   - path: .
 deps:
-  - buf.build/streamingfast/firehose-ethereum:dfe7256ddb014323bf565cefe5cbeaa1
+  - buf.build/streamingfast/firehose-ethereum:4ce6b914ddfa40f99ae63c9e0d53656a
   - buf.build/streamingfast/firehose
 lint:
   # `generation.proto` is generation config, not schema: it is deliberately outside the directory
