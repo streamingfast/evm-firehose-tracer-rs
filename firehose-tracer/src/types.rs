@@ -204,12 +204,13 @@ pub struct TxEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
 #[repr(u8)]
 pub enum TxType {
-    Legacy = 0,            // Pre-EIP-2718 legacy transaction
-    AccessList = 1,        // EIP-2930 access list transaction
-    DynamicFee = 2,        // EIP-1559 dynamic fee transaction
-    Blob = 3,              // EIP-4844 blob transaction
-    SetCode = 4,           // EIP-7702 set code transaction
-    OptimismDeposit = 126, // Optimism-specific transaction
+    Legacy = 0,             // Pre-EIP-2718 legacy transaction
+    AccessList = 1,         // EIP-2930 access list transaction
+    DynamicFee = 2,         // EIP-1559 dynamic fee transaction
+    Blob = 3,               // EIP-4844 blob transaction
+    SetCode = 4,            // EIP-7702 set code transaction
+    OptimismPostExec = 125, // Optimism post-exec system transaction (Lagoon)
+    OptimismDeposit = 126,  // Optimism-specific transaction
 }
 
 impl Default for TxType {
@@ -226,6 +227,7 @@ impl Display for TxType {
             TxType::DynamicFee => "TrxDynamicFee",
             TxType::Blob => "TrxBlob",
             TxType::SetCode => "TrxSetCode",
+            TxType::OptimismPostExec => "TrxOptimismPostExec",
             TxType::OptimismDeposit => "TrxOptimismDeposit",
         };
         write!(f, "{}", type_str)
@@ -501,6 +503,16 @@ mod tests {
             0,
         );
         assert!(!tx_with_to.is_create());
+    }
+
+    #[test]
+    fn test_tx_type_optimism_post_exec() {
+        assert_eq!(
+            Ok(TxType::OptimismPostExec),
+            TxType::try_from(0x7du8).map_err(|_| ())
+        );
+        assert_eq!(125, TxType::OptimismPostExec as u8);
+        assert_eq!("TrxOptimismPostExec", TxType::OptimismPostExec.to_string());
     }
 
     #[test]
